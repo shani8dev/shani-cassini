@@ -1,0 +1,21 @@
+# English translations for shani-gui
+msgid ""
+msgstr ""
+"Project-Id-Version: shani-gui 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: en\n"
+
+msgid "Welcome to Shani"
+msgstr "Welcome to Shani"
+
+msgid "Settings"
+msgstr "Settings"
+
+msgid "Apply"
+msgstr "Apply"
+
+msgid "Cancel"
+msgstr "Cancel"
+
+msgid "Save"
+msgstr "Save"

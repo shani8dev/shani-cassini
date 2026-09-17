@@ -1,0 +1,63 @@
+"""i18n translation module for shani-gui."""
+
+import os
+import re
+import logging
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+_PO_DIR = Path(__file__).resolve().parent.parent.parent / "po"
+_CURRENT_LOCALE = "en"
+_TRANSLATIONS: dict[str, str] = {}
+
+
+def load_po(locale: str = "en") -> dict[str, str]:
+    """Load a .po file and return msgid -> msgstr mapping."""
+    po_path = _PO_DIR / f"{locale}.po"
+    if not po_path.exists():
+        logger.warning("Translation file not found: %s", po_path)
+        return {}
+
+    translations = {}
+    current_msgid = None
+    in_msgstr = False
+
+    with open(po_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith('msgid "'):
+                current_msgid = line[7:line.rfind('"')]
+                in_msgstr = False
+            elif line.startswith('msgstr "'):
+                in_msgstr = True
+                msgstr = line[8:line.rfind('"')]
+                if current_msgid and msgstr:
+                    translations[current_msgid] = msgstr
+            elif in_msgstr and line.startswith('"') and line.endswith('"'):
+                if current_msgid:
+                    translations[current_msgid] += line[1:-1]
+
+    return translations
+
+
+def set_locale(locale: str) -> None:
+    """Set the current locale and load translations."""
+    global _CURRENT_LOCALE, _TRANSLATIONS
+    _CURRENT_LOCALE = locale
+    _TRANSLATIONS = load_po(locale)
+    logger.info("Locale set to: %s", locale)
+
+
+def translate(text: str) -> str:
+    """Translate a string to the current locale."""
+    return _TRANSLATIONS.get(text, text)
+
+
+def get_locale() -> str:
+    """Get the current locale."""
+    return _CURRENT_LOCALE
+
+
+# Initialize with default locale
+set_locale("en")

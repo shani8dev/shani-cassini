@@ -1,0 +1,21 @@
+# Hindi translations for shani-gui
+msgid ""
+msgstr ""
+"Project-Id-Version: shani-gui 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: hi\n"
+
+msgid "Welcome to Shani"
+msgstr "शनी में आपका स्वागत है"
+
+msgid "Settings"
+msgstr "सेटिंग्स"
+
+msgid "Apply"
+msgstr "लागू करें"
+
+msgid "Cancel"
+msgstr "रद्द करना"
+
+msgid "Save"
+msgstr "सहेजें"
