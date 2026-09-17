@@ -7,6 +7,7 @@ added once roadmap item for keyring storage lands.
 
 import json
 import time
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -136,7 +137,7 @@ class TestAuthManagerLogin:
         })
         am = AuthManager(base_url="http://localhost:9999")
         am._http_client = httpx.Client(transport=transport)
-        am._save_credentials = pytest.MagicMock()
+        am._save_credentials = MagicMock()
 
         am.login("user", "pass")
         am._save_credentials.assert_called_once()

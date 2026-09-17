@@ -154,7 +154,7 @@ class FleetTab(Gtk.Box):
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         scrolled.set_vexpand(True)
-        scrolled.set_height_request(200)
+        scrolled.set_size_request(-1, 200)
         card.append(scrolled)
 
         # Text view for console output

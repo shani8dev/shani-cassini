@@ -51,8 +51,6 @@ class ShaniosNotebook(Gtk.Notebook):
         self.set_show_tabs(True)
         self.set_show_border(True)
         self.set_scrollable(True)
-        self.set_popup_enabled(True)
-
         # Enable swipe gestures on touchscreens
         self.set_enable_popup(True)
 

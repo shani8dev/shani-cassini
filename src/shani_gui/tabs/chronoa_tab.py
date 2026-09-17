@@ -271,7 +271,7 @@ class ChronoaTab(Gtk.Box):
             "Configuration values are read from the org.shani.chronoa GSettings\n"
             "schema. To use full AI features, install the required dependencies."
         )
-        summary.set_justify(Gtk.Justify.LEFT)
+        summary.set_halign(Gtk.Align.START)
         summary.set_xalign(0)
         grid.attach(summary, 0, 5, 2, 1)
 

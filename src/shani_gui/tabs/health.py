@@ -142,7 +142,7 @@ class HealthTab(Gtk.Box):
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         scrolled.set_vexpand(True)
-        scrolled.set_height_request(300)
+        scrolled.set_size_request(-1, 300)
         card.append(scrolled)
 
         # Text view for health results
@@ -177,7 +177,7 @@ class HealthTab(Gtk.Box):
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         scrolled.set_vexpand(True)
-        scrolled.set_height_request(150)
+        scrolled.set_size_request(-1, 150)
         card.append(scrolled)
 
         # Text view for health logs

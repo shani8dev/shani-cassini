@@ -95,14 +95,14 @@ class UpdatesTab(Gtk.Box):
         card.append(grid)
 
         # Add channel options
-        self._channel_stable = Gtk.RadioButton(label="stable")
+        self._channel_stable = Gtk.CheckButton(label="stable")
         self._channel_stable.add_css_class("flat")
         self._channel_stable.connect("toggled", self._on_channel_toggled)
         grid.attach(Gtk.Label(label=""), 0, 0, 1, 1)  # Empty label for alignment
         grid.attach(self._channel_stable, 1, 0, 1, 1)
         grid.attach(Gtk.Label(label="(recommended)"), 2, 0, 1, 1)
 
-        self._channel_latest = Gtk.RadioButton.new_from_widget(self._channel_stable)
+        self._channel_latest = Gtk.CheckButton()
         self._channel_latest.set_label("latest")
         self._channel_latest.add_css_class("flat")
         self._channel_latest.connect("toggled", self._on_channel_toggled)

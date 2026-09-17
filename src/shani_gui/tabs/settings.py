@@ -526,7 +526,7 @@ class SettingsTab(Gtk.Box):
         time_label.set_halign(Gtk.Align.START)
         box.append(time_label)
         
-        self._update_datetime_labels(None)
+        self._update_datetime_label(button)
         
         return box
 

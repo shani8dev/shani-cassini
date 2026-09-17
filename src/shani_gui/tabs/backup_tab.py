@@ -186,7 +186,7 @@ class BackupTab(Gtk.Box):
         )
         note.set_halign(Gtk.Align.START)
         note.set_xalign(0)
-        note.set_justify(Gtk.Justify.LEFT)
+        note.set_halign(Gtk.Align.START)
         grid.attach(note, 0, 2, 2, 1)
 
         return card
