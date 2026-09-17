@@ -15,18 +15,20 @@ src_path = os.path.join(repo_root, "src")
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
-
-@pytest.fixture(autouse=True)
-def mock_external_modules():
-    """Mock modules that are not installed (shani_chronoa, shani_backup)."""
-    with MagicMock("shani_chronoa"), MagicMock("shani_chronoa.config"), MagicMock(
-        "shani_chronoa.config.ChronoaConfig"
-    ), MagicMock("shani_chronoa.config.HardwareProfile"), MagicMock(
-        "shani_backup"
-    ), MagicMock("shani_backup.config"), MagicMock(
-        "shani_backup.config.BackupConfig"
-    ):
-        yield
+# Mock external modules BEFORE test modules import them.
+# shani_chronoa and shani_backup are not installed in this environment.
+_mock_modules = {
+    "shani_chronoa": MagicMock(),
+    "shani_chronoa.config": MagicMock(),
+    "shani_chronoa.config.ChronoaConfig": MagicMock(),
+    "shani_chronoa.config.HardwareProfile": MagicMock(),
+    "shani_backup": MagicMock(),
+    "shani_backup.config": MagicMock(),
+    "shani_backup.config.BackupConfig": MagicMock(),
+}
+for _name, _mock in _mock_modules.items():
+    if _name not in sys.modules:
+        sys.modules[_name] = _mock
 
 
 @pytest.fixture
@@ -47,7 +49,7 @@ def auth_manager():
 
 @pytest.fixture
 def api_client(auth_manager):
-    """Provide an APIClient with mocked HTTP transport."""
+    """Provide an APIClient with a test base URL."""
     from shani_gui.api_client import APIClient
 
     client = APIClient(auth_manager, base_url="http://localhost:9999")
