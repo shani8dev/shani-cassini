@@ -63,7 +63,7 @@ class ShaniosApplication(Gtk.Application):
         logger.info("ShaniosApplication activated")
 
     @override
-    def do_command_line(self, command_line: Gio.CommandLine) -> int:
+    def do_command_line(self, command_line: Gio.ApplicationCommandLine) -> int:
         """Handle command line arguments."""
         logger.info("Processing command line arguments")
         # Handle any command line arguments here
