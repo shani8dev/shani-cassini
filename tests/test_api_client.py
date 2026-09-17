@@ -1,6 +1,7 @@
 """Tests for shani-gui API client with mocked HTTP responses."""
 
 import json
+import time
 import pytest
 import httpx
 from unittest.mock import MagicMock, call
@@ -80,6 +81,7 @@ class TestAPIClientAuthHeaders:
         """Headers include Authorization when authenticated."""
         auth_manager._access_token = "test-token-123"
         auth_manager._is_authenticated = True
+        auth_manager._token_expiry = time.time() + 3600
         client = APIClient(auth_manager)
         headers = client._get_headers()
         assert headers["Authorization"] == "Bearer test-token-123"
