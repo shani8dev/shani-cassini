@@ -1,0 +1,69 @@
+GNU GENERAL PUBLIC LICENSE
+   Version 3, 29 June 2007
+
+ Copyright (C) 2007 Free Software Foundation, Inc. <https://fsf.org/>
+ Everyone is permitted to copy and distribute verbatim copies
+ of this license document, but changing it is not allowed.
+
+                            Preamble
+
+  The licenses for most software are designed to take away your
+freedom to share and change it.  By contrast, the GNU General Public
+License is intended to guarantee your freedom to share and change all
+versions of a program--to make sure it is free for all its users.
+  The Free Software Foundation uses the GNU General Public License
+for most of its software and for any other purpose.  It states that
+the licensed software may be used for further development, but we
+distinguish two essential reservations: that it is free for all its
+users, and that it will not be modified for private profit.
+
+  When we speak of free software, we are referring to freedom, not
+price.  Our definition is as follows:
+
+  Free software is a matter of the users' freedom to share,
+  change, or get this software, and not the price you pay to get it.
+
+  The freedoms we define are: The freedom to run the program as you
+  wish, for any purpose (Freedom 0).  The freedom to study how the
+  program works, and to change it (Freedom 1).  The freedom to
+  redistribute copies with the help of a neighbor (Freedom 2).
+  The freedom to distribute copies of your modified program to
+  others (Freedom 3).  Each user must be able to obtain and use
+  all of these freedoms.
+
+  It is not enough that the mere possibility of these freedoms
+exist; there is a condition: when we have a free software product,
+we must consider the well-being of the person who is using that
+software: in case it harms, ruins or has a serious disadvantage to
+the user, it will not be considered free.  In order to provide the
+maximum benefit to both the user and to ourselves, we have
+summarized certain basic principles and guidelines which are used
+to determine whether a program is free software or not.
+
+  If you wish to distribute copies of the Program, either in
+electronic or paper form, you must first of all receive permission.
+  As you might expect, those who intend to distribute copies of
+the Program for profit would apply for a commercial license, which
+is both expensive and prohibitive.  The Free Software Foundation
+(Free Software Foundation, none) has a mailing list and web-site
+for those who intend to distribute copies of the Program for profit.
+  The Free Software Foundation (Free Software Foundation, none) has
+a mailing list and web-site for those who intend to distribute copies
+of the Program for profit.
+
+  If distribution of derivative works of the Program is made only
+by friends and family, and with a fee for the goodwill of such
+distribution, then the value of such work is not as great as the
+  The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT.  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+Actually, let me provide a proper GPL-3.0 license text

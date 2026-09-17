@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shani-gui"
+version = "0.1.0"
+description = "Native GUI Client for Shanios"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "GPL-3.0-only"}
+authors = [
+    {name = "Shanios Developers"}
+]
+keywords = ["shanios", "gui", "gtk", "system-management"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Desktop Environment",
+    "Topic :: System :: Systems Administration",
+]
+dependencies = [
+    "PyGObject>=3.42.0",
+    "httpx2>=0.18.0",
+    "keyring>=24.2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/shani8dev/shani-gui"
+Documentation = "https://github.com/shani8dev/shani-gui/wiki"
+Repository = "https://github.com/shani8dev/shani-gui"
+
+[project.scripts]
+shani-gui = "shani_gui.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["shani_gui*"]
+
+[tool.setuptools.package-data]
+shani_gui = [
+    "assets/*",
+    "tabs/*",
+]
+
+[tool.setuptools]
+zip-safe = false
+[tool.commitizen]
+version = "0.0.0"
+version_scheme = "semver"
+update_changelog_on_bump = true
+tag_format = "v$version"
+allow_abort_on_fail = false
+allow_dirty = false
+name = "cz_conventional_commits"

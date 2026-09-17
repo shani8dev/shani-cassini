@@ -1,0 +1,2 @@
+[console_scripts]
+shani-gui = shani_gui.main:main
