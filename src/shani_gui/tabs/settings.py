@@ -681,9 +681,9 @@ class SettingsTab(Gtk.Box):
         switch.set_active(True)  # Default: Tap-to-click on
         return switch
 
-def _create_auto_update_switch(self) -> Gtk.Switch:
+    def _create_auto_update_switch(self) -> Gtk.Switch:
         """Create automatic updates switch.
-        
+
         Returns:
             Automatic updates switch
         """
@@ -692,9 +692,9 @@ def _create_auto_update_switch(self) -> Gtk.Switch:
         switch.set_active(True)  # Default: Automatic updates on
         return switch
 
-def _create_suspend_switch(self) -> Gtk.Switch:
+    def _create_suspend_switch(self) -> Gtk.Switch:
         """Create auto-suspend switch.
-        
+
         Returns:
             Auto-suspend switch
         """
@@ -703,9 +703,9 @@ def _create_suspend_switch(self) -> Gtk.Switch:
         switch.set_active(True)  # Default: Auto-suspend when idle
         return switch
 
-def _create_usage_data_switch(self) -> Gtk.Switch:
+    def _create_usage_data_switch(self) -> Gtk.Switch:
         """Create usage data switch.
-        
+
         Returns:
             Usage data switch
         """
