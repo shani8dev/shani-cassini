@@ -1,0 +1,11 @@
+id = "libreoffice"
+title = "LibreOffice"
+summary = "Office suite"
+group = "Office"
+flatpak = "org.libreoffice.LibreOffice"
+
+[packages]
+arch = "libreoffice-fresh"
+debian = "libreoffice"
+fedora = "libreoffice"
+suse = "libreoffice"

@@ -4,6 +4,7 @@ msgstr ""
 "Project-Id-Version: shani-gui 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Language: en\n"
+"Content-Transfer-Encoding: 8bit\n"
 
 msgid "Welcome to Shani"
 msgstr "Welcome to Shani"
@@ -19,3 +20,168 @@ msgstr "Cancel"
 
 msgid "Save"
 msgstr "Save"
+
+msgid "Shanios System Manager"
+msgstr "Shanios System Manager"
+
+msgid "System Information"
+msgstr "System Information"
+
+msgid "Health Summary"
+msgstr "Health Summary"
+
+msgid "Recommended Apps"
+msgstr "Recommended Apps"
+
+msgid "Check Health"
+msgstr "Check Health"
+
+msgid "Install Update"
+msgstr "Install Update"
+
+msgid "Personal Settings"
+msgstr "Personal Settings"
+
+msgid "Hardware Settings"
+msgstr "Hardware Settings"
+
+msgid "System Settings"
+msgstr "System Settings"
+
+msgid "Theme:"
+msgstr "Theme:"
+
+msgid "Dark"
+msgstr "Dark"
+
+msgid "Light"
+msgstr "Light"
+
+msgid "System Default"
+msgstr "System Default"
+
+msgid "Font:"
+msgstr "Font:"
+
+msgid "Small"
+msgstr "Small"
+
+msgid "Medium"
+msgstr "Medium"
+
+msgid "Large"
+msgstr "Large"
+
+msgid "Language:"
+msgstr "Language:"
+
+msgid "Region:"
+msgstr "Region:"
+
+msgid "Format:"
+msgstr "Format:"
+
+msgid "English (US)"
+msgstr "English (US)"
+
+msgid "French"
+msgstr "French"
+
+msgid "German"
+msgstr "German"
+
+msgid "Spanish"
+msgstr "Spanish"
+
+msgid "India"
+msgstr "India"
+
+msgid "United States"
+msgstr "United States"
+
+msgid "Canada"
+msgstr "Canada"
+
+msgid "Australia"
+msgstr "Australia"
+
+msgid "USD ($)"
+msgstr "USD ($)"
+
+msgid "Check Again"
+msgstr "Check Again"
+
+msgid "Run Full Check"
+msgstr "Run Full Check"
+
+msgid "Confirm Update Installation"
+msgstr "Confirm Update Installation"
+
+msgid "System is up to date"
+msgstr "System is up to date"
+
+msgid "No recommended apps available"
+msgstr "No recommended apps available"
+
+msgid "Release Notes"
+msgstr "Release Notes"
+
+msgid "Release notes not available"
+msgstr "Release notes not available"
+
+msgid "Overview"
+msgstr "Overview"
+
+msgid "System"
+msgstr "System"
+
+msgid "Updates"
+msgstr "Updates"
+
+msgid "Services"
+msgstr "Services"
+
+msgid "Fleet"
+msgstr "Fleet"
+
+msgid "Health"
+msgstr "Health"
+
+msgid "Deploy"
+msgstr "Deploy"
+
+msgid "Skills"
+msgstr "Skills"
+
+msgid "Backup"
+msgstr "Backup"
+
+msgid "Chronoa"
+msgstr "Chronoa"
+
+msgid "Kernel"
+msgstr "Kernel"
+
+msgid "Secure Boot"
+msgstr "Secure Boot"
+
+msgid "Drivers"
+msgstr "Drivers"
+
+msgid "Error loading {label} tab"
+msgstr "Error loading {label} tab"
+
+msgid "ShaniosApplication"
+msgstr "ShaniosApplication"
+
+msgid "Shanios Main Window"
+msgstr "Shanios Main Window"
+
+msgid "Show input menu in menu bar"
+msgstr "Show input menu in menu bar"
+
+msgid "About This System"
+msgstr "About This System"
+
+msgid "Boot Slot Status"
+msgstr "Boot Slot Status"

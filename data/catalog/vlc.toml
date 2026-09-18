@@ -1,0 +1,11 @@
+id = "vlc"
+title = "VLC"
+summary = "Plays almost every video and audio format"
+group = "Media"
+flatpak = "org.videolan.VLC"
+
+[packages]
+arch = "vlc"
+debian = "vlc"
+fedora = "vlc"
+suse = "vlc"

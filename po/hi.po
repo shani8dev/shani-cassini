@@ -4,6 +4,7 @@ msgstr ""
 "Project-Id-Version: shani-gui 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Language: hi\n"
+"Content-Transfer-Encoding: 8bit\n"
 
 msgid "Welcome to Shani"
 msgstr "शनी में आपका स्वागत है"
@@ -19,3 +20,168 @@ msgstr "रद्द करना"
 
 msgid "Save"
 msgstr "सहेजें"
+
+msgid "Shanios System Manager"
+msgstr "शनियोस सिस्टम मैनेजर"
+
+msgid "System Information"
+msgstr "सिस्टम सूचना"
+
+msgid "Health Summary"
+msgstr "स्वास्थ्य सारांश"
+
+msgid "Recommended Apps"
+msgstr "सुझाए गए ऐप्स"
+
+msgid "Check Health"
+msgstr "स्वास्थ्य जाँचें"
+
+msgid "Install Update"
+msgstr "अपडेट स्थापित करें"
+
+msgid "Personal Settings"
+msgstr "व्यक्तिगत सेटिंग्स"
+
+msgid "Hardware Settings"
+msgstr "हार्डवेयर सेटिंग्स"
+
+msgid "System Settings"
+msgstr "सिस्टम सेटिंग्स"
+
+msgid "Theme:"
+msgstr "थीम:"
+
+msgid "Dark"
+msgstr "डार्क"
+
+msgid "Light"
+msgstr "लाइट"
+
+msgid "System Default"
+msgstr "सिस्टम डिफ़ॉल्ट"
+
+msgid "Font:"
+msgstr "फ़ॉन्ट:"
+
+msgid "Small"
+msgstr "छोटा"
+
+msgid "Medium"
+msgstr "मध्यम"
+
+msgid "Large"
+msgstr "बड़ा"
+
+msgid "Language:"
+msgstr "भाषा:"
+
+msgid "Region:"
+msgstr "क्षेत्र:"
+
+msgid "Format:"
+msgstr "फ़ॉर्मेट:"
+
+msgid "English (US)"
+msgstr "अंग्रेज़ी (US)"
+
+msgid "French"
+msgstr "फ़्रेंच"
+
+msgid "German"
+msgstr "जर्मन"
+
+msgid "Spanish"
+msgstr "स्पेनिश"
+
+msgid "India"
+msgstr "भारत"
+
+msgid "United States"
+msgstr "संयुक्त राज्य"
+
+msgid "Canada"
+msgstr "कनेडा"
+
+msgid "Australia"
+msgstr "ऑस्ट्रेलिया"
+
+msgid "USD ($)"
+msgstr "यूएसडी ($)"
+
+msgid "Check Again"
+msgstr "फिर से जाँचें"
+
+msgid "Run Full Check"
+msgstr "पूरी जाँच चलाएँ"
+
+msgid "Confirm Update Installation"
+msgstr "अपडेट स्थापना की पुष्टि करें"
+
+msgid "System is up to date"
+msgstr "सिस्टम अप-टू-डेट है"
+
+msgid "No recommended apps available"
+msgstr "कोई सुझाए गए ऐप्स उपलब्ध नहीं"
+
+msgid "Release Notes"
+msgstr "रिलीज़ नोट्स"
+
+msgid "Release notes not available"
+msgstr "रिलीज़ नोट्स उपलब्ध नहीं"
+
+msgid "Overview"
+msgstr "अवलोकन"
+
+msgid "System"
+msgstr "सिस्टम"
+
+msgid "Updates"
+msgstr "अपडेट"
+
+msgid "Services"
+msgstr "सेवाएँ"
+
+msgid "Fleet"
+msgstr "फ्लीट"
+
+msgid "Health"
+msgstr "स्वास्थ्य"
+
+msgid "Deploy"
+msgstr "डिप्लॉय"
+
+msgid "Skills"
+msgstr "स्किल्स"
+
+msgid "Backup"
+msgstr "बैकअप"
+
+msgid "Chronoa"
+msgstr "क्रोनोआई"
+
+msgid "Kernel"
+msgstr "कर्नेल"
+
+msgid "Secure Boot"
+msgstr "सुरक्षित बूट"
+
+msgid "Drivers"
+msgstr "ड्राइवर"
+
+msgid "Error loading {label} tab"
+msgstr "{label} टैब लोड करने में त्रुटि"
+
+msgid "ShaniosApplication"
+msgstr "शनियोस एप्लीकेशन"
+
+msgid "Shanios Main Window"
+msgstr "शनियोस मुख्य खिड़की"
+
+msgid "Show input menu in menu bar"
+msgstr "मेन्यू बार में इनपुट मेन्यू दिखाएँ"
+
+msgid "About This System"
+msgstr "इस सिस्टम के बारे में"
+
+msgid "Boot Slot Status"
+msgstr "बूट स्लॉट स्थिति"

@@ -10,6 +10,8 @@ from shani_gui.state import AppState
 from shani_gui.auth import AuthManager
 from shani_gui.api_client import APIClient
 from shani_gui.cli_wrapper import get_cli_wrapper
+from shani_gui.widgets import Card, Chip, apply_amoled_theme
+from shani_gui.catalog import load_apps, app_package_for
 
 
 logger = logging.getLogger(__name__)
@@ -42,6 +44,8 @@ class OverviewTab(Gtk.Box):
         """Set up the user interface for the overview tab."""
         logger.debug("Setting up overview tab UI")
 
+        apply_amoled_theme()
+
         # Create scrollable container
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -71,6 +75,10 @@ class OverviewTab(Gtk.Box):
         # Create update status card
         update_card = self._create_update_status_card()
         content_box.append(update_card)
+
+        # Create recommended apps card
+        recommended_card = self._create_recommended_apps_card()
+        content_box.append(recommended_card)
 
         logger.debug("Overview tab UI created")
         
@@ -379,6 +387,48 @@ class OverviewTab(Gtk.Box):
         install_update_btn.connect("clicked", self._on_install_update_clicked)
         button_box.append(install_update_btn)
         card.append(button_box)
+
+        return card
+
+    def _create_recommended_apps_card(self) -> Gtk.Widget:
+        """Create the recommended apps card from the TOML catalog.
+
+        Returns:
+            Card widget populated with catalog apps
+        """
+        apps = load_apps()
+        card = Card(title="Recommended Apps")
+        card.set_margin_bottom(12)
+
+        if not apps:
+            empty_label = Gtk.Label(label="No recommended apps available")
+            empty_label.add_css_class("muted")
+            card.append(empty_label)
+            return card
+
+        for app in apps:
+            pkg = app_package_for(app, "arch")
+            pkg_text = pkg if pkg else (app.flatpak or "N/A")
+
+            entry = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+
+            title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            title_label = Gtk.Label(label=app.title)
+            title_label.set_halign(Gtk.Align.START)
+            title_box.append(title_label)
+
+            chip = Chip(text=pkg_text)
+            title_box.append(chip)
+
+            entry.append(title_box)
+
+            summary_label = Gtk.Label(label=app.summary)
+            summary_label.add_css_class("muted")
+            summary_label.set_wrap(True)
+            summary_label.set_halign(Gtk.Align.START)
+            entry.append(summary_label)
+
+            card.append(entry)
 
         return card
 

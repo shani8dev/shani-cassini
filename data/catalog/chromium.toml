@@ -1,0 +1,11 @@
+id = "chromium"
+title = "Chromium"
+summary = "Open-source Chrome"
+group = "Internet"
+flatpak = "org.chromium.Chromium"
+
+[packages]
+arch = "chromium"
+debian = "chromium"
+fedora = "chromium"
+suse = "chromium"

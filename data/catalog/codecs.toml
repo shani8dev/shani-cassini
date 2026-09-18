@@ -1,0 +1,10 @@
+id = "codecs"
+title = "Multimedia codecs"
+summary = "Common extra codecs (family-specific packages)"
+group = "Media"
+
+[packages]
+arch = "gst-libav"
+debian = "ubuntu-restricted-extras"
+fedora = "gstreamer1-plugins-ugly"
+suse = "libavcodec"

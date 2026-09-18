@@ -1,5 +1,4 @@
-src/shani_gui/app.py
+src/shani_gui/main_window.py
+src/shani_gui/notebook.py
 src/shani_gui/tabs/settings.py
-src/shani_gui/tabs/dashboard.py
-src/shani_gui/components/header.py
-src/shani_gui/components/footer.py
+src/shani_gui/tabs/overview.py

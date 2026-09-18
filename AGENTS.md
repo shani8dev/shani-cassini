@@ -118,8 +118,8 @@ Re-scan against `../garuda-catalog.md` (29 repos, not 34). **Confirmed mapping: 
 
 **New gaps** (garuda-assistant has, shani-gui lacks):
 
-1. **pkexec policy file** — garuda-assistant ships `org.garuda.garuda-assistant.pkexec.policy` for privileged operations; shani-gui has no polkit policy (privileged ops go through CLI wrappers).
-2. **Translations infrastructure** — garuda-assistant has `translations/` + `qt6_create_translation` extraction; shani-gui has no i18n.
+1. **pkexec policy file** — garuda-assistant ships `org.garuda.garuda-assistant.pkexec.policy` for privileged operations; shani-gui ships `data/dev.shani8.gui.policy` (action id `org.shani.gui.pkexec`) for privileged operations.
+2. **Translations infrastructure** — garuda-assistant has `translations/` + `qt6_create_translation` extraction; shani-gui has `po/` (`en.po`, `hi.po`, `shani-gui.pot`, `POTFILES.in`) with real, filled-in translations (61 entries each, verified 2026-09-19 — `hi.po`'s `msgstr`s are genuine Devanagari text, not copies of the English source), a `po/update_translations.sh` regen script (`xgettext`+`msgmerge`+`msgfmt -c`), and runtime locale detection via `GLib.get_language_names()` in `i18n.py`'s `detect_locale()`.
 3. **CI/CD** — garuda-assistant has GitLab CI; shani-gui has no CI workflows.
 4. **Build-time config** — garuda-assistant uses CMake `config.h.in`; shani-gui uses `pyproject.toml` only.
 
@@ -136,11 +136,11 @@ Implementation priorities are per `../IMPLEMENTATION-ROADMAP.md` (master roadmap
 
 shani-gui already leads garuda's GUI fleet where it counts for this project: a fleet-management tab talking to `shani-platform`, a Chronoa AI-assistant integration tab, and a tabbed all-in-one design instead of garuda's one-app-per-task Qt fleet. (System-keyring credential storage is listed in our advantages but is *intended* only — `auth.py` is in-memory today, audit-verified 2026-09-17.) The items below port *patterns* from garuda-assistant, never its Qt6/C++ code — shani-gui is GTK4/Python and stays that way.
 
-1. **Test Suite** (P2, 3-5 days) — `tests/` is empty. Build real GTK4 object tests (`tests/test_application.py`, `tests/test_tabs.py` — construct each tab and verify activation), mock-HTTP tests for `api_client.py`, and keyring integration tests for `auth.py` (pattern: shani-fleet's 88 functional tests). Wire `python3 -m pytest tests/ -v` into CI (roadmap #17).
+1. **Test Suite** (P2, 3-5 days) — `tests/` has a foundation (`conftest.py`, `test_api_client.py`, `test_application.py`, `test_auth.py`, `test_tabs.py`) but needs expansion. Add mock-HTTP tests for `api_client.py`, keyring integration tests for `auth.py`, and broader tab coverage (pattern: shani-fleet's 88 functional tests). Wire `python3 -m pytest tests/ -v` into CI (roadmap #17).
 
-2. **pkexec Policy for Privileged Operations** (P2, 1 day) — Deploy, health, and service tabs need root but there's no elevation mechanism. Ship a PolicyKit policy (pattern: garuda-assistant's `org.garuda.garuda-assistant.pkexec.policy`) that whitelists the specific D-Bus methods / CLI commands needing elevation, and integrate it with the existing CLI wrappers (roadmap #18).
+2. **pkexec Policy for Privileged Operations** (P2, 1 day) — Deploy, health, and service tabs need root. A policy ships (`data/dev.shani8.gui.policy`, action id `org.shani.gui.pkexec`); the remaining work is to whitelist the specific D-Bus methods / CLI commands needing elevation and integrate it with the existing CLI wrappers (pattern: garuda-assistant's `org.garuda.garuda-assistant.pkexec.policy`; roadmap #18).
 
-3. **i18n / Translation Infrastructure** (P2, 2-3 days) — No internationalization today. Add a `po/` directory with POT extraction from the GTK4 `.ui` files and Python source, a `po/update_translations.sh` regen script, and runtime locale detection via GLib (pattern: garuda-assistant's `transifex.yml` + translation extraction; roadmap #19).
+3. **i18n / Translation Infrastructure — DONE** (verified 2026-09-19) — `po/` has filled `en.po`/`hi.po` (61 entries each, real Hindi translations), `po/update_translations.sh` regenerates the catalog via `xgettext`+`msgmerge`+`msgfmt -c` (script itself verified by reading + a real `babel` parse/compile of both `.po` files since `xgettext`/`msgfmt` binaries aren't installed in this sandbox and passwordless sudo isn't available to add them — a human with those tools should run the script for real at least once), and `i18n.py`'s `detect_locale()` does runtime locale detection via `GLib.get_language_names()` with `LANGUAGE`/`LC_ALL`/`LC_MESSAGES`/`LANG` env-var fallback. Remaining: more languages beyond en/hi, and CI wiring (see #4 below).
 
 4. **CI workflows** (P1, 1-2 days) — No CI exists. Wire `py_compile` + `pytest` + real GTK object construction into a workflow, and adopt the shared `shani-ci-commons` templates once they exist (roadmap #7) instead of hand-writing CI.
 

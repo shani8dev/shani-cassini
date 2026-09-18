@@ -18,6 +18,9 @@ from shani_gui.tabs.deploy import DeployTab
 from shani_gui.tabs.skills import SkillsTab
 from shani_gui.tabs.backup import BackupTab
 from shani_gui.tabs.chronoa import ChronoaTab
+from shani_gui.tabs.kernel import KernelTab
+from shani_gui.tabs.secureboot import SecureBootTab
+from shani_gui.tabs.drivers import DriversTab
 
 
 logger = logging.getLogger(__name__)
@@ -73,6 +76,9 @@ class ShaniosNotebook(Gtk.Notebook):
             (SkillsTab, "Skills", "applications-system", "Pulsar OS Sayri skills and plugin management"),
             (BackupTab, "Backup", "backup", "Backup management and restoration"),
             (ChronoaTab, "Chronoa", "audio-input-microphone", "Chronoa AI assistant configuration"),
+            (KernelTab, "Kernel", "system-run", "Kernel version and boot configuration"),
+            (SecureBootTab, "Secure Boot", "lock-secure", "Secure Boot and MOK key management"),
+            (DriversTab, "Drivers", "drive-removable-media", "PCI devices and kernel drivers"),
         ]
 
         for tab_class, label, icon_name, tooltip in tab_configs:

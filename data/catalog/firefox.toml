@@ -1,0 +1,11 @@
+id = "firefox"
+title = "Firefox"
+summary = "Private-by-default web browser"
+group = "Internet"
+flatpak = "org.mozilla.firefox"
+
+[packages]
+arch = "firefox"
+debian = "firefox"
+fedora = "firefox"
+suse = "MozillaFirefox"

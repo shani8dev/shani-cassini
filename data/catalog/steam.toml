@@ -1,0 +1,10 @@
+id = "steam"
+title = "Steam"
+summary = "Valve games and Proton"
+group = "Gaming"
+flatpak = "com.valvesoftware.Steam"
+
+[packages]
+arch = "steam"
+debian = "steam-installer"
+fedora = "steam"
