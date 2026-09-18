@@ -1,3 +1,0 @@
-PyGObject>=3.42.0
-httpx2>=0.18.0
-keyring>=24.2.0
