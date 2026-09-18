@@ -11,9 +11,14 @@ A native GTK4/Python GUI client for managing Shanios systems. Provides
 system overview, hardware/software info, service management, update
 management, fleet management, health diagnostics, deployment/rollback
 management, and Chronoa AI assistant integration. Uses PyGObject (GTK4),
-httpx2, and keyring for secure credential storage (intended design; audit-verified 2026-09-17 that `src/shani_gui/auth.py` currently stores tokens **in-memory** with a `TODO: Implement keyring storage for production`). Follows a modular
+httpx2, and keyring for secure credential storage (`src/shani_gui/auth.py`
+loads/saves via the system keyring with a graceful memory-only fallback
+when unavailable — commit `a77f5b7`, 2026-09-18; superseded the earlier
+in-memory-only implementation this file used to describe). Follows a modular
 tabbed architecture: ShaniosApplication → ShaniosMainWindow → ShaniosNotebook
-→ individual tabs (Overview, System, Chronoa, Fleet, Health, Deploy, Settings, etc.).
+→ individual tabs (Overview, System, Chronoa, Fleet, Health, Deploy, Settings,
+Drivers, Kernel, SecureBoot, etc. — the last three plus a TOML-driven app
+catalog were added 2026-09-18, commit `736bdce`).
 
 ## Empirical verification (mandatory)
 
@@ -22,6 +27,39 @@ verified by reading the diff, running `bash -n`, or confirming it "looks
 correct." It is verified by observing the actual behavior of the real
 thing in the real environment — built, served, deployed, signed, running.
 If you haven't seen it work (or fail) for real, it isn't verified.
+
+## Audit-verified known issues (confirmed present)
+
+**For the full narrative and before/after evidence, see the commits
+referenced below.** This section is deliberately just the current-state
+summary — what's true right now, not how it got that way.
+
+- **Credential storage — FIXED (2026-09-18, `a77f5b7`).** Was in-memory
+  only (`TODO: Implement keyring storage for production`); `auth.py` now
+  loads/saves through the system keyring with a probed, graceful
+  memory-only fallback when the keyring is genuinely unavailable.
+- **`about_dialog.py` had a literal `SyntaxError` in committed HEAD —
+  FIXED (2026-09-18, `1bc719e`).** `from typing override` (missing
+  `import`) — since `application.py` imports `about_dialog` at module
+  load time, the app could not have started at all from the previous
+  commit. Confirmed via `ast.parse()` on both the broken and fixed
+  versions before committing the fix.
+- **Stale duplicate `src/api_client.py` — removed (2026-09-18,
+  `1bc719e`).** A top-level 435-line duplicate of
+  `src/shani_gui/api_client.py`, one method behind (missing
+  `get_gateway_status()`, which `deploy.py`/`updates.py` actually call)
+  and unreferenced anywhere (grepped the whole tree before deleting).
+- **`tests/` was previously empty (roadmap item #17) — no longer true.**
+  Real tests now exist and construct real GTK4 objects
+  (`tests/test_tabs.py`, `tests/test_catalog.py`); `python3 -m pytest
+  tests/ -q` was 105 passed / 15 pre-existing failures (GTK
+  display/environment-dependent, confirmed via `git stash` A/B
+  comparison not to be a regression) as of 2026-09-18.
+- **i18n/translation infrastructure — filled in (2026-09-18,
+  `736bdce`).** `po/en.po`/`po/hi.po` now carry real translations (Hindi
+  entries confirmed genuine Devanagari text, not stub copies, 61 entries
+  each, in sync with the `.pot`) — this file previously said
+  translations were unfilled stubs; that's no longer accurate.
 
 ## Garuda Cross-Reference Findings (added 2026-09-17)
 
@@ -40,7 +78,7 @@ Based on a full scan of 29 garuda-linux repos mapped against shani (see `../garu
 
 ### 🔴 CRITICAL: Security
 
-1. **Credential storage** — The README documents "Secure credential storage using system keyring." This is the correct approach. Audit-verified 2026-09-17: the keyring is **not wired yet** — `src/shani_gui/auth.py` keeps tokens in memory (`TODO: Implement keyring storage for production`), so the README overstates the current state and roadmap item 1's "keyring integration tests for auth.py" cannot pass until the keyring work lands. Verify any change to auth/auth.py or api_client.py that touches credentials actually uses keyring, not plaintext storage or argv exposure. This mirrors the concern in shani-builder/AGENTS.md about secret handling via argv.
+1. **Credential storage — RESOLVED 2026-09-18 (`a77f5b7`), see "Audit-verified known issues" above.** The README's "secure credential storage using system keyring" claim is now accurate. Verify any future change to `auth.py`/`api_client.py` touching credentials still uses keyring, not plaintext storage or argv exposure — this mirrors the concern in shani-builder/AGENTS.md about secret handling via argv.
 
 ### 🟡 HIGH: CI/CD gap (shared across ALL repos)
 
