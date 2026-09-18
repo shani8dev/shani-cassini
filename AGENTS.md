@@ -61,6 +61,20 @@ summary — what's true right now, not how it got that way.
   each, in sync with the `.pot`) — this file previously said
   translations were unfilled stubs; that's no longer accurate.
 
+## Boundaries
+
+- ✅ **Always**: construct real GTK4 objects to verify a change (see "Rule:
+  verify by running, not reading" below) — a source read misses
+  runtime-only bugs, and this repo has already shipped a committed
+  `SyntaxError` that a real import would have caught immediately.
+- ⚠️ **Ask first**: deleting a file you believe is an unreferenced
+  duplicate — grep the whole tree for imports first (the `api_client.py`
+  removal above did this correctly; do the same before repeating it).
+- 🚫 **Never**: write credentials to plaintext or GSettings — this repo's
+  whole credential-storage fix was moving off exactly that pattern; a
+  regression back to it defeats the point of `auth.py`'s keyring
+  integration.
+
 ## Garuda Cross-Reference Findings (added 2026-09-17)
 
 Based on a full scan of 29 garuda-linux repos mapped against shani (see `../garuda-catalog.md` — 29 repos, not 34; several user-listed names don't exist). See `../garuda-mapping-analysis.md` and `../deep-analysis.md` for full details. garuda-assistant is the most directly comparable repo — both are system management desktop apps, but with fundamentally different architectures. (garuda-welcome and garuda-settings-manager are the other close counterparts.)
@@ -74,7 +88,7 @@ Based on a full scan of 29 garuda-linux repos mapped against shani (see `../garu
 | Cross-platform | Linux only (GTK4 native) | Linux only (Qt6 native) |
 | Native integration | Direct system calls, GIO, D-Bus | Direct system calls, pkexec policy |
 | Size | Lightweight (Python deps) | Lightweight (Qt6 deps) |
-| Configuration | GSettings + keyring (keyring intended; audit-verified 2026-09-17: `auth.py` stores in memory today) | Qt config + pkexec policy |
+| Configuration | GSettings + real system keyring (`auth.py`, fixed 2026-09-18) | Qt config + pkexec policy |
 
 ### 🔴 CRITICAL: Security
 
@@ -165,14 +179,14 @@ Re-scan against `../garuda-catalog.md` (29 repos, not 34). **Confirmed mapping: 
 
 - Fleet management tab (talks to shani-platform `/api/*` — garuda has no fleet concept)
 - Chronoa AI assistant integration tab (garuda-assistant has no AI assistant)
-- System keyring credential storage (garuda-assistant uses pkexec, no keyring) — *intended*, not yet shipped: `auth.py` holds credentials in-memory (audit-verified 2026-09-17) until TODO keyring integration lands
+- System keyring credential storage (garuda-assistant uses pkexec, no keyring) — shipped 2026-09-18 (`a77f5b7`), see "Audit-verified known issues" above
 - Tabbed all-in-one design vs garuda's one-app-per-task fleet
 
 ### 📋 Implementation Roadmap (2026-09-17)
 
 Implementation priorities are per `../IMPLEMENTATION-ROADMAP.md` (master roadmap for the whole shani ecosystem).
 
-shani-gui already leads garuda's GUI fleet where it counts for this project: a fleet-management tab talking to `shani-platform`, a Chronoa AI-assistant integration tab, and a tabbed all-in-one design instead of garuda's one-app-per-task Qt fleet. (System-keyring credential storage is listed in our advantages but is *intended* only — `auth.py` is in-memory today, audit-verified 2026-09-17.) The items below port *patterns* from garuda-assistant, never its Qt6/C++ code — shani-gui is GTK4/Python and stays that way.
+shani-gui already leads garuda's GUI fleet where it counts for this project: a fleet-management tab talking to `shani-platform`, a Chronoa AI-assistant integration tab, a tabbed all-in-one design instead of garuda's one-app-per-task Qt fleet, and real system-keyring credential storage (shipped 2026-09-18, no longer intended-only). The items below port *patterns* from garuda-assistant, never its Qt6/C++ code — shani-gui is GTK4/Python and stays that way.
 
 1. **Test Suite** (P2, 3-5 days) — `tests/` has a foundation (`conftest.py`, `test_api_client.py`, `test_application.py`, `test_auth.py`, `test_tabs.py`) but needs expansion. Add mock-HTTP tests for `api_client.py`, keyring integration tests for `auth.py`, and broader tab coverage (pattern: shani-fleet's 88 functional tests). Wire `python3 -m pytest tests/ -v` into CI (roadmap #17).
 
