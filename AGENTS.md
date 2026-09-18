@@ -15,6 +15,14 @@ httpx2, and keyring for secure credential storage (intended design; audit-verifi
 tabbed architecture: ShaniosApplication → ShaniosMainWindow → ShaniosNotebook
 → individual tabs (Overview, System, Chronoa, Fleet, Health, Deploy, Settings, etc.).
 
+## Empirical verification (mandatory)
+
+**Reading code is analysis; running code is verification.** A change is not
+verified by reading the diff, running `bash -n`, or confirming it "looks
+correct." It is verified by observing the actual behavior of the real
+thing in the real environment — built, served, deployed, signed, running.
+If you haven't seen it work (or fail) for real, it isn't verified.
+
 ## Garuda Cross-Reference Findings (added 2026-09-17)
 
 Based on a full scan of 29 garuda-linux repos mapped against shani (see `../garuda-catalog.md` — 29 repos, not 34; several user-listed names don't exist). See `../garuda-mapping-analysis.md` and `../deep-analysis.md` for full details. garuda-assistant is the most directly comparable repo — both are system management desktop apps, but with fundamentally different architectures. (garuda-welcome and garuda-settings-manager are the other close counterparts.)
