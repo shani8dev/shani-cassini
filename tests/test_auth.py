@@ -1,18 +1,42 @@
 """Tests for shani-gui auth manager.
 
-Note: keyring storage is not yet implemented (TODO in auth.py).
-Tests verify in-memory behavior. Keyring integration tests will be
-added once roadmap item for keyring storage lands.
+Covers in-memory auth behavior and keyring-backed credential storage
+(save/load round-trip, not-available fallback, logout clears).
 """
 
 import json
 import time
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
 
 from shani_gui.auth import AuthManager
+
+
+class MockKeyring:
+    """In-memory keyring mock for testing."""
+
+    def __init__(self):
+        self._store = {}
+
+    def get_password(self, service, username):
+        return self._store.get((service, username))
+
+    def set_password(self, service, username, password):
+        self._store[(service, username)] = password
+
+    def delete_password(self, service, username):
+        del self._store[(service, username)]
+
+    def get_credential(self, service, username):
+        password = self._store.get((service, username))
+        if password is None:
+            return None
+        cred = MagicMock()
+        cred.password = password
+        cred.username = username
+        return cred
 
 
 class MockTransport(httpx.BaseTransport):
@@ -180,6 +204,7 @@ class TestAuthManagerIsAuthenticated:
         """is_authenticated returns True after login."""
         am = AuthManager()
         am._is_authenticated = True
+        am._token_expiry = time.time() + 3600
         assert am.is_authenticated()
 
     def test_expired_token(self):
@@ -205,6 +230,7 @@ class TestAuthManagerGetters:
         am = AuthManager()
         am._access_token = "my-token"
         am._is_authenticated = True
+        am._token_expiry = time.time() + 3600
         assert am.get_access_token() == "my-token"
 
     def test_get_access_token_not_authenticated(self):
@@ -227,6 +253,7 @@ class TestAuthManagerGetters:
         am = AuthManager()
         am._org_id = "org-1"
         am._is_authenticated = True
+        am._token_expiry = time.time() + 3600
         assert am.get_org_id() == "org-1"
 
     def test_get_org_id_not_authenticated(self):
@@ -240,6 +267,7 @@ class TestAuthManagerGetters:
         am = AuthManager()
         am._username = "testuser"
         am._is_authenticated = True
+        am._token_expiry = time.time() + 3600
         assert am.get_username() == "testuser"
 
     def test_get_username_not_authenticated(self):
@@ -293,3 +321,60 @@ class TestAuthManagerClose:
         """close() does not raise."""
         am = AuthManager()
         am.close()
+
+
+class TestKeyringStorage:
+    """Test keyring-backed credential storage."""
+
+    def test_save_load_roundtrip(self):
+        """Credentials saved to keyring can be loaded by a new AuthManager."""
+        mock_kr = MockKeyring()
+        with patch("shani_gui.auth.keyring", mock_kr):
+            am = AuthManager(base_url="http://localhost:9999")
+            am._access_token = "tok-abc"
+            am._refresh_token = "tok-refresh"
+            am._token_expiry = time.time() + 3600
+            am._org_id = "org-1"
+            am._username = "user"
+            am._is_authenticated = True
+            am._keyring_available = True
+            am._save_credentials()
+
+            # Create new AuthManager - should load from keyring
+            am2 = AuthManager(base_url="http://localhost:9999")
+            assert am2._access_token == "tok-abc"
+            assert am2._refresh_token == "tok-refresh"
+            assert am2._org_id == "org-1"
+            assert am2._username == "user"
+            assert am2._is_authenticated is True
+
+    def test_keyring_not_available_fallback(self):
+        """App works with in-memory storage when keyring is unavailable."""
+        with patch("shani_gui.auth.keyring", None):
+            am = AuthManager(base_url="http://localhost:9999")
+            assert am._keyring_available is False
+            assert am._access_token is None
+            assert not am._is_authenticated
+
+    def test_logout_clears_keyring(self):
+        """Logout deletes credentials from keyring."""
+        mock_kr = MockKeyring()
+        with patch("shani_gui.auth.keyring", mock_kr):
+            am = AuthManager(base_url="http://localhost:9999")
+            am._access_token = "tok-abc"
+            am._refresh_token = "tok-refresh"
+            am._token_expiry = time.time() + 3600
+            am._org_id = "org-1"
+            am._username = "user"
+            am._is_authenticated = True
+            am._keyring_available = True
+            am._save_credentials()
+
+            # Verify credentials are in keyring
+            cred = mock_kr.get_credential("shani-gui", "credentials")
+            assert cred is not None
+
+            # Logout should clear keyring
+            am.logout()
+            cred = mock_kr.get_credential("shani-gui", "credentials")
+            assert cred is None

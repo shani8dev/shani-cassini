@@ -6,6 +6,11 @@ import time
 from typing import Optional
 import httpx  # type: ignore
 
+try:
+    import keyring
+except ImportError:  # pragma: no cover - keyring is a declared dependency
+    keyring = None  # type: ignore[assignment]
+
 
 logger = logging.getLogger(__name__)
 
@@ -13,9 +18,12 @@ logger = logging.getLogger(__name__)
 class AuthManager:
     """Manages authentication with the Shanios platform."""
 
+    _KEYRING_SERVICE = "shani-gui"
+    _KEYRING_ACCOUNT = "credentials"
+
     def __init__(self, base_url: str = "https://platform.shani.dev") -> None:
         """Initialize the authentication manager.
-        
+
         Args:
             base_url: Base URL for the Shanios platform API
         """
@@ -27,42 +35,91 @@ class AuthManager:
         self._username: Optional[str] = None
         self._is_authenticated: bool = False
         self._http_client = httpx.Client(timeout=30.0)
+        self._keyring_available = self._keyring_ready()
 
         # Try to load existing tokens from keyring
         self._load_credentials()
         logger.info("AuthManager initialized")
 
-    def _load_credentials(self) -> None:
-        """Load credentials from the system keyring."""
+    def _keyring_ready(self) -> bool:
+        """Probe whether the system keyring is accessible.
+
+        Returns False on any failure so the app falls back to
+        in-memory storage transparently.
+        """
+        if keyring is None:
+            return False
         try:
-            # Note: We are not using keyring in this version for simplicity in development
-            # In production, we would use keyring to store tokens securely
-            # For now, we'll skip keyring and rely on in-memory storage
-            # TODO: Implement keyring storage for production
-            pass
+            keyring.get_password(self._KEYRING_SERVICE, "__keyring_probe__")
+            return True
+        except Exception:
+            return False
+
+    def _load_credentials(self) -> None:
+        """Load credentials from the system keyring with graceful fallback."""
+        if not self._keyring_available:
+            logger.info("keyring not available; using memory-only storage")
+            return
+        try:
+            cred = keyring.get_credential(
+                self._KEYRING_SERVICE, self._KEYRING_ACCOUNT
+            )
+            if cred is not None and cred.password:
+                data = json.loads(cred.password)
+                self._access_token = data.get("access_token")
+                self._refresh_token = data.get("refresh_token")
+                self._token_expiry = data.get("token_expiry", 0)
+                self._org_id = data.get("org_id")
+                self._username = data.get("username")
+                self._is_authenticated = True
+                logger.info(
+                    f"Loaded credentials from keyring for user: {self._username}"
+                )
+            else:
+                logger.info("No credentials found in keyring")
         except Exception as e:
             logger.warning(f"Failed to load credentials from keyring: {e}")
-            self._clear_credentials()
 
     def _save_credentials(self) -> None:
         """Save credentials to the system keyring."""
+        if not self._keyring_available:
+            return
         try:
-            # Note: We are not using keyring in this version for simplicity in development
-            # In production, we would use keyring to store tokens securely
-            # For now, we'll skip keyring and rely on in-memory storage
-            # TODO: Implement keyring storage for production
-            pass
+            blob = json.dumps(
+                {
+                    "access_token": self._access_token,
+                    "refresh_token": self._refresh_token,
+                    "token_expiry": self._token_expiry,
+                    "org_id": self._org_id,
+                    "username": self._username,
+                }
+            )
+            keyring.set_password(
+                self._KEYRING_SERVICE, self._KEYRING_ACCOUNT, blob
+            )
+            logger.info(
+                f"Saved credentials to keyring for user: {self._username}"
+            )
         except Exception as e:
-            logger.error(f"Failed to save credentials to keyring: {e}")
+            logger.warning(f"Failed to save credentials to keyring: {e}")
 
     def _clear_credentials(self) -> None:
-        """Clear stored credentials."""
+        """Clear stored credentials from memory and keyring."""
         self._access_token = None
         self._refresh_token = None
         self._token_expiry = 0
         self._org_id = None
         self._username = None
         self._is_authenticated = False
+
+        if self._keyring_available:
+            try:
+                keyring.delete_password(
+                    self._KEYRING_SERVICE, self._KEYRING_ACCOUNT
+                )
+            except Exception:
+                pass
+
         logger.info("Cleared credentials")
 
     def login(self, username: str, password: str) -> bool:

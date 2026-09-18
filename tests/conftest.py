@@ -31,6 +31,31 @@ for _name, _mock in _mock_modules.items():
         sys.modules[_name] = _mock
 
 
+@pytest.fixture(autouse=True)
+def clear_keyring_entries():
+    """Clear shani-gui keyring entries before and after each test.
+
+    Ensures tests don't leak credentials into the real keyring or
+    interfere with each other via leftover keyring state.
+    """
+    _clear_shani_keyring()
+    yield
+    _clear_shani_keyring()
+
+
+def _clear_shani_keyring():
+    """Delete all shani-gui entries from the real keyring if available."""
+    try:
+        import keyring
+    except ImportError:
+        return
+    for account in ("credentials", "__keyring_probe__"):
+        try:
+            keyring.delete_password("shani-gui", account)
+        except Exception:
+            pass
+
+
 @pytest.fixture
 def app_state():
     """Provide a fresh AppState instance."""
