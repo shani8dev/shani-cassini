@@ -1,7 +1,7 @@
 """About dialog for the Shanios GUI."""
 
 import logging
-from typing override
+from typing import override
 
 from gi.repository import Gtk  # type: ignore
 
