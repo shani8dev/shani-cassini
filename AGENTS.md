@@ -61,6 +61,13 @@ summary — what's true right now, not how it got that way.
   each, in sync with the `.pot`) — this file previously said
   translations were unfilled stubs; that's no longer accurate.
 
+## Commit discipline
+
+Before composing a commit message, run `git log --oneline -20` (and `git
+log -5 -- <touched paths>` for the files you changed) and match the
+existing style — subject shape, scope prefixes, body detail level —
+rather than writing in a generic format.
+
 ## Boundaries
 
 - ✅ **Always**: construct real GTK4 objects to verify a change (see "Rule:
@@ -74,6 +81,7 @@ summary — what's true right now, not how it got that way.
   whole credential-storage fix was moving off exactly that pattern; a
   regression back to it defeats the point of `auth.py`'s keyring
   integration.
+- 🚫 **Never**: delete or skip a failing test to make a build/CI pass — fix the underlying code, not the test. A red test is signal; silencing it destroys the signal, not the bug.
 
 ## Garuda Cross-Reference Findings (added 2026-09-17)
 
@@ -137,6 +145,13 @@ app.run([])
 ```
 
 ## Required verification for a change
+
+A green `pytest` run proves construction and logic, not actual rendering
+— it's the floor, not the ceiling. For anything touching layout, styling,
+or widget visibility, also run `shani-gui` with a real display (or a
+headless Wayland/X compositor) and look at it, the same way `test_tabs.py`
+proves objects construct but a `SyntaxError` in `about_dialog.py` still
+shipped past it once because nothing had actually launched the app.
 
 ```bash
 # Syntax check
