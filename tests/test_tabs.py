@@ -1,5 +1,8 @@
 """Tests for shani-gui tab construction."""
 
+import subprocess
+import unittest.mock
+
 import pytest
 import gi
 from gi.repository import Gtk
@@ -378,3 +381,46 @@ class TestKernelTab:
         assert isinstance(count, int)
         assert count >= 0
         assert isinstance(sample, str)
+
+    def test_kernel_helpers_read_proc(self):
+        """_booted_slot and _modules_info read read-only /proc data."""
+        from shani_gui.tabs.kernel import _booted_slot, _modules_info
+        # booted slot parses subvol=@<slot> from /proc/cmdline; on this host
+        # it is either a real slot name or empty string — never raises.
+        slot = _booted_slot()
+        assert isinstance(slot, str)
+        count, sample = _modules_info()
+        assert isinstance(count, int)
+        assert count >= 0
+        assert isinstance(sample, str)
+
+
+class TestSecureBootGenEfiErrorPaths:
+    """Verify _run_gen_efi error enrichment (FileNotFoundError + timeout)."""
+
+    def _make_tab(self):
+        from shani_gui.tabs.secureboot import SecureBootTab
+        # bypass __init__ — we only exercise _run_gen_efi's error routing
+        tab = SecureBootTab.__new__(SecureBootTab)
+        tab._show_gen_efi_result = unittest.mock.MagicMock()
+        return tab
+
+    def test_filenotfound_enriches_and_surfaces(self):
+        tab = self._make_tab()
+        with unittest.mock.patch("shani_gui.tabs.secureboot.subprocess.run",
+                                 side_effect=FileNotFoundError("no pkexec")):
+            tab._run_gen_efi("enroll-mok", "Enroll", "detail")
+        tab._show_gen_efi_result.assert_called_once()
+        args = tab._show_gen_efi_result.call_args.args
+        assert args[2] is not None
+        assert isinstance(args[2], FileNotFoundError)
+
+    def test_timeout_enriches_and_surfaces(self):
+        import subprocess as sp
+        tab = self._make_tab()
+        with unittest.mock.patch("shani_gui.tabs.secureboot.subprocess.run",
+                                 side_effect=sp.TimeoutExpired(cmd="gen-efi", timeout=60)):
+            tab._run_gen_efi("cleanup-mok", "Cleanup", "detail")
+        tab._show_gen_efi_result.assert_called_once()
+        args = tab._show_gen_efi_result.call_args.args
+        assert isinstance(args[2], TimeoutError)
