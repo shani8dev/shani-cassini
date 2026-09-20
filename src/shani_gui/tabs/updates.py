@@ -10,10 +10,11 @@ import re
 from datetime import datetime
 from typing import override
 
-from gi.repository import Gtk  # type: ignore
+from gi.repository import GLib, Gtk  # type: ignore
 
 from shani_gui.state import AppState
 from shani_gui.auth import AuthManager
+from shani_gui.cli_wrapper import get_cli_wrapper
 
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,13 @@ class UpdatesTab(Gtk.Box):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self._state = state
         self._auth_manager = auth_manager
+        self._cli_wrapper = get_cli_wrapper()
+        # Guard against re-entrant channel-change requests. Set while
+        # _fetch_update_info programmatically selects the active channel so
+        # the toggled signal does not spawn a background set-channel call
+        # during construction.
+        self._channel_in_progress = False
+        self._suppress_channel_toggle = False
 
         self._setup_ui()
         logger.info("UpdatesTab initialized")
@@ -275,14 +283,34 @@ class UpdatesTab(Gtk.Box):
 
     def _on_channel_toggled(self, button: Gtk.CheckButton) -> None:
         """Handle update channel toggle.
-        
-        Args:
-            button: The toggled check button
+
+        Delegates the actual persist to a background thread so the UI
+        never blocks on shani-deploy. ``_channel_in_progress`` prevents
+        re-entrant requests; ``_suppress_channel_toggle`` is set while
+        ``_fetch_update_info`` programmatically selects the active channel
+        during construction so the toggled signal does not spawn a request.
         """
-        if button.get_active():
-            channel = button.get_label()
-            logger.info(f"Update channel changed to: {channel}")
-            # TODO: Save channel preference and update system configuration
+        if self._suppress_channel_toggle or self._channel_in_progress:
+            return
+        if not button.get_active():
+            return
+        channel = button.get_label()
+        if channel not in ("stable", "latest"):
+            return
+        logger.info(f"Update channel changed to: {channel}")
+        self._channel_in_progress = True
+        threading.Thread(
+            target=self._set_channel_thread, args=(channel,), daemon=True
+        ).start()
+
+    def _set_channel_thread(self, channel: str) -> None:
+        """Persist ``channel`` via the shared CLIWrapper."""
+        try:
+            self._cli_wrapper.set_update_channel(channel)
+        except Exception as e:
+            logger.error(f"Failed to set update channel {channel}: {e}")
+        finally:
+            self._channel_in_progress = False
 
     def _on_check_updates_clicked(self, button: Gtk.Button) -> None:
         """Handle check for updates button click."""
@@ -412,11 +440,17 @@ class UpdatesTab(Gtk.Box):
             if channel not in ["stable", "latest"]:
                 channel = "stable"
             
-            # Update channel radio buttons
-            if channel == "stable":
-                self._channel_stable.set_active(True)
-            else:
-                self._channel_latest.set_active(True)
+            # Update channel radio buttons. Suppress the toggled signal so the
+            # programmatic selection during construction does not spawn a
+            # background set-channel request.
+            self._suppress_channel_toggle = True
+            try:
+                if channel == "stable":
+                    self._channel_stable.set_active(True)
+                else:
+                    self._channel_latest.set_active(True)
+            finally:
+                self._suppress_channel_toggle = False
             
             # Check for actual updates using shani-deploy
             update_available = False
@@ -467,6 +501,65 @@ class UpdatesTab(Gtk.Box):
         except Exception as e:
             logger.error(f"Failed to fetch update info: {e}")
 
+    def _check_updates_thread(self) -> None:
+        """Run an update check in the background and surface the result.
+
+        Calls the shared ``CLIWrapper.get_deploy_updates`` (which owns the
+        ``shani-deploy --check --json`` invocation) and dispatches the UI
+        update through ``GLib.idle_add`` so the main loop owns all widget
+        mutation. A ``None`` result surfaces as an error dialog rather than
+        being silently swallowed.
+        """
+        try:
+            result = self._cli_wrapper.get_deploy_updates()
+        except Exception as e:
+            logger.error(f"Error checking for updates: {e}")
+            GLib.idle_add(self._show_check_error, str(e))
+            return
+        if result is None:
+            GLib.idle_add(self._show_check_error, "Failed to get update information from shani-deploy")
+            return
+        GLib.idle_add(self._display_check_result, result)
+
+    def _display_check_result(self, result: dict) -> None:
+        """Apply a successful update-check result to the UI (main loop)."""
+        try:
+            if not isinstance(result, dict):
+                self._show_check_error("Unexpected update-check response")
+                return
+            current_version = result.get("current_version", "Unknown")
+            latest_version = result.get("latest_version", "Unknown")
+            update_available = result.get("update_available", False)
+            if self._state:
+                self._state._current_version = current_version
+                self._state._latest_version = latest_version
+                self._state._update_available = update_available
+            self._progress_bar.set_text(
+                f"Current: {current_version} | Latest: {latest_version}"
+            )
+            self._progress_details.set_text(
+                "Update available" if update_available else "Up to date"
+            )
+        except Exception as e:
+            logger.error(f"Failed to display update result: {e}")
+
+    def _show_check_error(self, message: str) -> None:
+        """Surface an update-check failure as a visible error dialog."""
+        logger.error(f"Update check failed: {message}")
+        try:
+            dialog = Gtk.MessageDialog(
+                transient_for=self.get_root(),
+                modal=True,
+                message_type=Gtk.MessageType.ERROR,
+                buttons=Gtk.ButtonsType.OK,
+                text="Update Check Failed",
+            )
+            dialog.format_secondary_text(message)
+            dialog.connect("response", lambda d, r: d.destroy())
+            dialog.present()
+        except Exception as e:
+            logger.error(f"Failed to show update check error dialog: {e}")
+
     def _read_file_or_default(self, file_path: str, default: str, filter_chars: str) -> str:
         """Read a file or return a default value.
         
@@ -481,21 +574,16 @@ class UpdatesTab(Gtk.Box):
         try:
             if not os.path.exists(file_path):
                 return default
-            
+
             with open(file_path, 'r') as f:
                 content = f.read().strip()
-            
-            # Filter out unwanted characters
-            filtered = ''.join(c for c in content if c in filter_chars)
-            return filtered if filtered else default
-        except Exception:
+
+            # filter_chars is a regex the content must fully match (e.g.
+            # "stable|latest" for the channel file, "0-9" for the version).
+            # A bare character-filter would silently accept "abae" from
+            # "garbage!!!" against "stable|latest", so validate instead.
+            if re.fullmatch(filter_chars, content):
+                return content
             return default
-            
-            with open(file_path, 'r') as f:
-                content = f.read().strip()
-            
-            # Filter out unwanted characters
-            filtered = ''.join(c for c in content if c in filter_chars)
-            return filtered if filtered else default
         except Exception:
             return default

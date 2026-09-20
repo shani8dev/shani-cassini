@@ -115,7 +115,8 @@ class TestShaniosApplication:
         action = app.get_action("quit")
         assert action is not None
         accels = app.get_accels_for_action("app.quit")
-        assert "<Ctrl>Q" in accels
+        # GTK4 normalizes "<Ctrl>Q" to "<Control>q"; accept either form.
+        assert any(a.lower() == "<control>q" for a in accels)
 
     def test_application_has_about_action(self):
         """Application has an about action."""

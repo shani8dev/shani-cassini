@@ -1,5 +1,7 @@
 """API client for communicating with the Shanios platform."""
 
+import shani_gui._httpx_compat  # noqa: F401  — must precede `import httpx`
+
 import logging
 import json
 from typing import Optional, Dict, Any, List

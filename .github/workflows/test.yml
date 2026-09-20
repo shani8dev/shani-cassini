@@ -6,21 +6,36 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: shani-gui-ci
+  cancel-in-progress: true
+
 jobs:
+  lint:
+    name: Lint
+    uses: shani8dev/shani-ci-commons/.github/workflows/lint.yml@main
+    with:
+      language: all
+      python-version: "3.12"
+
   test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    name: Test
+    uses: shani8dev/shani-ci-commons/.github/workflows/test.yml@main
+    with:
+      language: python
+      test-command: |
+        # httpx2 (declared in pyproject) does not ship an `httpx` module;
+        # the codebase still does `import httpx`, so the alias shim in
+        # src/shani_gui/_httpx_compat.py must run first or pytest silently
+        # falls back to any legacy httpx on the runner.
+        python3 -c "import shani_gui._httpx_compat"
+        python3 -m pytest tests/ -v
+      python-version: "3.12"
+    needs: lint
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: |
-          pip install -e .
-          pip install pytest
-
-      - name: Run tests
-        run: python3 -m pytest tests/ -v
+  security:
+    name: Security
+    uses: shani8dev/shani-ci-commons/.github/workflows/security.yml@main
+    with:
+      scan-type: secrets
+    needs: lint

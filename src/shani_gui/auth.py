@@ -1,5 +1,7 @@
 """Authentication manager for the Shanios GUI."""
 
+import shani_gui._httpx_compat  # noqa: F401  — must precede `import httpx`
+
 import logging
 import json
 import time
@@ -188,7 +190,7 @@ class AuthManager:
 
     def get_access_token(self) -> Optional[str]:
         """Get the current access token.
-        
+
         Returns:
             Access token string or None if not authenticated
         """

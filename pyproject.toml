@@ -27,6 +27,12 @@ dependencies = [
     "httpx2>=0.18.0",
     "keyring>=24.2.0",
 ]
+# NOTE: the codebase still writes `import httpx` everywhere, but httpx2 does
+# NOT provide an `httpx` module — it ships `httpx2` plus an opt-in
+# `httpx2.alias_httpx()` that re-exports the API under the `httpx` name.
+# `src/shani_gui/_httpx_compat.py` runs that alias at import time so every
+# `import httpx` resolves to httpx2. Without it, a clean install (httpx2
+# only) dies with `ModuleNotFoundError: No module named 'httpx'`.
 
 [project.urls]
 Homepage = "https://github.com/shani8dev/shani-gui"

@@ -143,6 +143,7 @@ class TestAPIClientAuthEndpoints:
         """get_me fetches user info with auth header."""
         auth_manager._access_token = "token-123"
         auth_manager._is_authenticated = True
+        auth_manager._token_expiry = time.time() + 3600
         transport = MockTransport({
             "http://localhost:9999/auth/me": (200, {"username": "testuser"}),
         })

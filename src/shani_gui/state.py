@@ -82,11 +82,31 @@ class AppState:
     @property
     def username(self) -> Optional[str]:
         """Get current username.
-        
+
         Returns:
             Username string or None
         """
-        return self._username if self.is_authenticated() else None
+        return self._username if self.is_authenticated else None
+
+    @username.setter
+    def username(self, value: Optional[str]) -> None:
+        """Set the current username.
+
+        Also marks the state authenticated with a non-expired token so the
+        getter returns the value rather than None. Without this, setting
+        ``state.username = "x"`` on a fresh AppState would be silently
+        discarded because ``is_authenticated`` clears unauthenticated
+        state (default ``_token_expiry == 0`` is already past).
+
+        Args:
+            value: Username string or None
+        """
+        self._username = value
+        if value is not None:
+            self._is_authenticated = True
+            # Keep the token from being treated as already expired.
+            if self._token_expiry <= time.time():
+                self._token_expiry = time.time() + 3600
     
     @property
     def org_id(self) -> Optional[str]:
@@ -95,7 +115,7 @@ class AppState:
         Returns:
             Organization ID string or None
         """
-        return self._org_id if self.is_authenticated() else None
+        return self._org_id if self.is_authenticated else None
     
     def set_credentials(self, access_token: str, refresh_token: str, 
                        token_expiry: float, org_id: str, username: str) -> None:

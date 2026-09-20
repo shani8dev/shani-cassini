@@ -331,11 +331,29 @@ class CLIWrapper:
     
     def get_deploy_history(self) -> Optional[Dict[Any, Any]]:
         """Get deployment history.
-        
+
         Returns:
             Deployment history or None if failed
         """
         return self.run_shani_deploy(['--history', '--json'])
+
+    def set_update_channel(self, channel: str) -> Optional[Dict[Any, Any]]:
+        """Persist the update channel via shani-deploy --set-channel.
+
+        Only ``stable`` and ``latest`` are supported; any other value is
+        rejected client-side so the unsupported testing/unstable channels
+        can never be sent to shani-deploy.
+
+        Args:
+            channel: Channel name (``stable`` or ``latest``)
+
+        Returns:
+            Parsed output as dictionary, or None if failed
+        """
+        if channel not in ("stable", "latest"):
+            logger.error(f"Refusing to set unsupported channel: {channel}")
+            return None
+        return self.run_shani_deploy(['--set-channel', channel])
 
     # shani-backup integration methods
 

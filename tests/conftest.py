@@ -15,6 +15,10 @@ src_path = os.path.join(repo_root, "src")
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
+# Establish the httpx2-backed `httpx` alias before any test module does
+# `import httpx` — see shani_gui/_httpx_compat.py.
+import shani_gui._httpx_compat  # noqa: E402,F401
+
 # Mock external modules BEFORE test modules import them.
 # shani_chronoa and shani_backup are not installed in this environment.
 _mock_modules = {

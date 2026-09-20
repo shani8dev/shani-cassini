@@ -9,14 +9,13 @@ import os
 from datetime import datetime
 from typing import override
 
-from gi.repository import Gtk  # type: ignore
+from gi.repository import GLib, Gtk  # type: ignore
+from shani_gui.widgets import _gtk4_children
 
 from shani_gui.state import AppState
 from shani_gui.auth import AuthManager
 
-
 logger = logging.getLogger(__name__)
-
 
 class HealthTab(Gtk.Box):
     """Health tab showing system health diagnostics."""
@@ -356,27 +355,27 @@ class HealthTab(Gtk.Box):
                     if "check_type" not in health_data:
                         health_data["check_type"] = check_type[2:] if check_type.startswith("--") else check_type
                     # Update UI on main thread
-                    Gtk.idle_add(self._display_results, health_data)
+                    GLib.idle_add(self._display_results, health_data)
                 except json.JSONDecodeError as e:
                     logger.error(f"Failed to parse JSON from shani-health: {e}")
                     logger.debug(f"stdout: {result.stdout}")
                     logger.debug(f"stderr: {result.stderr}")
-                    Gtk.idle_add(self._display_error, f"Failed to parse health check output: {e}")
+                    GLib.idle_add(self._display_error, f"Failed to parse health check output: {e}")
             else:
                 # Error - show error message
                 logger.error(f"Health check failed with return code {result.returncode}: {result.stderr}")
-                Gtk.idle_add(self._display_error, f"Health check failed:\n{result.stderr}")
+                GLib.idle_add(self._display_error, f"Health check failed:\n{result.stderr}")
                 
         except subprocess.TimeoutExpired:
             logger.error("Health check timed out")
-            Gtk.idle_add(self._display_error, "Health check timed out after 60 seconds")
+            GLib.idle_add(self._display_error, "Health check timed out after 60 seconds")
         except Exception as e:
             logger.error(f"Error running health check: {e}")
-            Gtk.idle_add(self._display_error, f"Error running health check: {str(e)}")
+            GLib.idle_add(self._display_error, f"Error running health check: {str(e)}")
         finally:
             # Always hide progress bar and re-enable buttons
-            Gtk.idle_add(self._progress_bar.set_visible, False)
-            Gtk.idle_add(self._set_buttons_sensitive, True)
+            GLib.idle_add(self._progress_bar.set_visible, False)
+            GLib.idle_add(self._set_buttons_sensitive, True)
 
     def _display_results(self, result: dict) -> None:
         """Display health check results in the results text view.
@@ -477,8 +476,8 @@ class HealthTab(Gtk.Box):
         def set_sensitivity_recursive(widget):
             if isinstance(widget, Gtk.Button):
                 widget.set_sensitive(sensitive)
-            if isinstance(widget, Gtk.Container):
-                for child in widget.get_children():
+            if isinstance(widget, Gtk.Widget):
+                for child in _gtk4_children(widget):
                     set_sensitivity_recursive(child)
         
         # Find the controls card (first child of content box)

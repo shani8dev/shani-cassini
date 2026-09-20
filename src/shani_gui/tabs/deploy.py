@@ -10,15 +10,14 @@ import re
 from datetime import datetime
 from typing import override, Dict, Any
 
-from gi.repository import Gtk  # type: ignore
+from gi.repository import GLib, Gtk  # type: ignore
+from shani_gui.widgets import _gtk4_children
 
 from shani_gui.state import AppState
 from shani_gui.auth import AuthManager
 from shani_gui.api_client import APIClient
 
-
 logger = logging.getLogger(__name__)
-
 
 class DeployTab(Gtk.Box):
     """Deploy tab showing system deployment and rollback options."""
@@ -323,11 +322,11 @@ class DeployTab(Gtk.Box):
             else:
                 version_text = "Unknown"
                 
-            Gtk.idle_add(self._update_label_text, "deploy-current", version_text)
+            GLib.idle_add(self._update_label_text, "deploy-current", version_text)
             
         except Exception as e:
             logger.error(f"Error updating current version: {e}")
-            Gtk.idle_add(self._update_label_text, "deploy-current", "Error")
+            GLib.idle_add(self._update_label_text, "deploy-current", "Error")
 
     def _update_latest_version(self) -> None:
         """Update latest version and check for updates."""
@@ -373,20 +372,20 @@ class DeployTab(Gtk.Box):
                     update_available_text = "● Yes" if update_needed else "○ No"
             
             # Update UI on main thread
-            Gtk.idle_add(self._update_label_text, "deploy-latest", latest_version_text)
-            Gtk.idle_add(self._update_label_text, "deploy-update-available", update_available_text)
+            GLib.idle_add(self._update_label_text, "deploy-latest", latest_version_text)
+            GLib.idle_add(self._update_label_text, "deploy-update-available", update_available_text)
             
             # Update state
             if self._state:
-                Gtk.idle_add(setattr, self._state, '_update_available', update_needed)
+                GLib.idle_add(setattr, self._state, '_update_available', update_needed)
             
         except Exception as e:
             logger.error(f"Error updating latest version: {e}")
-            Gtk.idle_add(self._update_label_text, "deploy-latest", "Error")
-            Gtk.idle_add(self._update_label_text, "deploy-update-available", "Error")
+            GLib.idle_add(self._update_label_text, "deploy-latest", "Error")
+            GLib.idle_add(self._update_label_text, "deploy-update-available", "Error")
             # Update state to reflect error
             if self._state:
-                Gtk.idle_add(setattr, self._state, '_update_available', False)
+                GLib.idle_add(setattr, self._state, '_update_available', False)
 
     def _update_last_check(self) -> None:
         """Update last check time display."""
@@ -395,10 +394,10 @@ class DeployTab(Gtk.Box):
             # In a more sophisticated implementation, we might store when we last checked
             current_time = time.strftime("%H:%M:%S")
             status_text = f"{current_time}"
-            Gtk.idle_add(self._update_label_text, "deploy-last-check", status_text)
+            GLib.idle_add(self._update_label_text, "deploy-last-check", status_text)
         except Exception as e:
             logger.error(f"Error updating last check: {e}")
-            Gtk.idle_add(self._update_label_text, "deploy-last-check", "Error")
+            GLib.idle_add(self._update_label_text, "deploy-last-check", "Error")
 
     def _update_boot_slot(self) -> None:
         """Update boot slot display."""
@@ -414,10 +413,10 @@ class DeployTab(Gtk.Box):
             else:
                 status_text = "@unknown"
                 
-            Gtk.idle_add(self._update_label_text, "deploy-boot-slot", status_text)
+            GLib.idle_add(self._update_label_text, "deploy-boot-slot", status_text)
         except Exception as e:
             logger.error(f"Error updating boot slot: {e}")
-            Gtk.idle_add(self._update_label_text, "deploy-boot-slot", "@error")
+            GLib.idle_add(self._update_label_text, "deploy-boot-slot", "@error")
 
     def _update_rollback_available(self) -> None:
         """Update rollback availability display."""
@@ -437,10 +436,10 @@ class DeployTab(Gtk.Box):
             else:
                 status_text = "○ No"
                 
-            Gtk.idle_add(self._update_label_text, "deploy-rollback-available", status_text)
+            GLib.idle_add(self._update_label_text, "deploy-rollback-available", status_text)
         except Exception as e:
             logger.error(f"Error updating rollback availability: {e}")
-            Gtk.idle_add(self._update_label_text, "deploy-rollback-available", "○ Error")
+            GLib.idle_add(self._update_label_text, "deploy-rollback-available", "○ Error")
 
     def _update_channel_info(self) -> None:
         """Update channel information display."""
@@ -449,21 +448,21 @@ class DeployTab(Gtk.Box):
             current_channel = self._read_file_or_default("/etc/shani-channel", "stable", "stable|latest")
             if current_channel not in ["stable", "latest"]:
                 current_channel = "stable"
-            Gtk.idle_add(self._update_label_text, "deploy-current-channel", current_channel)
+            GLib.idle_add(self._update_label_text, "deploy-current-channel", current_channel)
             
             # Available channels (hardcoded for now)
-            Gtk.idle_add(self._update_label_text, "deploy-available-channels", "stable, testing, unstable")
+            GLib.idle_add(self._update_label_text, "deploy-available-channels", "stable, testing, unstable")
             
             # Auto-updates (check if shani-update service is enabled)
             auto_updates = self._is_service_enabled("shani-update.service")
             status_text = "Enabled" if auto_updates else "Disabled"
-            Gtk.idle_add(self._update_label_text, "deploy-auto-updates", status_text)
+            GLib.idle_add(self._update_label_text, "deploy-auto-updates", status_text)
             
         except Exception as e:
             logger.error(f"Error updating channel info: {e}")
-            Gtk.idle_add(self._update_label_text, "deploy-current-channel", "Error")
-            Gtk.idle_add(self._update_label_text, "deploy-available-channels", "Error")
-            Gtk.idle_add(self._update_label_text, "deploy-auto-updates", "Error")
+            GLib.idle_add(self._update_label_text, "deploy-current-channel", "Error")
+            GLib.idle_add(self._update_label_text, "deploy-available-channels", "Error")
+            GLib.idle_add(self._update_label_text, "deploy-auto-updates", "Error")
 
     def _update_gateway_status_indicator(self) -> None:
         """Update gateway status display."""
@@ -476,10 +475,10 @@ class DeployTab(Gtk.Box):
                     status_text = "Disconnected"
             else:
                 status_text = "Disconnected"
-            Gtk.idle_add(self._update_label_text, "deploy-gateway-status", status_text)
+            GLib.idle_add(self._update_label_text, "deploy-gateway-status", status_text)
         except Exception as e:
             logger.error(f"Error updating gateway status: {e}")
-            Gtk.idle_add(self._update_label_text, "deploy-gateway-status", "Error")
+            GLib.idle_add(self._update_label_text, "deploy-gateway-status", "Error")
 
     def _get_booted_subvol(self) -> str:
         """Get the booted subvolume.
@@ -641,8 +640,8 @@ class DeployTab(Gtk.Box):
         def find_widget(widget):
             if widget.get_name() == widget_name:
                 return widget
-            if isinstance(widget, Gtk.Container):
-                for child in widget.get_children():
+            if isinstance(widget, Gtk.Widget):
+                for child in _gtk4_children(widget):
                     found = find_widget(child)
                     if found:
                         return found
@@ -678,16 +677,16 @@ class DeployTab(Gtk.Box):
             self._update_latest_version()
             
             # Update last check time
-            Gtk.idle_add(self._update_label_text, "deploy-last-check", time.strftime("%H:%M:%S"))
+            GLib.idle_add(self._update_label_text, "deploy-last-check", time.strftime("%H:%M:%S"))
             
             # Re-enable button
-            Gtk.idle_add(button.set_sensitive, True)
-            Gtk.idle_add(button.set_label, "Check for Updates")
+            GLib.idle_add(button.set_sensitive, True)
+            GLib.idle_add(button.set_label, "Check for Updates")
             
         except Exception as e:
             logger.error(f"Error checking for updates: {e}")
-            Gtk.idle_add(button.set_sensitive, True)
-            Gtk.idle_add(button.set_label, "Check for Updates")
+            GLib.idle_add(button.set_sensitive, True)
+            GLib.idle_add(button.set_label, "Check for Updates")
             # Show error dialog
             error_dialog = Gtk.MessageDialog(
                 transient_for=self.get_root(),
@@ -741,17 +740,17 @@ class DeployTab(Gtk.Box):
             # Update UI on main thread
             if result.returncode == 0:
                 logger.info("Force redeploy successful")
-                Gtk.idle_add(self._show_redeploy_success)
+                GLib.idle_add(self._show_redeploy_success)
             else:
                 logger.error(f"Force redeploy failed: {result.stderr}")
-                Gtk.idle_add(self._show_redeploy_error, result.stderr)
+                GLib.idle_add(self._show_redeploy_error, result.stderr)
                 
         except subprocess.TimeoutExpired:
             logger.error("Force redeploy timed out")
-            Gtk.idle_add(self._show_redeploy_error, "Force redeploy timed out")
+            GLib.idle_add(self._show_redeploy_error, "Force redeploy timed out")
         except Exception as e:
             logger.error(f"Error during force redeploy: {e}")
-            Gtk.idle_add(self._show_redeploy_error, str(e))
+            GLib.idle_add(self._show_redeploy_error, str(e))
 
     def _show_redeploy_success(self) -> None:
         """Show redeploy success message."""
@@ -827,17 +826,17 @@ class DeployTab(Gtk.Box):
             # Update UI on main thread
             if result.returncode == 0:
                 logger.info("Rollback successful")
-                Gtk.idle_add(self._show_rollback_success)
+                GLib.idle_add(self._show_rollback_success)
             else:
                 logger.error(f"Rollback failed: {result.stderr}")
-                Gtk.idle_add(self._show_rollback_error, result.stderr)
+                GLib.idle_add(self._show_rollback_error, result.stderr)
                 
         except subprocess.TimeoutExpired:
             logger.error("Rollback timed out")
-            Gtk.idle_add(self._show_rollback_error, "Rollback timed out")
+            GLib.idle_add(self._show_rollback_error, "Rollback timed out")
         except Exception as e:
             logger.error(f"Error during rollback: {e}")
-            Gtk.idle_add(self._show_rollback_error, str(e))
+            GLib.idle_add(self._show_rollback_error, str(e))
 
     def _show_rollback_success(self) -> None:
         """Show rollback success message."""
@@ -904,14 +903,14 @@ class DeployTab(Gtk.Box):
             # Update UI on main thread
             if result.returncode == 0:
                 logger.info("License sync successful")
-                Gtk.idle_add(self._show_license_sync_success)
+                GLib.idle_add(self._show_license_sync_success)
             else:
                 logger.error(f"License sync failed: {result.stderr}")
-                Gtk.idle_add(self._show_license_sync_error, result.stderr)
+                GLib.idle_add(self._show_license_sync_error, result.stderr)
                 
         except Exception as e:
             logger.error(f"Error during license sync: {e}")
-            Gtk.idle_add(self._show_license_sync_error, str(e))
+            GLib.idle_add(self._show_license_sync_error, str(e))
 
     def _show_license_sync_success(self) -> None:
         """Show license sync success message."""
@@ -967,11 +966,11 @@ class DeployTab(Gtk.Box):
                 log_text = "Log file not found."
                 
             # Update UI on main thread
-            Gtk.idle_add(self._update_console_text, log_text)
+            GLib.idle_add(self._update_console_text, log_text)
             
         except Exception as e:
             logger.error(f"Error refreshing deploy logs: {e}")
-            Gtk.idle_add(self._update_console_text, f"Error refreshing logs: {str(e)}")
+            GLib.idle_add(self._update_console_text, f"Error refreshing logs: {str(e)}")
 
     def _update_console_text(self, text: str) -> None:
         """Update the console text view.

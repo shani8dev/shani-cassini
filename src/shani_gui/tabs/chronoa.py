@@ -1,20 +1,20 @@
 """Chronoa tab for the Shanios GUI — integrates shani-chronoa AI assistant."""
 
 import logging
+import os
 import subprocess
 import threading
-import os
+import time
 from typing import override
 
-from gi.repository import Gtk  # type: ignore
+from gi.repository import GLib, Gtk  # type: ignore
+from shani_gui.widgets import _gtk4_children
 
 from shani_gui.state import AppState
 from shani_gui.auth import AuthManager
 from shani_gui.cli_wrapper import get_cli_wrapper
 
-
 logger = logging.getLogger(__name__)
-
 
 class ChronoaTab(Gtk.Box):
     """Chronoa tab for the local AI assistant with privacy-first design."""
@@ -268,17 +268,17 @@ class ChronoaTab(Gtk.Box):
             stt_text = "Available" if stt else "Unavailable"
             tts_text = "Available" if tts else "Unavailable"
             privacy_text = "Enabled" if privacy else "Disabled"
-            Gtk.idle_add(self._update_label_text, "chronoa-assistant-status", status)
-            Gtk.idle_add(self._update_label_text, "chronoa-model", model)
-            Gtk.idle_add(self._update_label_text, "chronoa-stt", stt_text)
-            Gtk.idle_add(self._update_label_text, "chronoa-tts", tts_text)
-            Gtk.idle_add(self._update_label_text, "chronoa-privacy", privacy_text)
+            GLib.idle_add(self._update_label_text, "chronoa-assistant-status", status)
+            GLib.idle_add(self._update_label_text, "chronoa-model", model)
+            GLib.idle_add(self._update_label_text, "chronoa-stt", stt_text)
+            GLib.idle_add(self._update_label_text, "chronoa-tts", tts_text)
+            GLib.idle_add(self._update_label_text, "chronoa-privacy", privacy_text)
         except Exception:
-            Gtk.idle_add(self._update_label_text, "chronoa-assistant-status", "Unavailable")
-            Gtk.idle_add(self._update_label_text, "chronoa-model", "Unavailable")
-            Gtk.idle_add(self._update_label_text, "chronoa-stt", "Unavailable")
-            Gtk.idle_add(self._update_label_text, "chronoa-tts", "Unavailable")
-            Gtk.idle_add(self._update_label_text, "chronoa-privacy", "Unavailable")
+            GLib.idle_add(self._update_label_text, "chronoa-assistant-status", "Unavailable")
+            GLib.idle_add(self._update_label_text, "chronoa-model", "Unavailable")
+            GLib.idle_add(self._update_label_text, "chronoa-stt", "Unavailable")
+            GLib.idle_add(self._update_label_text, "chronoa-tts", "Unavailable")
+            GLib.idle_add(self._update_label_text, "chronoa-privacy", "Unavailable")
 
     def _update_config(self) -> None:
         """Update configuration display."""
@@ -294,15 +294,15 @@ class ChronoaTab(Gtk.Box):
                 whisper_model = "N/A"
                 voice = "N/A"
                 language = "en"
-            Gtk.idle_add(self._update_label_text, "chronoa-ollama-host", ollama_host)
-            Gtk.idle_add(self._update_label_text, "chronoa-whisper-model", whisper_model)
-            Gtk.idle_add(self._update_label_text, "chronoa-voice", voice)
-            Gtk.idle_add(self._update_label_text, "chronoa-language", language)
+            GLib.idle_add(self._update_label_text, "chronoa-ollama-host", ollama_host)
+            GLib.idle_add(self._update_label_text, "chronoa-whisper-model", whisper_model)
+            GLib.idle_add(self._update_label_text, "chronoa-voice", voice)
+            GLib.idle_add(self._update_label_text, "chronoa-language", language)
         except Exception:
-            Gtk.idle_add(self._update_label_text, "chronoa-ollama-host", "Unavailable")
-            Gtk.idle_add(self._update_label_text, "chronoa-whisper-model", "Unavailable")
-            Gtk.idle_add(self._update_label_text, "chronoa-voice", "Unavailable")
-            Gtk.idle_add(self._update_label_text, "chronoa-language", "Unavailable")
+            GLib.idle_add(self._update_label_text, "chronoa-ollama-host", "Unavailable")
+            GLib.idle_add(self._update_label_text, "chronoa-whisper-model", "Unavailable")
+            GLib.idle_add(self._update_label_text, "chronoa-voice", "Unavailable")
+            GLib.idle_add(self._update_label_text, "chronoa-language", "Unavailable")
 
     def _update_model_info(self) -> None:
         """Update model and hardware information."""
@@ -318,13 +318,13 @@ class ChronoaTab(Gtk.Box):
                 ram = 0
             gpu_text = "Yes" if gpu else "No"
             ram_text = f"{ram} MB" if ram > 0 else "Unknown"
-            Gtk.idle_add(self._update_label_text, "chronoa-hardware", profile)
-            Gtk.idle_add(self._update_label_text, "chronoa-gpu", gpu_text)
-            Gtk.idle_add(self._update_label_text, "chronoa-ram", ram_text)
+            GLib.idle_add(self._update_label_text, "chronoa-hardware", profile)
+            GLib.idle_add(self._update_label_text, "chronoa-gpu", gpu_text)
+            GLib.idle_add(self._update_label_text, "chronoa-ram", ram_text)
         except Exception:
-            Gtk.idle_add(self._update_label_text, "chronoa-hardware", "Unavailable")
-            Gtk.idle_add(self._update_label_text, "chronoa-gpu", "Unavailable")
-            Gtk.idle_add(self._update_label_text, "chronoa-ram", "Unavailable")
+            GLib.idle_add(self._update_label_text, "chronoa-hardware", "Unavailable")
+            GLib.idle_add(self._update_label_text, "chronoa-gpu", "Unavailable")
+            GLib.idle_add(self._update_label_text, "chronoa-ram", "Unavailable")
 
     def _update_privacy_status(self) -> None:
         """Update privacy status display."""
@@ -340,19 +340,19 @@ class ChronoaTab(Gtk.Box):
                 local_only = False
                 notifications = True
                 auto_start = False
-            Gtk.idle_add(self._update_label_text, "chronoa-privacy-mode", 
+            GLib.idle_add(self._update_label_text, "chronoa-privacy-mode", 
                         "Enabled" if privacy_mode else "Disabled")
-            Gtk.idle_add(self._update_label_text, "chronoa-local-only",
+            GLib.idle_add(self._update_label_text, "chronoa-local-only",
                         "Yes" if local_only else "No")
-            Gtk.idle_add(self._update_label_text, "chronoa-notifications",
+            GLib.idle_add(self._update_label_text, "chronoa-notifications",
                         "Enabled" if notifications else "Disabled")
-            Gtk.idle_add(self._update_label_text, "chronoa-auto-start",
+            GLib.idle_add(self._update_label_text, "chronoa-auto-start",
                         "Enabled" if auto_start else "Disabled")
         except Exception:
-            Gtk.idle_add(self._update_label_text, "chronoa-privacy-mode", "Unavailable")
-            Gtk.idle_add(self._update_label_text, "chronoa-local-only", "Unavailable")
-            Gtk.idle_add(self._update_label_text, "chronoa-notifications", "Unavailable")
-            Gtk.idle_add(self._update_label_text, "chronoa-auto-start", "Unavailable")
+            GLib.idle_add(self._update_label_text, "chronoa-privacy-mode", "Unavailable")
+            GLib.idle_add(self._update_label_text, "chronoa-local-only", "Unavailable")
+            GLib.idle_add(self._update_label_text, "chronoa-notifications", "Unavailable")
+            GLib.idle_add(self._update_label_text, "chronoa-auto-start", "Unavailable")
 
     def _update_label_text(self, widget_name: str, text: str) -> None:
         """Update a label widget by its name.
@@ -364,8 +364,8 @@ class ChronoaTab(Gtk.Box):
         def find_widget(widget):
             if widget.get_name() == widget_name:
                 return widget
-            if isinstance(widget, Gtk.Container):
-                for child in widget.get_children():
+            if isinstance(widget, Gtk.Widget):
+                for child in _gtk4_children(widget):
                     found = find_widget(child)
                     if found:
                         return found
@@ -393,9 +393,9 @@ class ChronoaTab(Gtk.Box):
                 profile = result.get("hardware_profile", "auto")
                 gpu = result.get("gpu_available", False)
                 ram = result.get("ram_mb", 0)
-                Gtk.idle_add(self._update_label_text, "chronoa-hardware", profile)
-                Gtk.idle_add(self._update_label_text, "chronoa-gpu", "Yes" if gpu else "No")
-                Gtk.idle_add(self._update_label_text, "chronoa-ram", f"{ram} MB" if ram > 0 else "Unknown")
+                GLib.idle_add(self._update_label_text, "chronoa-hardware", profile)
+                GLib.idle_add(self._update_label_text, "chronoa-gpu", "Yes" if gpu else "No")
+                GLib.idle_add(self._update_label_text, "chronoa-ram", f"{ram} MB" if ram > 0 else "Unknown")
         except Exception as e:
             logger.error(f"Error refreshing hardware info: {e}")
 

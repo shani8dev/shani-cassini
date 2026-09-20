@@ -8,15 +8,14 @@ import subprocess
 from typing import override
 
 from gi.repository import Gtk  # type: ignore
+from shani_gui.widgets import _gtk4_children
 
 from shani_gui.state import AppState
 from shani_gui.auth import AuthManager
 from shani_gui.api_client import APIClient
 from shani_gui.cli_wrapper import get_cli_wrapper
 
-
 logger = logging.getLogger(__name__)
-
 
 class SystemTab(Gtk.Box):
     """System tab showing detailed system information."""
@@ -316,12 +315,12 @@ class SystemTab(Gtk.Box):
                 # Update the service items
                 flow_box = self.get_root().get_descendant_by_name("services-flow-box")
                 if flow_box and isinstance(flow_box, Gtk.FlowBox):
-                    for child in flow_box.get_children():
+                    for child in _gtk4_children(flow_box):
                         if isinstance(child, Gtk.Box):
                             # Find the service ID label and status indicator in this box
                             service_id_label = None
                             status_indicator = None
-                            for grandchild in child.get_children():
+                            for grandchild in _gtk4_children(child):
                                 if isinstance(grandchild, Gtk.Label):
                                     name = grandchild.get_name()
                                     if name and name.startswith("service-id-"):
@@ -370,8 +369,8 @@ class SystemTab(Gtk.Box):
         def find_widget(widget):
             if widget.get_name() == widget_name:
                 return widget
-            if isinstance(widget, Gtk.Container):
-                for child in widget.get_children():
+            if isinstance(widget, Gtk.Widget):
+                for child in _gtk4_children(widget):
                     found = find_widget(child)
                     if found:
                         return found

@@ -4,13 +4,12 @@ import logging
 from typing import override
 
 from gi.repository import Gtk  # type: ignore
+from shani_gui.widgets import _gtk4_children
 
 from shani_gui.state import AppState
 from shani_gui.auth import AuthManager
 
-
 logger = logging.getLogger(__name__)
-
 
 class SkillsTab(Gtk.Box):
     """Skills tab for managing Pulsar OS Sayri skills."""
@@ -143,7 +142,7 @@ class SkillsTab(Gtk.Box):
         """Load and display skills from state or CLI wrapper."""
         try:
             # Clear existing items
-            for child in self._skills_list.get_children():
+            for child in _gtk4_children(self._skills_list):
                 self._skills_list.remove(child)
 
             # If we have CLI wrapper, try to get installed skills

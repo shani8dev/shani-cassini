@@ -7,15 +7,14 @@ import time
 import os
 from typing import override
 
-from gi.repository import Gtk  # type: ignore
+from gi.repository import GLib, Gtk  # type: ignore
+from shani_gui.widgets import _gtk4_children
 
 from shani_gui.state import AppState
 from shani_gui.auth import AuthManager
 from shani_gui.cli_wrapper import get_cli_wrapper
 
-
 logger = logging.getLogger(__name__)
-
 
 class BackupTab(Gtk.Box):
     """Backup tab showing Btrfs snapshots, backup status, and scheduler."""
@@ -234,9 +233,9 @@ class BackupTab(Gtk.Box):
                 location = result.get("backup_location", "/mnt/backups")
             else:
                 location = "Not configured"
-            Gtk.idle_add(self._update_label_text, "backup-location", location)
+            GLib.idle_add(self._update_label_text, "backup-location", location)
         except Exception:
-            Gtk.idle_add(self._update_label_text, "backup-location", "Unavailable")
+            GLib.idle_add(self._update_label_text, "backup-location", "Unavailable")
 
     def _update_scheduler_status(self) -> None:
         """Update scheduler status display."""
@@ -249,11 +248,11 @@ class BackupTab(Gtk.Box):
             else:
                 status_text = "Unavailable"
                 schedule_time = "N/A"
-            Gtk.idle_add(self._update_label_text, "backup-scheduler-enabled", status_text)
-            Gtk.idle_add(self._update_label_text, "backup-schedule-time", schedule_time)
+            GLib.idle_add(self._update_label_text, "backup-scheduler-enabled", status_text)
+            GLib.idle_add(self._update_label_text, "backup-schedule-time", schedule_time)
         except Exception:
-            Gtk.idle_add(self._update_label_text, "backup-scheduler-enabled", "Unavailable")
-            Gtk.idle_add(self._update_label_text, "backup-schedule-time", "Unavailable")
+            GLib.idle_add(self._update_label_text, "backup-scheduler-enabled", "Unavailable")
+            GLib.idle_add(self._update_label_text, "backup-schedule-time", "Unavailable")
 
     def _update_snapshot_info(self) -> None:
         """Update snapshot information display."""
@@ -266,11 +265,11 @@ class BackupTab(Gtk.Box):
             else:
                 count = 0
                 latest = "None"
-            Gtk.idle_add(self._update_label_text, "backup-snapshots-count", f"{count}")
-            Gtk.idle_add(self._update_label_text, "backup-current-snapshot", latest[:50])
+            GLib.idle_add(self._update_label_text, "backup-snapshots-count", f"{count}")
+            GLib.idle_add(self._update_label_text, "backup-current-snapshot", latest[:50])
         except Exception:
-            Gtk.idle_add(self._update_label_text, "backup-snapshots-count", "N/A")
-            Gtk.idle_add(self._update_label_text, "backup-current-snapshot", "N/A")
+            GLib.idle_add(self._update_label_text, "backup-snapshots-count", "N/A")
+            GLib.idle_add(self._update_label_text, "backup-current-snapshot", "N/A")
 
     def _update_tool_status(self) -> None:
         """Update tool status display."""
@@ -282,9 +281,9 @@ class BackupTab(Gtk.Box):
                 status_text = "Available"
             else:
                 status_text = "Available"
-            Gtk.idle_add(self._update_label_text, "backup-tool-status", status_text)
+            GLib.idle_add(self._update_label_text, "backup-tool-status", status_text)
         except Exception:
-            Gtk.idle_add(self._update_label_text, "backup-tool-status", "Error")
+            GLib.idle_add(self._update_label_text, "backup-tool-status", "Error")
 
     def _update_label_text(self, widget_name: str, text: str) -> None:
         """Update a label widget by its name.
@@ -296,8 +295,8 @@ class BackupTab(Gtk.Box):
         def find_widget(widget):
             if widget.get_name() == widget_name:
                 return widget
-            if isinstance(widget, Gtk.Container):
-                for child in widget.get_children():
+            if isinstance(widget, Gtk.Widget):
+                for child in _gtk4_children(widget):
                     found = find_widget(child)
                     if found:
                         return found
@@ -324,9 +323,9 @@ class BackupTab(Gtk.Box):
             if result and isinstance(result, dict):
                 snapshots = result.get("snapshots", [])
                 count = len(snapshots)
-                Gtk.idle_add(self._update_label_text, "backup-snapshots-count", f"{count}")
+                GLib.idle_add(self._update_label_text, "backup-snapshots-count", f"{count}")
                 latest = snapshots[-1] if snapshots else "None"
-                Gtk.idle_add(self._update_label_text, "backup-current-snapshot", latest[:50])
+                GLib.idle_add(self._update_label_text, "backup-current-snapshot", latest[:50])
         except Exception as e:
             logger.error(f"Error refreshing snapshots: {e}")
 

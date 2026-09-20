@@ -11,8 +11,12 @@ A native GUI client for managing Shanios systems, built with GTK 4 and Python.
 - Fleet management and enrollment
 - Health diagnostics and reporting
 - Deployment and rollback management
+- **Chronoa AI assistant integration** — local-first voice/text AI assistant tab
+  (see [shani-chronoa](https://github.com/shani8dev/shani-chronoa))
+- Drivers, kernel, and Secure Boot management
 - User authentication with Shanios platform
 - Secure credential storage using system keyring
+- Internationalization (English + Hindi, runtime locale detection)
 
 ## Requirements
 
@@ -86,11 +90,22 @@ The Shanios GUI follows a modular architecture:
 - **Main Application**: Handles application lifecycle and global state
 - **Main Window**: Contains the header bar and tabbed interface
 - **Notebook**: Manages the tabbed interface with individual tabs
-- **Tabs**: Each tab represents a functional area (Overview, System, Settings, etc.)
+- **Tabs**: Each tab represents a functional area. Current tabs:
+  - **Overview** — system summary, welcome content, quick actions
+  - **System** — hardware and software inventory
+  - **Chronoa** — AI assistant integration (GSettings-backed)
+  - **Fleet** — fleet management and enrollment
+  - **Health** — diagnostics and reporting
+  - **Deploy** — deployment and rollback management
+  - **Drivers** — driver management
+  - **Kernel** — kernel version and module management
+  - **SecureBoot** — Secure Boot status and MOK management
+  - **Settings** — preferences, notifications, team, security, billing, SSO
 - **State Management**: Centralized application state handling
 - **Authentication**: Manages user authentication with Shanios platform
 - **API Client**: Handles communication with Shanios platform services
 - **CLI Wrappers**: Wraps Shanios CLI tools for GUI usage
+- **App Catalog**: TOML-driven application catalog
 
 ## License
 

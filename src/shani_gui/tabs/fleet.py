@@ -7,15 +7,14 @@ import time
 import os
 from typing import override
 
-from gi.repository import Gtk  # type: ignore
+from gi.repository import GLib, Gtk  # type: ignore
+from shani_gui.widgets import _gtk4_children
 
 from shani_gui.state import AppState
 from shani_gui.auth import AuthManager
 from shani_gui.cli_wrapper import get_cli_wrapper
 
-
 logger = logging.getLogger(__name__)
-
 
 class FleetTab(Gtk.Box):
     """Fleet tab showing fleet management and enrollment status."""
@@ -355,11 +354,11 @@ class FleetTab(Gtk.Box):
                 status_text = "Not Enrolled"
                 
             # Update UI on main thread
-            Gtk.idle_add(self._update_label_text, "fleet-enrollment", status_text)
+            GLib.idle_add(self._update_label_text, "fleet-enrollment", status_text)
             
         except Exception as e:
             logger.error(f"Error updating enrollment status: {e}")
-            Gtk.idle_add(self._update_label_text, "fleet-enrollment", "Error")
+            GLib.idle_add(self._update_label_text, "fleet-enrollment", "Error")
 
     def _update_fleet_url(self) -> None:
         """Update fleet URL display."""
@@ -372,10 +371,10 @@ class FleetTab(Gtk.Box):
                         if line.startswith("FLEET_URL="):
                             fleet_url = line.split("=", 1)[1].strip().strip('"')
                             break
-            Gtk.idle_add(self._update_label_text, "fleet-url", fleet_url)
+            GLib.idle_add(self._update_label_text, "fleet-url", fleet_url)
         except Exception as e:
             logger.error(f"Error updating fleet URL: {e}")
-            Gtk.idle_add(self._update_label_text, "fleet-url", "Error")
+            GLib.idle_add(self._update_label_text, "fleet-url", "Error")
 
     def _update_last_heartbeat(self) -> None:
         """Update last heartbeat display."""
@@ -402,10 +401,10 @@ class FleetTab(Gtk.Box):
             else:
                 status_text = "Never"
                 
-            Gtk.idle_add(self._update_label_text, "fleet-heartbeat", status_text)
+            GLib.idle_add(self._update_label_text, "fleet-heartbeat", status_text)
         except Exception as e:
             logger.error(f"Error updating last heartbeat: {e}")
-            Gtk.idle_add(self._update_label_text, "fleet-heartbeat", "Error")
+            GLib.idle_add(self._update_label_text, "fleet-heartbeat", "Error")
 
     def _update_api_key_status(self) -> None:
         """Update API key status display."""
@@ -421,10 +420,10 @@ class FleetTab(Gtk.Box):
             else:
                 status_text = "Not configured"
                 
-            Gtk.idle_add(self._update_label_text, "fleet-api-key", status_text)
+            GLib.idle_add(self._update_label_text, "fleet-api-key", status_text)
         except Exception as e:
             logger.error(f"Error updating API key status: {e}")
-            Gtk.idle_add(self._update_label_text, "fleet-api-key", "Error")
+            GLib.idle_add(self._update_label_text, "fleet-api-key", "Error")
 
     def _update_machine_info(self) -> None:
         """Update machine information display."""
@@ -435,23 +434,23 @@ class FleetTab(Gtk.Box):
                 with open(machine_id_file, 'r') as f:
                     machine_id = f.read().strip()
                 machine_id_display = machine_id if machine_id else "None"
-                Gtk.idle_add(self._update_label_text, "machine-id", machine_id_display)
+                GLib.idle_add(self._update_label_text, "machine-id", machine_id_display)
             else:
-                Gtk.idle_add(self._update_label_text, "machine-id", "None")
+                GLib.idle_add(self._update_label_text, "machine-id", "None")
 
             # Hostname
             hostname = subprocess.check_output(['hostname'], text=True).strip()
-            Gtk.idle_add(self._update_label_text, "machine-hostname", hostname)
+            GLib.idle_add(self._update_label_text, "machine-hostname", hostname)
 
             # Platform
             platform = subprocess.check_output(['uname', '-m'], text=True).strip()
-            Gtk.idle_add(self._update_label_text, "machine-platform", platform)
+            GLib.idle_add(self._update_label_text, "machine-platform", platform)
 
             # Last seen (same as last heartbeat for now)
             self._update_last_heartbeat()  # This will update machine-last-seen too
 
             # Tags (placeholder for now)
-            Gtk.idle_add(self._update_label_text, "machine-tags", "None")
+            GLib.idle_add(self._update_label_text, "machine-tags", "None")
             
         except Exception as e:
             logger.error(f"Error updating machine info: {e}")
@@ -466,8 +465,8 @@ class FleetTab(Gtk.Box):
         def find_widget(widget):
             if widget.get_name() == widget_name:
                 return widget
-            if isinstance(widget, Gtk.Container):
-                for child in widget.get_children():
+            if isinstance(widget, Gtk.Widget):
+                for child in _gtk4_children(widget):
                     found = find_widget(child)
                     if found:
                         return found
@@ -560,7 +559,7 @@ class FleetTab(Gtk.Box):
             logger.info("Starting fleet enrollment process")
             
             # Update UI to show enrollment in progress
-            Gtk.idle_add(self._update_label_text, "fleet-enrollment", "Enrolling...")
+            GLib.idle_add(self._update_label_text, "fleet-enrollment", "Enrolling...")
             
             # Run the enrollment command
             result = subprocess.run(
@@ -574,17 +573,17 @@ class FleetTab(Gtk.Box):
             # Update UI on main thread
             if result.returncode == 0:
                 logger.info("Fleet enrollment successful")
-                Gtk.idle_add(self._enrollment_success)
+                GLib.idle_add(self._enrollment_success)
             else:
                 logger.error(f"Fleet enrollment failed: {result.stderr}")
-                Gtk.idle_add(self._enrollment_failure, result.stderr)
+                GLib.idle_add(self._enrollment_failure, result.stderr)
                 
         except subprocess.TimeoutExpired:
             logger.error("Fleet enrollment timed out")
-            Gtk.idle_add(self._enrollment_failure, "Enrollment timed out")
+            GLib.idle_add(self._enrollment_failure, "Enrollment timed out")
         except Exception as e:
             logger.error(f"Error during fleet enrollment: {e}")
-            Gtk.idle_add(self._enrollment_failure, str(e))
+            GLib.idle_add(self._enrollment_failure, str(e))
 
     def _enrollment_success(self) -> None:
         """Handle successful enrollment."""
@@ -643,14 +642,14 @@ class FleetTab(Gtk.Box):
             # Update UI on main thread
             if result.returncode == 0:
                 logger.info("Fleet status check completed")
-                Gtk.idle_add(self._show_status_dialog, result.stdout)
+                GLib.idle_add(self._show_status_dialog, result.stdout)
             else:
                 logger.error(f"Fleet status check failed: {result.stderr}")
-                Gtk.idle_add(self._show_error_dialog, f"Status check failed:\n{result.stderr}")
+                GLib.idle_add(self._show_error_dialog, f"Status check failed:\n{result.stderr}")
                 
         except Exception as e:
             logger.error(f"Error during fleet status check: {e}")
-            Gtk.idle_add(self._show_error_dialog, f"Error during status check:\n{str(e)}")
+            GLib.idle_add(self._show_error_dialog, f"Error during status check:\n{str(e)}")
 
     def _show_status_dialog(self, status_output: str) -> None:
         """Show fleet status in a dialog.
@@ -715,11 +714,11 @@ class FleetTab(Gtk.Box):
                 log_text = "Log file not found."
                 
             # Update UI on main thread
-            Gtk.idle_add(self._update_console_text, log_text)
+            GLib.idle_add(self._update_console_text, log_text)
             
         except Exception as e:
             logger.error(f"Error fetching fleet logs: {e}")
-            Gtk.idle_add(self._update_console_text, f"Error fetching logs: {str(e)}")
+            GLib.idle_add(self._update_console_text, f"Error fetching logs: {str(e)}")
 
     def _update_console_text(self, text: str) -> None:
         """Update the console text view.
@@ -755,17 +754,17 @@ class FleetTab(Gtk.Box):
             # Update UI on main thread
             if result.returncode == 0:
                 logger.info("Fleet health check completed successfully")
-                Gtk.idle_add(self._show_health_check_dialog, result.stdout, True)
+                GLib.idle_add(self._show_health_check_dialog, result.stdout, True)
             else:
                 logger.warning(f"Fleet health check completed with issues: {result.stderr}")
                 output = result.stdout
                 if result.stderr:
                     output += f"\n\nErrors:\n{result.stderr}"
-                Gtk.idle_add(self._show_health_check_dialog, output, False)
+                GLib.idle_add(self._show_health_check_dialog, output, False)
                 
         except Exception as e:
             logger.error(f"Error during fleet health check: {e}")
-            Gtk.idle_add(self._show_error_dialog, f"Error during health check:\n{str(e)}")
+            GLib.idle_add(self._show_error_dialog, f"Error during health check:\n{str(e)}")
 
     def _show_health_check_dialog(self, output: str, success: bool) -> None:
         """Show fleet health check results in a dialog.
@@ -830,17 +829,17 @@ class FleetTab(Gtk.Box):
             # Update UI on main thread
             if result.get("status") == "success":
                 logger.info(f"Gateway command executed successfully: {command}")
-                Gtk.idle_add(self._update_label_text, "gateway-status", "Connected")
-                Gtk.idle_add(self._show_command_result, command, result)
+                GLib.idle_add(self._update_label_text, "gateway-status", "Connected")
+                GLib.idle_add(self._show_command_result, command, result)
             else:
                 logger.error(f"Gateway command failed: {result.get('error', 'Unknown error')}")
-                Gtk.idle_add(self._update_label_text, "gateway-status", "Error")
-                Gtk.idle_add(self._show_command_result, command, result, False)
+                GLib.idle_add(self._update_label_text, "gateway-status", "Error")
+                GLib.idle_add(self._show_command_result, command, result, False)
 
         except Exception as e:
             logger.error(f"Error sending gateway command: {e}")
-            Gtk.idle_add(self._update_label_text, "gateway-status", "Error")
-            Gtk.idle_add(self._show_error_dialog, f"Error sending command:\n{str(e)}")
+            GLib.idle_add(self._update_label_text, "gateway-status", "Error")
+            GLib.idle_add(self._show_error_dialog, f"Error sending command:\n{str(e)}")
 
     def _show_command_result(self, command: str, result: dict, success: bool = True) -> None:
         """Show command result in a dialog.

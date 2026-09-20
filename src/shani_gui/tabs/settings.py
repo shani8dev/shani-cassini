@@ -6,15 +6,14 @@ import os
 from typing import override
 
 from gi.repository import Gtk  # type: ignore
+from shani_gui.widgets import _gtk4_children
 
 from shani_gui.state import AppState
 from shani_gui.auth import AuthManager
 from shani_gui.api_client import APIClient
 from shani_gui.cli_wrapper import get_cli_wrapper
 
-
 logger = logging.getLogger(__name__)
-
 
 class SettingsTab(Gtk.Box):
     """Settings tab for configuring system preferences."""
@@ -70,7 +69,6 @@ class SettingsTab(Gtk.Box):
         content_box.append(system_card)
 
         # Fetch initial data
-        self._update_data()
         """Fetch real data and update the UI elements."""
         logger.debug("Fetching real data for settings tab")
         
@@ -243,8 +241,8 @@ class SettingsTab(Gtk.Box):
         def find_widget(widget):
             if widget.get_name() == widget_name:
                 return widget
-            if isinstance(widget, Gtk.Container):
-                for child in widget.get_children():
+            if isinstance(widget, Gtk.Widget):
+                for child in _gtk4_children(widget):
                     found = find_widget(child)
                     if found:
                         return found
@@ -526,9 +524,30 @@ class SettingsTab(Gtk.Box):
         time_label.set_halign(Gtk.Align.START)
         box.append(time_label)
         
-        self._update_datetime_label(button)
-        
+        self._update_datetime_box_labels(date_label, time_label)
+
         return box
+
+    def _update_datetime_box_labels(
+        self, date_label: Gtk.Label, time_label: Gtk.Label
+    ) -> None:
+        """Update the date and time labels in the datetime box.
+
+        Replaces the old button-based ``_update_datetime_label``; the box
+        exposes its text via ``Gtk.Label`` widgets rather than a button, so
+        the labels are updated directly instead of calling a method that
+        expects a ``Gtk.Button`` (which does not exist in this scope).
+        """
+        try:
+            import datetime
+
+            now = datetime.datetime.now()
+            date_label.set_text(now.strftime("%a %b %d %Y"))
+            time_label.set_text(now.strftime("%I:%M %p"))
+        except Exception as e:
+            logger.error(f"Failed to update datetime labels: {e}")
+            date_label.set_text("Jan 01 2025")
+            time_label.set_text("12:00 AM")
 
     def _create_keyboard_box(self) -> Gtk.Box:
         """Create keyboard settings box."""

@@ -5,7 +5,7 @@ import subprocess
 import threading
 from typing import override
 
-from gi.repository import Gtk  # type: ignore
+from gi.repository import GLib, Gtk  # type: ignore
 
 from shani_gui.state import AppState
 from shani_gui.auth import AuthManager
@@ -124,11 +124,11 @@ class ServicesTab(Gtk.Box):
             services_data = self._get_all_services()
             
             # Update UI on main thread
-            Gtk.idle_add(self._update_services_list, services_data)
+            GLib.idle_add(self._update_services_list, services_data)
             
         except Exception as e:
             logger.error(f"Error fetching services: {e}")
-            Gtk.idle_add(self._show_error, f"Failed to fetch services: {e}")
+            GLib.idle_add(self._show_error, f"Failed to fetch services: {e}")
 
     def _get_all_services(self) -> list[dict]:
         """Get information about all system services.
@@ -414,14 +414,14 @@ class ServicesTab(Gtk.Box):
             # Update UI on main thread
             if result.returncode == 0:
                 logger.info(f"Successfully {action}ed service {service_id}")
-                Gtk.idle_add(self._service_control_success, service_id, action, button)
+                GLib.idle_add(self._service_control_success, service_id, action, button)
             else:
                 logger.error(f"Failed to {action} service {service_id}: {result.stderr}")
-                Gtk.idle_add(self._service_control_error, service_id, action, result.stderr, button)
+                GLib.idle_add(self._service_control_error, service_id, action, result.stderr, button)
                 
         except Exception as e:
             logger.error(f"Error controlling service {service_id}: {e}")
-            Gtk.idle_add(self._service_control_error, service_id, action, str(e), button)
+            GLib.idle_add(self._service_control_error, service_id, action, str(e), button)
 
     def _service_control_success(self, service_id: str, action: str, button: Gtk.ToggleButton) -> None:
         """Handle successful service control.

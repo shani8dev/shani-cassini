@@ -54,8 +54,9 @@ class ShaniosNotebook(Gtk.Notebook):
         self.set_show_tabs(True)
         self.set_show_border(True)
         self.set_scrollable(True)
-        # Enable swipe gestures on touchscreens
-        self.set_enable_popup(True)
+        # GTK4 removed Gtk.Notebook's right-click tab popup entirely
+        # (set_enable_popup / popup_enable / popup_disable are all GTK3
+        # names and absent from this build) — do not re-add here.
 
         logger.debug("Notebook properties configured")
 
@@ -91,8 +92,8 @@ class ShaniosNotebook(Gtk.Notebook):
                 
                 # Append tab to notebook
                 self.append_page(tab_instance, tab_label_box)
-                self.set_tab_tooltip(self.get_nth_page(self.get_n_pages() - 1), tooltip)
-                
+                tab_instance.set_tooltip_text(tooltip)
+
                 logger.debug(f"Created tab: {label}")
             except Exception as e:
                 logger.error(f"Failed to create tab {label}: {e}")
@@ -102,8 +103,7 @@ class ShaniosNotebook(Gtk.Notebook):
                 error_tab.append(error_label)
                 tab_label_box = self._create_tab_label(label, "error")
                 self.append_page(error_tab, tab_label_box)
-                self.set_tab_tooltip(self.get_nth_page(self.get_n_pages() - 1), 
-                                   f"Failed to load {label} tab")
+                error_tab.set_tooltip_text(f"Failed to load {label} tab")
 
         logger.info(f"Created {self.get_n_pages()} tabs")
 

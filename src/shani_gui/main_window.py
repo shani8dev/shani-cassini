@@ -49,6 +49,19 @@ class ShaniosMainWindow(Gtk.ApplicationWindow):
 
         logger.debug("Window properties configured")
 
+    # GTK4 removed Gtk.Window.get_default_width/get_default_height (they
+    # were GTK3 aliases of get_default_size). Provide thin accessors so
+    # callers/tests can query the configured default size.
+    def get_default_width(self) -> int:
+        """Return the configured default window width."""
+        width, _height = self.get_default_size()
+        return width
+
+    def get_default_height(self) -> int:
+        """Return the configured default window height."""
+        _width, height = self.get_default_size()
+        return height
+
     def _apply_css(self) -> None:
         """Apply CSS styling to the window."""
         css_provider = Gtk.CssProvider()

@@ -8,6 +8,7 @@ from gi.repository import Gio, Gtk  # type: ignore
 from shani_gui.auth import AuthManager
 from shani_gui.state import AppState
 from shani_gui.main_window import ShaniosMainWindow
+from shani_gui.status_icon import StatusIcon
 
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,14 @@ class ShaniosApplication(Gtk.Application):
         self.add_action(about_action)
 
         logger.debug("Application actions created")
+
+    def get_action(self, name: str) -> Gio.SimpleAction | None:
+        """Look up a registered action by name.
+
+        Gtk.Application does not expose ``get_action`` (a GTK3 API); the
+        GTK4 equivalent is ``lookup_action`` on the Gio.ActionMap mixin.
+        """
+        return self.lookup_action(name)
 
     def _on_about(self, _action: Gio.SimpleAction, _parameter: object | None) -> None:
         """Show about dialog."""

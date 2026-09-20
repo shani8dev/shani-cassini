@@ -208,10 +208,12 @@ class TestNotebook:
             if tab_label is not None:
                 label_text = ""
                 if isinstance(tab_label, Gtk.Box):
-                    for child in tab_label.get_children():
+                    child = tab_label.get_first_child()
+                    while child is not None:
                         if isinstance(child, Gtk.Label):
                             label_text = child.get_label()
                             break
+                        child = child.get_next_sibling()
                 assert label_text == expected, (
                     f"Tab {i}: expected '{expected}', got '{label_text}'"
                 )
@@ -424,3 +426,167 @@ class TestSecureBootGenEfiErrorPaths:
         tab._show_gen_efi_result.assert_called_once()
         args = tab._show_gen_efi_result.call_args.args
         assert isinstance(args[2], TimeoutError)
+
+
+class TestUpdatesTabCliWrapper:
+    """Prove UpdatesTab wires the shared CLIWrapper instead of duplicating
+    shani-deploy subprocess logic."""
+
+    def _make_tab(self):
+        from shani_gui.tabs.updates import UpdatesTab
+        from shani_gui.state import AppState
+        from shani_gui.auth import AuthManager
+        return UpdatesTab(state=AppState(), auth_manager=AuthManager())
+
+    def test_cli_wrapper_is_initialized(self):
+        """The latent missing-init bug: _cli_wrapper must be assigned in
+        __init__ so _fetch_update_info can call it."""
+        from shani_gui.cli_wrapper import CLIWrapper
+        tab = self._make_tab()
+        assert isinstance(tab._cli_wrapper, CLIWrapper)
+
+    def test_check_uses_shared_wrapper_not_subprocess(self):
+        """Check for Updates must call CLIWrapper.get_deploy_updates, which
+        internally runs shani-deploy --check --json."""
+        from unittest.mock import patch, MagicMock
+        tab = self._make_tab()
+        with patch.object(
+            tab._cli_wrapper, "get_deploy_updates"
+        ) as mock_check:
+            mock_check.return_value = {
+                "current_version": "20260910",
+                "latest_version": "20260912",
+                "update_available": True,
+            }
+            with patch("shani_gui.tabs.updates.GLib.idle_add") as mock_idle:
+                mock_idle.side_effect = lambda fn, *a, **k: fn(*a, **k)
+                tab._check_updates_thread()
+        mock_check.assert_called_once_with()
+        assert mock_check.call_args == ((), {})
+
+    def test_check_surfaces_failure_visibly(self):
+        """A failed/None result must surface an error dialog, not silently
+        swallow the failure."""
+        from unittest.mock import patch, MagicMock
+        tab = self._make_tab()
+        with patch.object(
+            tab._cli_wrapper, "get_deploy_updates", return_value=None
+        ):
+            with patch.object(tab, "_show_check_error") as mock_error:
+                with patch("shani_gui.tabs.updates.GLib.idle_add") as mock_idle:
+                    mock_idle.side_effect = lambda fn, *a, **k: fn(*a, **k)
+                    tab._check_updates_thread()
+        mock_error.assert_called_once()
+        assert isinstance(mock_error.call_args.args[0], str)
+
+
+class TestUpdatesTabChannelContract:
+    """Prove channel selection is restricted to stable/latest and wired to
+    shani-deploy --set-channel via CLIWrapper."""
+
+    def _make_tab(self):
+        from shani_gui.tabs.updates import UpdatesTab
+        from shani_gui.state import AppState
+        from shani_gui.auth import AuthManager
+        return UpdatesTab(state=AppState(), auth_manager=AuthManager())
+
+    def test_set_update_channel_rejects_unsupported(self):
+        """testing/unstable must never reach shani-deploy."""
+        from unittest.mock import patch
+        tab = self._make_tab()
+        with patch.object(
+            tab._cli_wrapper, "run_shani_deploy"
+        ) as mock_deploy:
+            result = tab._cli_wrapper.set_update_channel("testing")
+            assert result is None
+            mock_deploy.assert_not_called()
+
+    def test_set_channel_constructs_correct_command(self):
+        """set_update_channel must call shani-deploy --set-channel <chan>
+        via the shared wrapper."""
+        from unittest.mock import patch, MagicMock
+        from shani_gui.cli_wrapper import CLIWrapper
+        wrapper = CLIWrapper()
+        with patch.object(
+            wrapper, "run_shani_deploy"
+        ) as mock_run:
+            mock_run.return_value = {"ok": True}
+            result = wrapper.set_update_channel("latest")
+            assert result == {"ok": True}
+            args, _ = mock_run.call_args
+            # run_shani_deploy owns the binary name; the wrapper contract is
+            # to pass only the trailing args.
+            assert args[0] == ["--set-channel", "latest"]
+
+    def test_channel_toggle_persists_via_wrapper(self):
+        """Toggling the latest checkbutton must invoke set_update_channel
+        in a background thread via CLIWrapper."""
+        from unittest.mock import patch, MagicMock
+        tab = self._make_tab()
+        with patch.object(
+            tab._cli_wrapper, "set_update_channel"
+        ) as mock_set:
+            with patch("shani_gui.tabs.updates.GLib.idle_add") as mock_idle:
+                mock_idle.side_effect = lambda fn, *a, **k: fn(*a, **k)
+                tab._channel_latest.set_active(True)
+                # Wait for the daemon thread to call the wrapper.
+                import time
+                deadline = time.time() + 2.0
+                while time.time() < deadline and not mock_set.called:
+                    time.sleep(0.01)
+                assert mock_set.called
+                assert mock_set.call_args.args == ("latest",)
+
+    def test_programmatic_init_does_not_start_channel_request(self):
+        """_fetch_update_info() must select the channel without starting
+        _set_channel_thread or setting _channel_in_progress, so a
+        subsequent user toggle is accepted."""
+        from unittest.mock import patch, MagicMock
+        tab = self._make_tab()
+        with patch.object(
+            tab._cli_wrapper, "set_update_channel"
+        ) as mock_set:
+            with patch("shani_gui.tabs.updates.GLib.idle_add") as mock_idle:
+                mock_idle.side_effect = lambda fn, *a, **k: fn(*a, **k)
+                # _fetch_update_info already ran during construction; the
+                # programmatic selection must have left no in-flight request.
+                assert not tab._channel_in_progress
+                assert not mock_set.called
+                # Now toggle the other channel; it must invoke the wrapper
+                # exactly once with that channel.
+                tab._channel_latest.set_active(True)
+                import time
+                deadline = time.time() + 2.0
+                while time.time() < deadline and not mock_set.called:
+                    time.sleep(0.01)
+                assert mock_set.call_count == 1
+                assert mock_set.call_args.args == ("latest",)
+
+
+class TestUpdatesTabReadFileOrDefault:
+    """Prove the dead duplicate block in _read_file_or_default is gone and
+    the method returns the filtered content or default."""
+
+    def _make_tab(self):
+        from shani_gui.tabs.updates import UpdatesTab
+        from shani_gui.state import AppState
+        from shani_gui.auth import AuthManager
+        return UpdatesTab(state=AppState(), auth_manager=AuthManager())
+
+    def test_missing_file_returns_default(self, tmp_path):
+        tab = self._make_tab()
+        assert tab._read_file_or_default(
+            str(tmp_path / "nope"), "fallback", "a-z"
+        ) == "fallback"
+
+    def test_filters_and_returns_content(self, tmp_path):
+        tab = self._make_tab()
+        p = tmp_path / "chan"
+        p.write_text("stable\n")
+        assert tab._read_file_or_default(str(p), "stable", "stable|latest") == "stable"
+
+    def test_invalid_content_returns_default(self, tmp_path):
+        tab = self._make_tab()
+        p = tmp_path / "chan"
+        p.write_text("garbage!!!")
+        assert tab._read_file_or_default(str(p), "stable", "stable|latest") == "stable"

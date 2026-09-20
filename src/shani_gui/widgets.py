@@ -131,6 +131,20 @@ button:checked {{
 _theme_applied = False
 
 
+def _gtk4_children(widget):
+    """Iterate a widget's children in GTK4.
+
+    Gtk.Container.get_children() was removed in GTK4; the portable idiom is
+    get_first_child() + get_next_sibling(). Kept as a helper rather than an
+    inline generator so the call sites read the same as the GTK3 version they
+    replace.
+    """
+    child = widget.get_first_child()
+    while child is not None:
+        yield child
+        child = child.get_next_sibling()
+
+
 def apply_amoled_theme() -> None:
     """Register the AMOLED CSS provider on the default display.
 
