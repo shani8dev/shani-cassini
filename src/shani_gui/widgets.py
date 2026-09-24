@@ -1,4 +1,4 @@
-"""Reusable GTK4 widget library with the AMOLED dark visual language.
+"""Reusable GTK4 widget library with the Saturn Dark visual language (ShaniOS desktop palette).
 
 Mirrors the design tokens and component shapes from enigmars-utils'
 ``ui/theme.py`` (Qt) — translated to GTK4 CSS.  Provides:
@@ -21,22 +21,28 @@ from gi.repository import Gdk, Gtk  # type: ignore
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# AMOLED colour palette (mirrors enigmars-utils ui/theme.py)
+# Saturn Dark palette - the ShaniOS desktop's own colours (shani-pkgbuilds
+# shani-desktop-plasma: SaturnDark.colors, saturn_palette.py), so this app
+# matches the windows around it: night-sky indigo surfaces, soft white text,
+# coral accent, and the scheme's mint/amber/rose for health states.
 # ---------------------------------------------------------------------------
 
-BG = "#000000"
-CARD = "#0C0C0C"
-BORDER = "#1E1E1E"
-TEXT = "#F5F5F5"
-MUTED = "#8A8A8A"
-ACCENT = "#00E5FF"
+BG = "#252434"
+CARD = "#2D2C3B"
+BORDER = "#3B3A49"
+TEXT = "#DEDEE1"
+MUTED = "#9999A0"
+ACCENT = "#FF7F50"
+ON_ACCENT = "#281C16"       # dark text on coral (SaturnDark selection text)
+BUTTON = "#333241"
+BUTTON_CHECKED = "#3F3E4C"
 
-HEALTH_OK = "#3DDC97"
-HEALTH_WARN = "#FFC857"
-HEALTH_BAD = "#FF5C7A"
+HEALTH_OK = "#7DD6AA"
+HEALTH_WARN = "#FFC69B"
+HEALTH_BAD = "#FFA3A3"
 
 # ---------------------------------------------------------------------------
-# GTK CSS (AMOLED sheet)
+# GTK CSS (Saturn sheet)
 # ---------------------------------------------------------------------------
 
 AMOLED_CSS = f"""
@@ -70,7 +76,7 @@ window {{
 
 .chip {{
     background-color: {ACCENT};
-    color: {BG};
+    color: {ON_ACCENT};
     border-radius: 10px;
     padding: 2px 8px;
     font-size: 12px;
@@ -111,7 +117,12 @@ window {{
 }}
 
 button {{
-    background-color: #121212;
+    /* the system GTK theme paints buttons with a background-image gradient
+       that covers background-color (white buttons, unreadable text) */
+    background-image: none;
+    box-shadow: none;
+    text-shadow: none;
+    background-color: {BUTTON};
     border: 1px solid {BORDER};
     border-radius: 10px;
     padding: 8px 14px;
@@ -124,7 +135,7 @@ button:hover {{
 }}
 
 button:checked {{
-    background-color: #1a1a1a;
+    background-color: {BUTTON_CHECKED};
 }}
 """
 

@@ -30,6 +30,17 @@ If you haven't seen it work (or fail) for real, it isn't verified.
 
 ## Audit-verified known issues (confirmed present)
 
+- **Palette was off-brand, and buttons were unreadable — FIXED (2026-09-23).**
+  `widgets.py` carried an AMOLED black/cyan palette copied from another
+  project; it now uses the ShaniOS Saturn Dark values (same as
+  `shani-pkgbuilds/shani-desktop-plasma` SaturnDark.colors /
+  `saturn_palette.py`; every pair contrast-checked, text 9-11:1). Rendering
+  the real widgets under Xvfb also showed a pre-existing bug: the system GTK
+  theme's button `background-image` gradient covered the app's
+  `background-color`, giving white buttons with near-invisible text (old
+  palette too: button pixel 248,247,247 on a black card). Fixed with
+  `background-image: none`. `pytest`: 132 passed before and after.
+
 **For the full narrative and before/after evidence, see the commits
 referenced below.** This section is deliberately just the current-state
 summary — what's true right now, not how it got that way.
