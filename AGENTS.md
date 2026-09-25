@@ -33,9 +33,12 @@ for an "is not installed" status page when its app is missing.
 | Backup | `org.shani.backup` GSettings; opens Shani Backup |
 | Fleet | `pkexec shani-fleet-agent status` |
 
-polkit: `data/dev.shani.cassini.policy` — one action per program with
-`org.freedesktop.policykit.exec.path` (deploy/health `auth_admin_keep`,
-gen-efi `auth_admin`). Styling: libadwaita + the Saturn accent
+polkit: Cassini ships **no policy of its own** — its `pkexec` calls use the
+system's rules in `shani-settings/.../99-shani.rules` (shani-deploy: any
+active local user, own password; gen-efi: wheel; shani-reset: wheel + admin).
+An action with `org.freedesktop.policykit.exec.path` for one of those programs
+would override those rules for every caller, shani-update included (it did,
+briefly: 2026-09-25). Styling: libadwaita + the Saturn accent
 (`widgets.py`), prefer-dark.
 
 ## Empirical verification (mandatory)
