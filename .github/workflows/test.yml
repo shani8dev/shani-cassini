@@ -29,9 +29,10 @@ jobs:
         # src/shani_gui/_httpx_compat.py must run first or pytest silently
         # falls back to any legacy httpx on the runner.
         python3 -c "import shani_gui._httpx_compat"
-        python3 -m pytest tests/ -v
+        # GTK4 windows need a display: headless, test_application segfaults
+        xvfb-run -a python3 -m pytest tests/ -v
       python-version: "3.12"
-      apt-packages: python3-gi gir1.2-gtk-4.0 libglib2.0-bin
+      apt-packages: python3-gi gir1.2-gtk-4.0 libglib2.0-bin xvfb
       system-site-packages: true
     needs: lint
 
