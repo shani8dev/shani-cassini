@@ -1,10 +1,48 @@
 """Tests for shani-cassini application construction and activation."""
 
+import os
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+
 import gi
 import pytest
 from gi.repository import Gio, Gtk
 
 gi.require_version("Gtk", "4.0")
+
+
+def test_agent_dispatch_does_not_import_gi():
+    """--agent must dispatch before the GTK/Adw application import."""
+    code = textwrap.dedent("""
+        import builtins
+        import sys
+        import types
+
+        real_import = builtins.__import__
+
+        def guarded_import(name, *args, **kwargs):
+            if name == "gi" or name.startswith("gi."):
+                raise AssertionError("GTK/GI was imported for --agent")
+            return real_import(name, *args, **kwargs)
+
+        builtins.__import__ = guarded_import
+        agent = types.ModuleType("shani_cassini.agent")
+        agent.main = lambda: 7
+        sys.modules["shani_cassini.agent"] = agent
+        sys.argv = ["shani-cassini", "--agent"]
+        from shani_cassini.main import main
+        try:
+            main()
+        except SystemExit as exc:
+            assert exc.code == 7
+        else:
+            raise AssertionError("agent dispatch did not exit")
+    """)
+    env = dict(os.environ, PYTHONPATH=str(Path(__file__).parents[1] / "src"))
+    result = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 class TestShaniosApplication:
@@ -33,7 +71,6 @@ class TestShaniosApplication:
         assert app._state is None
         assert app._auth_manager is None
         assert app._main_window is None
-        assert app._status_icon is None
 
     def test_application_do_startup(self):
         """do_startup initializes state and auth_manager."""
@@ -62,49 +99,6 @@ class TestShaniosApplication:
             app._main_window = ShaniosMainWindow(app)
         assert app._main_window is not None
         assert isinstance(app._main_window, ShaniosMainWindow)
-
-    def test_application_do_activate_creates_status_icon(self):
-        """do_activate creates a status icon after window."""
-        from shani_cassini.application import ShaniosApplication
-
-        app = ShaniosApplication()
-        app._state = type("S", (), {"is_connected": False, "username": None, "update_available": False})()
-        app._auth_manager = None
-        if not app._main_window:
-            from shani_cassini.main_window import ShaniosMainWindow
-            app._main_window = ShaniosMainWindow(app)
-        if not app._status_icon:
-            from shani_cassini.status_icon import StatusIcon
-            app._status_icon = StatusIcon(
-                state=app._state,
-                auth_manager=app._auth_manager,
-                main_window=app._main_window,
-            )
-        assert app._status_icon is not None
-
-    def test_application_do_shutdown(self):
-        """do_shutdown cleans up status icon."""
-        from shani_cassini.application import ShaniosApplication
-
-        app = ShaniosApplication()
-        app._state = type("S", (), {"is_connected": False, "username": None, "update_available": False})()
-        app._auth_manager = None
-        if not app._main_window:
-            from shani_cassini.main_window import ShaniosMainWindow
-            app._main_window = ShaniosMainWindow(app)
-        if not app._status_icon:
-            from shani_cassini.status_icon import StatusIcon
-            app._status_icon = StatusIcon(
-                state=app._state,
-                auth_manager=app._auth_manager,
-                main_window=app._main_window,
-            )
-        assert app._status_icon is not None
-        # Simulate do_shutdown logic
-        if app._status_icon:
-            app._status_icon.cleanup()
-            app._status_icon = None
-        assert app._status_icon is None
 
     def test_application_has_quit_action(self):
         """Application has a quit action with Ctrl+Q accelerator."""

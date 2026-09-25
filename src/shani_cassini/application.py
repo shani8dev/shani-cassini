@@ -10,7 +10,6 @@ from gi.repository import Adw, Gio, GLib, Gtk  # type: ignore
 from shani_cassini.auth import AuthManager
 from shani_cassini.state import AppState
 from shani_cassini.main_window import ShaniosMainWindow
-from shani_cassini.status_icon import StatusIcon
 
 
 logger = logging.getLogger(__name__)
@@ -28,7 +27,6 @@ class ShaniosApplication(Adw.Application):
         self._state: AppState | None = None
         self._auth_manager: AuthManager | None = None
         self._main_window: ShaniosMainWindow | None = None
-        self._status_icon: StatusIcon | None = None
 
         logger.info("ShaniosApplication initialized")
 
@@ -44,6 +42,14 @@ class ShaniosApplication(Adw.Application):
         Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.PREFER_DARK)
         from shani_cassini.widgets import apply_amoled_theme
         apply_amoled_theme()
+        # the app icon from data/ too: a run from the source tree (or before
+        # the icon cache is refreshed) shows it instead of a placeholder
+        from pathlib import Path
+        from gi.repository import Gdk
+        data = Path(__file__).resolve().parents[2] / "data"
+        display = Gdk.Display.get_default()
+        if data.is_dir() and display is not None:
+            Gtk.IconTheme.get_for_display(display).add_search_path(str(data))
 
         # Initialize core components
         self._state = AppState()
@@ -61,15 +67,7 @@ class ShaniosApplication(Adw.Application):
         if not self._main_window:
             self._main_window = ShaniosMainWindow(self)
             self._main_window.present()
-        
-        # Create system tray icon after main window is available
-        if not self._status_icon:
-            self._status_icon = StatusIcon(
-                state=self._state,
-                auth_manager=self._auth_manager,
-                main_window=self._main_window
-            )
-        
+
         logger.info("ShaniosApplication activated")
 
     @override
@@ -127,19 +125,12 @@ class ShaniosApplication(Adw.Application):
         return self.lookup_action(name)
 
     def _on_about(self, _action: Gio.SimpleAction, _parameter: object | None) -> None:
-        """Show about dialog."""
-        logger.info("Showing about dialog")
-        from shani_cassini.about_dialog import ShaniosAboutDialog
-
-        dialog = ShaniosAboutDialog(self._main_window)
-        dialog.present()
+        """Show the About dialog."""
+        from shani_cassini.about_dialog import about_dialog
+        about_dialog().present(self._main_window)
 
     @override
     def do_shutdown(self) -> None:
         """Handle application shutdown."""
         logger.info("Shutting down ShaniosApplication")
-        # Clean up status icon
-        if self._status_icon:
-            self._status_icon.cleanup()
-            self._status_icon = None
         Adw.Application.do_shutdown(self)

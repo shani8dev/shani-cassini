@@ -10,7 +10,7 @@ startup ran every one of those before the window appeared.
 import logging
 import shutil
 
-from gi.repository import Adw, Gtk  # type: ignore
+from gi.repository import Adw, Gio, Gtk  # type: ignore
 
 from shani_cassini.state import AppState
 from shani_cassini.auth import AuthManager
@@ -172,6 +172,10 @@ class ShaniosNotebook(Adw.Bin):
         view = Adw.ToolbarView()
         header = Adw.HeaderBar()
         header.set_title_widget(Adw.WindowTitle(title="Shani Cassini"))
+        menu = Gio.Menu()
+        menu.append("About Shani Cassini", "app.about")
+        header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu,
+                                       tooltip_text="Main Menu", primary=True))
         view.add_top_bar(header)
         view.set_content(scroller)
         page = Adw.NavigationPage(title="Shani Cassini", tag="sidebar")
