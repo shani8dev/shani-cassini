@@ -2,9 +2,9 @@ name: Test
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
 
 concurrency:
   group: shani-gui-ci
@@ -31,6 +31,8 @@ jobs:
         python3 -c "import shani_gui._httpx_compat"
         python3 -m pytest tests/ -v
       python-version: "3.12"
+      apt-packages: python3-gi gir1.2-gtk-4.0 libglib2.0-bin
+      system-site-packages: true
     needs: lint
 
   security:
