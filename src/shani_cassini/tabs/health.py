@@ -18,10 +18,22 @@ STATUS = {
     "warn": ("dialog-warning-symbolic", "warning"), "warning": ("dialog-warning-symbolic", "warning"),
     "fail": ("dialog-error-symbolic", "error"), "critical": ("dialog-error-symbolic", "error"),
 }
-CHECKS = [("verify", "System integrity",
-           "Both system slots, boot entries, signatures and the data layout"),
-          ("security", "Security audit",
-           "Firewall, Secure Boot, AppArmor, service hardening, exposed ports")]
+CHECKS = [
+    ("verify", "System integrity",
+     "Both system slots, boot entries, signatures and the data layout"),
+    ("security", "Security audit",
+     "Firewall, Secure Boot, AppArmor, service hardening, exposed ports"),
+    ("boot", "Boot report",
+     "Slots, boot entries, deployment state, immutability and UKIs"),
+    ("hardware", "Hardware report",
+     "CPU, disks, SMART, temperatures, battery and firmware"),
+    ("network", "Network report",
+     "NetworkManager, DNS, VPN, firewall, SSH and servers"),
+    ("packages", "Package report",
+     "Flatpak, Snap, Nix, containers and virtualisation"),
+    ("storage-info", "Storage analysis",
+     "Btrfs subvolumes, compression and snapshots"),
+]
 
 
 class HealthTab(Gtk.Box):
