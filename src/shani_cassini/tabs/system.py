@@ -8,12 +8,12 @@ import subprocess
 from typing import override
 
 from gi.repository import Gtk, Pango  # type: ignore
-from shani_cassini.widgets import _gtk4_children, find_named
+from shani_cassini.widgets import _gtk4_children
 
 from shani_cassini.state import AppState
 from shani_cassini.auth import AuthManager
 from shani_cassini.api_client import APIClient
-from shani_cassini.cli_wrapper import get_cli_wrapper
+from shani_cassini import system_status as ss
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,6 @@ class SystemTab(Gtk.Box):
         self._state = state
         self._auth_manager = auth_manager
         self._api_client = APIClient(auth_manager) if auth_manager else None
-        self._cli_wrapper = get_cli_wrapper()
 
         self._setup_ui()
         logger.info("SystemTab initialized")
@@ -70,10 +69,6 @@ class SystemTab(Gtk.Box):
         boot_card = self._create_boot_slots_card()
         content_box.append(boot_card)
 
-        # Create system services card
-        services_card = self._create_system_services_card()
-        content_box.append(services_card)
-
         logger.debug("System tab UI created")
         
         # Fetch and display initial data
@@ -89,11 +84,7 @@ class SystemTab(Gtk.Box):
         # Fetch storage information
         self._fetch_storage_info()
         
-        # Fetch boot and slaves information
         self._fetch_boot_slots_info()
-        
-        # Fetch system services information
-        self._fetch_system_services_info()
 
     def _fetch_hardware_info(self) -> None:
         """Fetch hardware information and update the UI."""
@@ -254,109 +245,33 @@ class SystemTab(Gtk.Box):
             logger.error(f"Failed to fetch storage information: {e}")
 
     def _fetch_boot_slots_info(self) -> None:
-        """Fetch boot and slots information and update the UI."""
-        try:
-            # Use shani-deploy to get boot slot information
-            result = self._cli_wrapper.run_shani_deploy(['--status', '--json'])
-            if result and isinstance(result, dict):
-                # Extract slot information from the result
-                current_slot = result.get('current_slot', '@blue')
-                expected_slot = result.get('expected_slot', '@blue')
-                candidate_slot = result.get('candidate_slot', '@green')
-                uki_status = result.get('uki_status', '● Valid Signatures')
-                boot_entries = result.get('boot_entries', '2 valid (1 fallback)')
-                
-                self._update_label("boot-current", current_slot)
-                self._update_label("boot-expected", expected_slot)
-                self._update_label("boot-candidate", candidate_slot)
-                self._update_label("boot-uki", uki_status)
-                self._update_label("boot-entries", boot_entries)
-            else:
-                # Fallback to getting slot information from /boot or other sources
-                # For now, we'll use default values
-                logger.warning("Failed to get slot information from shani-deploy, using defaults")
-        except Exception as e:
-            logger.error(f"Failed to fetch boot and slots information: {e}")
+        """Fetch the boot fields exposed by shani-deploy."""
+        def done(result, err):
+            if result is None:
+                for name in ("boot-current", "boot-marker", "boot-deployment", "boot-reboot", "boot-failure", "boot-recovery"):
+                    self._update_label(name, "Unavailable")
+                logger.warning("Failed to get slot information from shani-deploy: %s", err)
+                return
 
-    def _fetch_system_services_info(self) -> None:
-        """Fetch system services information and update the UI."""
-        try:
-            # Get list of services and their status
-            result = subprocess.run(['systemctl', 'list-units', '--type=service', '--state=running', '--no-legend'], 
-                                  capture_output=True, text=True, timeout=10)
-            if result.returncode == 0:
-                # Parse the output to get service information
-                # For simplicity, we'll just update a few key services
-                services = [
-                    ("sshd.service", "SSH Daemon"),
-                    ("NetworkManager.service", "Network Manager"),
-                    ("firewalld.service", "Firewall"),
-                    ("systemd-resolved.service", "System DNS Resolver"),
-                    ("docker.service", "Docker"),
-                    ("udisks2.service", "UDISKS2"),
-                    ("fail2ban.service", "Fail2Ban"),
-                    ("polkit.service", "PolicyKit"),
-                    ("shani-health.timer", "Shani Health Timer"),
-                    ("shani-update.timer", "Shani Update Timer"),
-                    ("shani-fleet.timer", "Shani Fleet Timer"),
-                    ("bees.service", "Btrfs Equalization Daemon"),
-                ]
-                
-                # Get the status of each service
-                service_statuses = {}
-                for line in result.stdout.strip().split('\n'):
-                    if line:
-                        parts = line.split()
-                        if len(parts) >= 4:
-                            service_name = parts[0]
-                            service_status = parts[2]  # active, inactive, etc.
-                            service_statuses[service_name] = service_status
-                
-                # Update the service items
-                flow_box = find_named(self, "services-flow-box")
-                if flow_box and isinstance(flow_box, Gtk.FlowBox):
-                    for child in _gtk4_children(flow_box):
-                        if isinstance(child, Gtk.Box):
-                            # Find the service ID label and status indicator in this box
-                            service_id_label = None
-                            status_indicator = None
-                            for grandchild in _gtk4_children(child):
-                                if isinstance(grandchild, Gtk.Label):
-                                    name = grandchild.get_name()
-                                    if name and name.startswith("service-id-"):
-                                        service_id_label = grandchild
-                                    elif name and name.startswith("service-status-"):
-                                        status_indicator = grandchild
-                            
-                            if service_id_label and status_indicator:
-                                # Extract service ID from the label name
-                                # The name is in the format "service-id-{service_id}"
-                                service_id_with_dashes = service_id_label.get_name().replace("service-id-", "")
-                                service_id = service_id_with_dashes.replace("-", ".")
-                                
-                                # Update the status indicator
-                                if service_id in service_statuses:
-                                    status = service_statuses[service_id]
-                                    is_active = status == "active"
-                                    status_indicator.set_text("●" if is_active else "○")
-                                    status_indicator.remove_css_class("service-active")
-                                    status_indicator.remove_css_class("service-inactive")
-                                    if is_active:
-                                        status_indicator.add_css_class("service-active")
-                                    else:
-                                        status_indicator.add_css_class("service-inactive")
-                                else:
-                                    # Service not found in the list, assume inactive
-                                    status_indicator.set_text("○")
-                                    status_indicator.remove_css_class("service-active")
-                                    status_indicator.remove_css_class("service-inactive")
-                                    status_indicator.add_css_class("service-inactive")
-                else:
-                    logger.warning("Could not find services flow box")
-            else:
-                logger.warning("Failed to get system services information")
-        except Exception as e:
-            logger.error(f"Failed to fetch system services information: {e}")
+            booted_slot = result.get("booted_slot") or ""
+            current_slot = result.get("current_slot") or ""
+            self._update_label("boot-current", f"@{booted_slot}" if booted_slot else "Unavailable")
+            self._update_label("boot-marker", f"@{current_slot}" if current_slot else "Unavailable")
+            self._update_label(
+                "boot-deployment",
+                "Awaiting reboot" if result.get("candidate_boot") else "No pending deployment",
+            )
+            self._update_label(
+                "boot-reboot",
+                "Required" if result.get("reboot_needed") else "Not required",
+            )
+            self._update_label("boot-failure", result.get("boot_failure") or "None reported")
+            self._update_label(
+                "boot-recovery",
+                "Attempted" if result.get("auto_rollback_done") else "Not attempted",
+            )
+
+        ss.deploy_status(done)
 
     def _update_label(self, widget_name: str, text: str) -> None:
         """Update a label widget by its name.
@@ -450,51 +365,12 @@ class SystemTab(Gtk.Box):
         grid.set_column_homogeneous(False)
         card.append(grid)
 
-        # Add boot info rows
         self._add_info_row(grid, 0, "Booted Slot:", "", "boot-current")
-        self._add_info_row(grid, 1, "Expected Slot:", "", "boot-expected")
-        self._add_info_row(grid, 2, "Candidate Slot:", "", "boot-candidate")
-        self._add_info_row(grid, 3, "UKI Status:", "", "boot-uki")
-        self._add_info_row(grid, 4, "Boot Entries:", "", "boot-entries")
-        self._add_info_row(grid, 5, "Slot Marker:", "", "boot-marker")
-
-        return card
-
-    def _create_system_services_card(self) -> Gtk.Box:
-        """Create the system services card.
-        
-        Returns:
-            System services card widget
-        """
-        card = self._create_card("System Services")
-
-        # Create flow box for services
-        flow_box = Gtk.FlowBox()
-        flow_box.set_valign(Gtk.Align.START)
-        flow_box.set_max_children_per_line(3)
-        flow_box.set_selection_mode(Gtk.SelectionMode.NONE)
-        flow_box.set_name("services-flow-box")  # Set name for updating
-        card.append(flow_box)
-
-        # Add service status indicators
-        services = [
-            ("sshd.service", "SSH Daemon", True),
-            ("NetworkManager.service", "Network Manager", True),
-            ("firewalld.service", "Firewall", True),
-            ("systemd-resolved.service", "System DNS Resolver", True),
-            ("docker.service", "Docker", False),
-            ("udisks2.service", "UDISKS2", True),
-            ("fail2ban.service", "Fail2Ban", True),
-            ("polkit.service", "PolicyKit", True),
-            ("shani-health.timer", "Shani Health Timer", True),
-            ("shani-update.timer", "Shani Update Timer", True),
-            ("shani-fleet.timer", "Shani Fleet Timer", True),
-            ("bees.service", "Btrfs Equalization Daemon", True),
-        ]
-
-        for service_id, description, is_active in services:
-            box = self._create_service_item(service_id, description, is_active)
-            flow_box.append(box)
+        self._add_info_row(grid, 1, "Current Slot:", "", "boot-marker")
+        self._add_info_row(grid, 2, "Deployment State:", "", "boot-deployment")
+        self._add_info_row(grid, 3, "Reboot:", "", "boot-reboot")
+        self._add_info_row(grid, 4, "Boot Failure:", "", "boot-failure")
+        self._add_info_row(grid, 5, "Recovery Attempt:", "", "boot-recovery")
 
         return card
 
@@ -522,47 +398,6 @@ class SystemTab(Gtk.Box):
         card.append(separator)
 
         return card
-
-    def _create_service_item(self, service_id: str, description: str, is_active: bool) -> Gtk.Box:
-        """Create a service status indicator item.
-        
-        Args:
-            service_id: Systemd service ID
-            description: Human-readable description
-            is_active: Whether service is active
-            
-        Returns:
-            Service item box
-        """
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        box.set_margin_start(8)
-        box.set_margin_end(8)
-        box.set_margin_top(4)
-        box.set_margin_bottom(4)
-
-        # Service status indicator
-        status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        status_indicator = Gtk.Label()
-        status_indicator.set_name(f"service-status-{service_id.replace('.', '-')}")  # Set name for updating
-        status_indicator.set_text("●" if is_active else "○")
-        status_indicator.add_css_class("service-active" if is_active else "service-inactive")
-        status_box.append(status_indicator)
-
-        status_label = Gtk.Label(label=description)
-        status_label.set_halign(Gtk.Align.START)
-        status_box.append(status_label)
-        status_box.set_hexpand(True)
-
-        box.append(status_box)
-
-        # Service ID (smaller text)
-        id_label = Gtk.Label(label=service_id)
-        id_label.add_css_class("dim-label")
-        id_label.set_halign(Gtk.Align.START)
-        id_label.set_name(f"service-id-{service_id.replace('.', '-')}")  # Set name for updating
-        box.append(id_label)
-
-        return box
 
     def _add_info_row(self, grid: Gtk.Grid, row: int, label_text: str, 
                      value_text: str, widget_name: str) -> None:

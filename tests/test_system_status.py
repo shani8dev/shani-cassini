@@ -11,6 +11,8 @@ from gi.repository import GLib
 
 STATUS = {"version": "20260921", "profile": "gnome", "channel": "stable", "booted_slot": "blue",
           "current_slot": "blue", "previous_slot": "green", "boot_failure": "",
+          "boot_hard_failure": False, "auto_rollback_done": False, "candidate_boot": True,
+          "reboot_needed": True,
           "remote": {"stable": "20260925", "latest": "20260925"}, "update_available": True}
 VERIFY = {"ok": False, "errors": 1, "checks": [
     {"name": "uki-blue", "status": "pass", "message": "signature valid"},
@@ -26,7 +28,7 @@ def fake_bin(tmp_path, monkeypatch):
         f.chmod(f.stat().st_mode | stat.S_IEXEC)
     write("shani-deploy", f"echo '{json.dumps(STATUS)}'\n")
     # shani-health --verify exits 1 when a check fails, still printing JSON
-    write("shani-health", f"echo '{json.dumps(VERIFY)}'; exit 1\n")
+    write("shani-health", "case \"$1\" in --verify) echo '%s'; exit 1 ;; *) echo '%s' ;; esac\n" % (json.dumps(VERIFY), json.dumps({"checks": []})))
     write("pkexec", 'exec "$@"\n')
     monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
     return tmp_path
@@ -74,6 +76,48 @@ def test_health_shows_failures_first_despite_exit_1(fake_bin):
     assert spin(lambda: getattr(tab, "_group_verify", None) is not None)
     g = tab._group_verify
     assert g.get_description().startswith("1 problem, 1 warning")
+
+
+@pytest.fixture
+def health_pkexec_log(fake_bin):
+    log = fake_bin / "health-pkexec.log"
+    (fake_bin / "pkexec").write_text(
+        f'#!/bin/sh\necho "$@" >> {log}\nexec "$@"\n')
+    (fake_bin / "pkexec").chmod(0o755)
+    return log
+
+
+def test_health_exposes_supported_report_modes(health_pkexec_log):
+    from shani_cassini.tabs.health import HealthTab
+    tab = HealthTab()
+    modes = {"security", "boot", "hardware", "network", "packages", "storage-info"}
+    assert set(tab._run_rows) == {"verify", *modes}
+    for mode in sorted(modes):
+        tab._run(mode)
+        assert spin(lambda mode=mode: getattr(tab, f"_group_{mode}", None) is not None)
+    assert set(health_pkexec_log.read_text().splitlines()) == {
+        f"shani-health --{mode} --json" for mode in modes
+    }
+
+
+def test_system_boot_card_uses_only_real_deploy_fields(fake_bin, monkeypatch):
+    from shani_cassini.tabs.system import SystemTab
+    from shani_cassini.widgets import find_named
+
+    for method in ("_fetch_hardware_info", "_fetch_storage_info"):
+        monkeypatch.setattr(SystemTab, method, lambda self: None)
+    tab = SystemTab()
+    assert spin(lambda: find_named(tab, "boot-current") is not None
+               and find_named(tab, "boot-current").get_label() == "@blue")
+    assert find_named(tab, "boot-current").get_label() == "@blue"
+    assert find_named(tab, "boot-marker").get_label() == "@blue"
+    assert find_named(tab, "boot-deployment").get_label() == "Awaiting reboot"
+    assert find_named(tab, "boot-reboot").get_label() == "Required"
+    assert find_named(tab, "boot-failure").get_label() == "None reported"
+    assert find_named(tab, "boot-recovery").get_label() == "Not attempted"
+    for name in ("boot-expected", "boot-candidate", "boot-uki", "boot-entries"):
+        assert find_named(tab, name) is None
+    assert find_named(tab, "services-flow-box") is None
 
 
 @pytest.fixture
