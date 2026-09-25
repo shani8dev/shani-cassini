@@ -1,0 +1,11 @@
+[Unit]
+Description=Shani Cassini: update and boot-state notifications
+Documentation=https://docs.shani.dev/system/cassini
+# notifications need the desktop session's bus
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/shani-cassini --agent
+# a notification waits for its click; give up after a while
+TimeoutStartSec=6h
