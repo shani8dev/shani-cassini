@@ -7,8 +7,8 @@ import platform
 import subprocess
 from typing import override
 
-from gi.repository import Gtk  # type: ignore
-from shani_cassini.widgets import _gtk4_children
+from gi.repository import Gtk, Pango  # type: ignore
+from shani_cassini.widgets import _gtk4_children, find_named
 
 from shani_cassini.state import AppState
 from shani_cassini.auth import AuthManager
@@ -313,7 +313,7 @@ class SystemTab(Gtk.Box):
                             service_statuses[service_name] = service_status
                 
                 # Update the service items
-                flow_box = self.get_root().get_descendant_by_name("services-flow-box")
+                flow_box = find_named(self, "services-flow-box")
                 if flow_box and isinstance(flow_box, Gtk.FlowBox):
                     for child in _gtk4_children(flow_box):
                         if isinstance(child, Gtk.Box):
@@ -376,7 +376,7 @@ class SystemTab(Gtk.Box):
                         return found
             return None
         
-        widget = find_widget(self.get_root())
+        widget = find_widget(self)  # the tab itself: get_root() is None until it is in a window
         if widget and isinstance(widget, Gtk.Label):
             widget.set_label(text)
         else:
@@ -582,6 +582,11 @@ class SystemTab(Gtk.Box):
 
         value = Gtk.Label(label=value_text)
         value.add_css_class("label-value")
+        # wrap: one long value (a kernel version) otherwise widened every page
+        value.set_wrap(True)
+        value.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        value.set_xalign(0)
+        value.set_selectable(True)
         value.set_halign(Gtk.Align.START)
         if widget_name:
             value.set_name(widget_name)

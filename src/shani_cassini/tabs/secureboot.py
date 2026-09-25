@@ -18,11 +18,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from gi.repository import Gtk  # type: ignore
+from gi.repository import Gtk, Pango  # type: ignore
 
 from shani_cassini.state import AppState
 from shani_cassini.auth import AuthManager
-from shani_cassini.widgets import Card, Chip, HealthPanel, apply_amoled_theme
+from shani_cassini.widgets import Card, Chip, HealthPanel, apply_amoled_theme, find_named
 
 
 logger = logging.getLogger(__name__)
@@ -441,8 +441,8 @@ class SecureBootTab(Gtk.Box):
 
     def _update_data(self) -> None:
         """Fetch real data and update the UI elements."""
-        if self.get_root() is None:
-            return
+        # (no get_root() guard: lookups search the tab itself, so it fills
+        # in before it is parented - the guard left this page blank forever)
         logger.debug("Fetching secure boot data")
 
         status = probe_secure_boot()
@@ -492,7 +492,7 @@ class SecureBootTab(Gtk.Box):
         self._update_label("sb-guid", status.guid if status.guid else "N/A")
 
         # Vendor chips
-        vendor_box = self.get_root().get_descendant_by_name("sb-vendors-box")
+        vendor_box = find_named(self, "sb-vendors-box")
         if vendor_box is not None and isinstance(vendor_box, Gtk.Box):
             # Clear existing chips
             while True:
@@ -510,7 +510,7 @@ class SecureBootTab(Gtk.Box):
                 vendor_box.append(empty)
 
         # Health panel
-        health_panel = self.get_root().get_descendant_by_name("health-panel")
+        health_panel = find_named(self, "health-panel")
         if health_panel is not None and isinstance(health_panel, HealthPanel):
             if status.secure_boot is True and not status.setup_mode:
                 health_panel.set_level("ok")
@@ -576,6 +576,11 @@ class SecureBootTab(Gtk.Box):
 
         value = Gtk.Label(label=value_text)
         value.add_css_class("label-value")
+        # wrap: one long value (a kernel version) otherwise widened every page
+        value.set_wrap(True)
+        value.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        value.set_xalign(0)
+        value.set_selectable(True)
         value.set_halign(Gtk.Align.START)
         if widget_name:
             value.set_name(widget_name)
@@ -588,7 +593,7 @@ class SecureBootTab(Gtk.Box):
             widget_name: The name of the widget to update
             text: The new text for the widget
         """
-        widget = self.get_root().get_descendant_by_name(widget_name)
+        widget = find_named(self, widget_name)
         if widget and isinstance(widget, Gtk.Label):
             widget.set_label(text)
         else:

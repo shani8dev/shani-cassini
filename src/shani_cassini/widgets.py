@@ -46,100 +46,91 @@ HEALTH_BAD = "#FFA3A3"
 # ---------------------------------------------------------------------------
 
 AMOLED_CSS = f"""
-window {{
-    background-color: {BG};
-    color: {TEXT};
-    font-family: Inter, "Noto Sans", sans-serif;
-    font-size: 13px;
+/* Saturn accent on top of libadwaita, which already provides the light and
+   dark surfaces, text and buttons (a fixed dark background here once met
+   the light theme's window colour: light text on white). Both the
+   libadwaita >= 1.6 variables and the older named colours are set. */
+:root {{
+    --accent-bg-color: {ACCENT};
+    --accent-fg-color: {ON_ACCENT};
+    --accent-color: {ACCENT};
 }}
+@define-color accent_bg_color {ACCENT};
+@define-color accent_fg_color {ON_ACCENT};
+@define-color accent_color {ACCENT};
 
-#card {{
-    background-color: {CARD};
-    border: 1px solid {BORDER};
-    border-radius: 14px;
-    padding: 12px;
+#card, #health-panel {{
+    padding: 16px;
 }}
 
 .cardTitle {{
     font-size: 15px;
-    font-weight: 600;
-    color: {TEXT};
+    font-weight: 700;
 }}
 
-.muted {{
-    color: {MUTED};
-}}
+.muted {{ opacity: 0.65; }}
 
-.accent {{
-    color: {ACCENT};
-}}
+.accent {{ color: {ACCENT}; }}
 
 .chip {{
-    background-color: {ACCENT};
-    color: {ON_ACCENT};
-    border-radius: 10px;
-    padding: 2px 8px;
+    background-color: alpha({ACCENT}, 0.18);
+    color: {ACCENT};
+    border-radius: 999px;
+    padding: 2px 10px;
     font-size: 12px;
     font-weight: 600;
 }}
 
-.health-ok {{
-    color: {HEALTH_OK};
-    font-weight: 600;
-}}
-
-.health-warn {{
-    color: {HEALTH_WARN};
-    font-weight: 600;
-}}
-
-.health-bad {{
-    color: {HEALTH_BAD};
-    font-weight: 600;
-}}
-
-.health-unknown {{
-    color: {MUTED};
-    font-weight: 600;
-}}
-
-#health-panel {{
-    background-color: {CARD};
-    border: 1px solid {BORDER};
-    border-radius: 14px;
-    padding: 12px;
-}}
+.health-ok      {{ color: @success_color; font-weight: 600; }}
+.health-warn    {{ color: @warning_color; font-weight: 600; }}
+.health-bad     {{ color: @error_color;   font-weight: 600; }}
+.health-unknown {{ opacity: 0.65;         font-weight: 600; }}
 
 #health-badge {{
     font-weight: 600;
-    padding: 2px 8px;
-    border-radius: 10px;
+    padding: 2px 10px;
+    border-radius: 999px;
 }}
 
-button {{
-    /* the system GTK theme paints buttons with a background-image gradient
-       that covers background-color (white buttons, unreadable text) */
-    background-image: none;
-    box-shadow: none;
-    text-shadow: none;
-    background-color: {BUTTON};
-    border: 1px solid {BORDER};
-    border-radius: 10px;
-    padding: 8px 14px;
-    color: {TEXT};
+/* the tabs' own cards (a Gtk.Box with .card: title, separator, a
+   label/value grid, buttons) - Adwaita's .card gives no padding */
+box.card {{
+    padding: 18px 20px;
+}}
+box.card > separator {{
+    min-height: 0;
+    background: none;
+    margin: 0;
+}}
+.card-title {{
+    font-size: 15px;
+    font-weight: 700;
 }}
 
-button:hover {{
-    border: 1px solid {ACCENT};
-    color: {ACCENT};
-}}
-
-button:checked {{
-    background-color: {BUTTON_CHECKED};
-}}
+/* label/value rows used across the tabs */
+.label-label {{ opacity: 0.7; }}
+.label-value {{ font-weight: 600; }}
 """
 
 _theme_applied = False
+
+
+def find_named(root, name):
+    """First descendant of `root` (itself included) whose widget name is
+    `name`, or None. GTK4 has no get_descendant_by_name (the tabs called
+    it on get_root(), which is also None until the tab is in a window, so
+    every value update failed and pages stayed blank)."""
+    if root is None:
+        return None
+    if root.get_name() == name:
+        return root
+    child = root.get_first_child()
+    while child is not None:
+        hit = find_named(child, name)
+        if hit is not None:
+            return hit
+        child = child.get_next_sibling()
+    return None
 
 
 def _gtk4_children(widget):
@@ -194,6 +185,7 @@ class Card(Gtk.Box):
     def __init__(self, title: str, body: str | None = None) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self.set_name("card")
+        self.add_css_class("card")
 
         title_label = Gtk.Label(label=title)
         title_label.add_css_class("cardTitle")
@@ -254,6 +246,7 @@ class HealthPanel(Gtk.Box):
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.set_name("health-panel")
+        self.add_css_class("card")
 
         # Status badge
         self._badge = Gtk.Label()

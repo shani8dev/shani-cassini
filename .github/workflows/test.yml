@@ -32,7 +32,7 @@ jobs:
         # GTK4 windows need a display: headless, test_application segfaults
         xvfb-run -a python3 -m pytest tests/ -v
       python-version: "3.12"
-      apt-packages: python3-gi gir1.2-gtk-4.0 libglib2.0-bin xvfb
+      apt-packages: python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 libglib2.0-bin xvfb
       system-site-packages: true
     needs: lint
 

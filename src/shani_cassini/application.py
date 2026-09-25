@@ -3,7 +3,9 @@
 import logging
 from typing import override
 
-from gi.repository import Gio, Gtk  # type: ignore
+import gi
+gi.require_version("Adw", "1")
+from gi.repository import Adw, Gio, GLib, Gtk  # type: ignore
 
 from shani_cassini.auth import AuthManager
 from shani_cassini.state import AppState
@@ -14,7 +16,7 @@ from shani_cassini.status_icon import StatusIcon
 logger = logging.getLogger(__name__)
 
 
-class ShaniosApplication(Gtk.Application):
+class ShaniosApplication(Adw.Application):
     """Main Shani Cassini application."""
 
     def __init__(self) -> None:
@@ -34,7 +36,14 @@ class ShaniosApplication(Gtk.Application):
     def do_startup(self) -> None:
         """Handle application startup."""
         logger.info("Starting up ShaniosApplication")
-        super().do_startup()
+        # explicit: on PyGObject 3.56 (Arch) super().do_startup() resolves to
+        # Gio.Application.startup() and raises TypeError - the app died here
+        Adw.Application.do_startup(self)
+        # the Shanios desktops ship Saturn Dark: dark unless the user's
+        # system explicitly asks for light
+        Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.PREFER_DARK)
+        from shani_cassini.widgets import apply_amoled_theme
+        apply_amoled_theme()
 
         # Initialize core components
         self._state = AppState()
@@ -67,9 +76,26 @@ class ShaniosApplication(Gtk.Application):
     def do_command_line(self, command_line: Gio.ApplicationCommandLine) -> int:
         """Handle command line arguments."""
         logger.info("Processing command line arguments")
-        # Handle any command line arguments here
+        # --section=<id> (e.g. updates): open Cassini on that page - for
+        # notifications and other apps; also works on a running instance
+        section = None
+        for arg in command_line.get_arguments()[1:]:
+            if arg.startswith("--section="):
+                section = arg.split("=", 1)[1]
         self.activate()
+        if section:
+            self._show_section(section)
         return 0
+
+    def _show_section(self, section: str) -> None:
+        from shani_cassini.notebook import PAGES
+        if not self._main_window:
+            return
+        if section not in {p[1] for p in PAGES}:
+            logger.warning("Unknown section %r (known: %s)", section, ", ".join(p[1] for p in PAGES))
+            return
+        self._main_window._notebook.select(section)
+        self._main_window._notebook.split_view.set_show_content(True)
 
     def _create_actions(self) -> None:
         """Create application-wide actions."""
@@ -83,6 +109,12 @@ class ShaniosApplication(Gtk.Application):
         about_action = Gio.SimpleAction.new("about", None)
         about_action.connect("activate", self._on_about)
         self.add_action(about_action)
+
+        # app.show-section('<id>'): same as --section, over D-Bus too
+        # (gapplication action dev.shani.cassini show-section "'health'")
+        show = Gio.SimpleAction.new("show-section", GLib.VariantType.new("s"))
+        show.connect("activate", lambda _a, v: self._show_section(v.get_string()))
+        self.add_action(show)
 
         logger.debug("Application actions created")
 
@@ -110,4 +142,4 @@ class ShaniosApplication(Gtk.Application):
         if self._status_icon:
             self._status_icon.cleanup()
             self._status_icon = None
-        super().do_shutdown()
+        Adw.Application.do_shutdown(self)

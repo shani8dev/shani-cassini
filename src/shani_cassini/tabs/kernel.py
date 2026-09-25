@@ -13,11 +13,11 @@ import logging
 import os
 import re
 
-from gi.repository import Gtk  # type: ignore
+from gi.repository import Gtk, Pango  # type: ignore
 
 from shani_cassini.state import AppState
 from shani_cassini.auth import AuthManager
-from shani_cassini.widgets import Card, apply_amoled_theme
+from shani_cassini.widgets import Card, apply_amoled_theme, find_named
 
 
 logger = logging.getLogger(__name__)
@@ -103,8 +103,8 @@ class KernelTab(Gtk.Box):
         unit tests) because ``get_root()`` is ``None`` until the tab is attached;
         the real app re-parents and can refresh later.
         """
-        if self.get_root() is None:
-            return
+        # (no get_root() guard: lookups search the tab itself, so it fills
+        # in before it is parented - the guard left this page blank forever)
         # Version
         import platform
         release = os.uname().release
@@ -144,13 +144,18 @@ class KernelTab(Gtk.Box):
         grid.attach(label, 0, row, 1, 1)
         value = Gtk.Label(label=value_text)
         value.add_css_class("label-value")
+        # wrap: one long value (a kernel version) otherwise widened every page
+        value.set_wrap(True)
+        value.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        value.set_xalign(0)
+        value.set_selectable(True)
         value.set_halign(Gtk.Align.START)
         if widget_name:
             value.set_name(widget_name)
         grid.attach(value, 1, row, 1, 1)
 
     def _update_label(self, widget_name: str, text: str) -> None:
-        widget = self.get_root().get_descendant_by_name(widget_name)
+        widget = find_named(self, widget_name)
         if widget and isinstance(widget, Gtk.Label):
             widget.set_label(text)
         else:

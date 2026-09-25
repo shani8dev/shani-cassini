@@ -157,8 +157,8 @@ class TestShaniosMainWindow:
 
         app = ShaniosApplication()
         window = ShaniosMainWindow(app)
-        assert window.get_default_width() == 1024
-        assert window.get_default_height() == 768
+        assert window.get_default_width() == 1100
+        assert window.get_default_height() == 760
 
     def test_main_window_has_header_bar(self):
         """Main window has a header bar with status indicators."""
@@ -186,4 +186,4 @@ class TestShaniosMainWindow:
         window.update_status_indicators()
         assert "Online" in window._connection_status.get_label()
         assert "testuser" in window._user_info.get_label()
-        assert "Update Available" in window._update_status.get_label()
+        assert window._update_status.get_label() == "Update available"
