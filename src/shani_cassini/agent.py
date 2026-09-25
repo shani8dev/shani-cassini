@@ -105,15 +105,23 @@ def decide(st: dict, state: dict, boot_id: str, now: float) -> list[dict]:
                         "body": f"Shanios {pretty(reboot)} is installed and starts after a restart.",
                         "action": ("restart", "Restart Now"), "section": "updates"})
     elif st.get("update_available") is True:
-        remote = (st.get("remote") or {}).get(st.get("channel") or "stable", "")
-        key = f"update:{remote}"
-        if key not in said or now - said[key] >= REMIND_UPDATE_AFTER:
-            said[key] = now
-            out.append({"key": key, "urgency": "normal", "icon": "software-update-available",
-                        "title": f"Shanios {pretty(remote)} is available",
-                        "body": "Install it from Shani Cassini - it goes into the other system slot, "
-                                "your running system is not touched.",
-                        "section": "updates"})
+        remote = st.get("remote")
+        remote = remote.get(st.get("channel") or "stable", "") if isinstance(remote, dict) else ""
+        if not remote:
+            # update_available with no version to name means the deploy side is
+            # older than this contract; announcing "Shanios  is available"
+            # would invent a version, so say nothing. A boot failure above is
+            # still reported - only the version-less update claim is dropped.
+            remote = None
+        else:
+            key = f"update:{remote}"
+            if key not in said or now - said[key] >= REMIND_UPDATE_AFTER:
+                said[key] = now
+                out.append({"key": key, "urgency": "normal", "icon": "software-update-available",
+                            "title": f"Shanios {pretty(remote)} is available",
+                            "body": "Install it from Shani Cassini - it goes into the other system slot, "
+                                    "your running system is not touched.",
+                            "section": "updates"})
     # forget events of old boots so the file stays small
     for k in [k for k in said if k.count(":") >= 1 and not k.startswith("update:") and boot_id not in k]:
         del said[k]

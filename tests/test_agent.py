@@ -96,3 +96,19 @@ def test_old_boot_events_are_forgotten():
     decide(st(candidate_boot=True, booted_slot="green"), state, "b1", 0)
     decide(st(), state, "b2", 1)
     assert not any("b1" in k for k in state["said"])
+
+
+def test_no_version_means_no_update_notification():
+    # An older shani-deploy can report update_available without the remote
+    # object. Announcing "Shanios  is available" with a blank version is a
+    # guess about a version we do not have, so stay quiet instead.
+    for remote in ({}, {"stable": ""}, None, "nonsense"):
+        s = st(update_available=True, remote=remote)
+        assert decide(s, {}, "b1", 0) == [], f"remote={remote!r}"
+
+
+def test_boot_failures_are_still_reported_without_a_remote_object():
+    # The version-less guard must only silence the *update* notification:
+    # a boot failure is real and must never be swallowed.
+    s = st(update_available=True, remote={}, boot_failure="green", booted_slot="blue")
+    assert titles(decide(s, {}, "b1", 0)) == ["The update did not start"]
