@@ -191,3 +191,41 @@ def test_old_shani_deploy_gets_a_plain_message(tmp_path, monkeypatch):
     assert spin(lambda: tab._subtitle.get_label() != "Reading system state…")
     assert tab._subtitle.get_label() == "This system's tools are older than Shani Cassini - update Shanios to see this"
     assert "\x1b" not in tab._subtitle.get_label()
+
+
+CHRONOA_SCHEMA = """<schemalist><schema id="org.shani.chronoa" path="/org/shani/chronoa/">
+<key name="privacy-mode" type="b"><default>true</default></key>
+<key name="auto-start" type="b"><default>false</default></key>
+<key name="wake-word-enabled" type="b"><default>false</default></key>
+<key name="model" type="s"><default>''</default></key>
+<key name="ollama-host" type="s"><default>'http://127.0.0.1:9'</default></key>
+<key name="openai-api-key" type="s"><default>'sk-secret'</default></key>
+</schema></schemalist>"""
+
+
+def test_chronoa_page_binds_its_settings(tmp_path):
+    import subprocess
+    (tmp_path / "org.shani.chronoa.gschema.xml").write_text(CHRONOA_SCHEMA)
+    subprocess.run(["glib-compile-schemas", str(tmp_path)], check=True)
+    code = f"""
+import os, sys
+os.environ["GSETTINGS_SCHEMA_DIR"] = {str(tmp_path)!r}; os.environ["GSETTINGS_BACKEND"] = "memory"
+sys.path.insert(0, "src")
+from gi.repository import Adw, Gio
+from shani_cassini.tabs.chronoa import ChronoaTab
+t = ChronoaTab()
+def walk(w):
+    c = w.get_first_child()
+    while c is not None:
+        yield c; yield from walk(c); c = c.get_next_sibling()
+rows = {{r.get_title(): r for r in walk(t) if isinstance(r, Adw.SwitchRow)}}
+assert set(rows) == {{"Privacy mode", "Start at login", "Wake word"}}, rows
+assert rows["Privacy mode"].get_active() is True
+rows["Start at login"].set_active(True)
+assert Gio.Settings.new("org.shani.chronoa").get_boolean("auto-start") is True
+texts = [getattr(w, "get_text", lambda: "")() for w in walk(t)] + [getattr(w, "get_subtitle", lambda: "")() for w in walk(t)]
+assert not any("sk-secret" in (x or "") for x in texts), "an API key is displayed"
+print("ok")
+"""
+    r = subprocess.run([__import__("sys").executable, "-c", code], capture_output=True, text=True, cwd=os.getcwd())
+    assert r.returncode == 0 and "ok" in r.stdout, r.stdout + r.stderr

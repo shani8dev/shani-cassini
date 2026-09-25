@@ -45,9 +45,13 @@ class MaintenanceTab(Gtk.Box):
                                   description="Both system slots, your files and app data share one disk.")
         self._space = Adw.ActionRow(title="System disk")
         self._bar = Gtk.LevelBar(min_value=0, max_value=1, valign=Gtk.Align.CENTER, width_request=180)
-        self._bar.add_offset_value("low", 0.8)      # green until 80 % used
-        self._bar.add_offset_value("high", 0.9)
-        self._bar.add_offset_value("full", 1.0)
+        # disk USE: fine (green) to 80 %, getting full (orange) to 90 %, then
+        # red - the default offsets paint "low" as a warning
+        for name in ("low", "high", "full"):
+            self._bar.remove_offset_value(name)
+        self._bar.add_offset_value("high", 0.8)
+        self._bar.add_offset_value("low", 0.9)
+        self._bar.add_offset_value("disk-full", 1.0)
         self._space.add_suffix(self._bar)
         st.add(self._space)
         self._cleanup = self._action_row(st, "Clean up", "Removes downloaded update images and old backups",

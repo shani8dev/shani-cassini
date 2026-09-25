@@ -54,13 +54,13 @@ SECTIONS = [
         (EncryptionTab, "encryption", "Encryption", "channel-secure-symbolic", "Disk encryption and TPM unlock"),
     ]),
     ("Updates", [
-        (UpdatesTab, "updates", "Updates & Rollback", "software-update-available-symbolic",
+        (UpdatesTab, "updates", "Updates & Rollback", "view-refresh-symbolic",
          "Update channel, updates and going back to the previous system"),
     ]),
     ("Manage", [
         (ServicesTab, "services", "Services", "system-run-symbolic", "System services"),
         (BackupTab, "backup", "Backup", "drive-multidisk-symbolic", "Snapshots and backups"),
-        (MaintenanceTab, "maintenance", "Maintenance", "emblem-system-symbolic",
+        (MaintenanceTab, "maintenance", "Maintenance", "applications-utilities-symbolic",
          "Disk space, diagnostic report, reset"),
     ]),
     ("Apps", [

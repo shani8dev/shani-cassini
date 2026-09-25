@@ -107,6 +107,10 @@ box.card > separator {{
     font-weight: 700;
 }}
 
+levelbar block.high {{ background-color: @success_color; }}
+levelbar block.low {{ background-color: @warning_color; }}
+levelbar block.disk-full {{ background-color: @error_color; }}
+
 /* label/value rows used across the tabs */
 .label-label {{ opacity: 0.7; }}
 .label-value {{ font-weight: 600; }}
