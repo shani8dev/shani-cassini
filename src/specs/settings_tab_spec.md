@@ -37,7 +37,7 @@ The Settings tab allows users to view and modify non-security-critical system co
   - Show input menu in menu bar toggle
 
 - About Section:
-  - Shanios GUI Client name and version
+  - Shani Cassini name and version
   - Copyright information
 
 ## User Actions

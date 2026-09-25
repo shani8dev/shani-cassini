@@ -1,6 +1,6 @@
-# Design Principles for Shanios GUI
+# Design Principles for Shani Cassini
 
-Based on comprehensive research of industry-leading applications and design systems, these are the core design principles that should guide the development of the Shanios GUI client.
+Based on comprehensive research of industry-leading applications and design systems, these are the core design principles that should guide the development of the Shani Cassini.
 
 ## 1. Clarity Above All
 
@@ -180,7 +180,7 @@ Based on comprehensive research of industry-leading applications and design syst
 
 ## Implementation Guidance
 
-These principles should be applied consistently throughout the Shanios GUI client. When in doubt, refer back to these principles and ask:
+These principles should be applied consistently throughout the Shani Cassini. When in doubt, refer back to these principles and ask:
 
 1. Does this choice make the interface clearer?
 2. Is this consistent with similar elements elsewhere?
@@ -193,4 +193,4 @@ These principles should be applied consistently throughout the Shanios GUI clien
 9. Is it accessible to users with different abilities?
 10. Does it perform well and feel responsive?
 
-By adhering to these principles, the Shanios GUI client will provide a professional, usable, and enjoyable experience that reflects the quality and reliability of the Shanios operating system.
+By adhering to these principles, the Shani Cassini will provide a professional, usable, and enjoyable experience that reflects the quality and reliability of the Shanios operating system.

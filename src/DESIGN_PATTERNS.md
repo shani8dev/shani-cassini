@@ -1,6 +1,6 @@
-# Design Pattern Guidelines for Shanios GUI
+# Design Pattern Guidelines for Shani Cassini
 
-This document establishes comprehensive design patterns based on best-in-class applications to ensure consistency, usability, and aesthetic quality in the Shanios GUI client.
+This document establishes comprehensive design patterns based on best-in-class applications to ensure consistency, usability, and aesthetic quality in the Shani Cassini.
 
 ## 1. Layout and Navigation Patterns
 

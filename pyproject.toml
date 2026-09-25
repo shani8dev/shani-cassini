@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "shani-gui"
+name = "shani-cassini"
 version = "0.1.0"
 description = "Native GUI Client for Shanios"
 readme = "README.md"
@@ -30,24 +30,24 @@ dependencies = [
 # NOTE: the codebase still writes `import httpx` everywhere, but httpx2 does
 # NOT provide an `httpx` module — it ships `httpx2` plus an opt-in
 # `httpx2.alias_httpx()` that re-exports the API under the `httpx` name.
-# `src/shani_gui/_httpx_compat.py` runs that alias at import time so every
+# `src/shani_cassini/_httpx_compat.py` runs that alias at import time so every
 # `import httpx` resolves to httpx2. Without it, a clean install (httpx2
 # only) dies with `ModuleNotFoundError: No module named 'httpx'`.
 
 [project.urls]
-Homepage = "https://github.com/shani8dev/shani-gui"
-Documentation = "https://github.com/shani8dev/shani-gui/wiki"
-Repository = "https://github.com/shani8dev/shani-gui"
+Homepage = "https://github.com/shani8dev/shani-cassini"
+Documentation = "https://github.com/shani8dev/shani-cassini/wiki"
+Repository = "https://github.com/shani8dev/shani-cassini"
 
 [project.scripts]
-shani-gui = "shani_gui.main:main"
+shani-cassini = "shani_cassini.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["shani_gui*"]
+include = ["shani_cassini*"]
 
 [tool.setuptools.package-data]
-shani_gui = [
+shani_cassini = [
     "assets/*",
     "tabs/*",
 ]

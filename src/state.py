@@ -1,10 +1,10 @@
-"""Application state management for the Shanios GUI."""
+"""Application state management for the Shani Cassini."""
 
 import logging
 from typing import Optional, Dict, Any
 from datetime import datetime
 
-from shani_gui.auth import AuthManager
+from shani_cassini.auth import AuthManager
 
 
 logger = logging.getLogger(__name__)

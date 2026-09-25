@@ -1,4 +1,4 @@
-"""Tests for shani-gui API client with mocked HTTP responses."""
+"""Tests for shani-cassini API client with mocked HTTP responses."""
 
 import json
 import time
@@ -6,8 +6,8 @@ import pytest
 import httpx
 from unittest.mock import MagicMock, call
 
-from shani_gui.auth import AuthManager
-from shani_gui.api_client import APIClient
+from shani_cassini.auth import AuthManager
+from shani_cassini.api_client import APIClient
 
 
 class MockTransport(httpx.BaseTransport):

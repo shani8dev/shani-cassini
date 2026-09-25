@@ -39,14 +39,14 @@ xgettext \
     --keyword=_ \
     --keyword=marktr \
     --keyword=N_:1,2 \
-    -o shani-gui.pot \
+    -o shani-cassini.pot \
     "${FILES[@]}"
 
-echo "Generated shani-gui.pot with $(grep -c '^msgid ' shani-gui.pot) strings"
+echo "Generated shani-cassini.pot with $(grep -c '^msgid ' shani-cassini.pot) strings"
 
 for lang in en hi; do
     if [[ -f "${lang}.po" ]]; then
-        msgmerge -U --no-location "${lang}.po" shani-gui.pot
+        msgmerge -U --no-location "${lang}.po" shani-cassini.pot
         echo "Updated ${lang}.po"
     fi
 done

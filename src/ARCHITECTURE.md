@@ -1,7 +1,7 @@
-# Shanios GUI Client Component Architecture
+# Shani Cassini Component Architecture
 
 ## Overview
-The Shanios GUI Client follows a modular architecture with clear separation of concerns. The application is built using GTK 4 and Python (PyGObject) and consists of the following main components:
+The Shani Cassini follows a modular architecture with clear separation of concerns. The application is built using GTK 4 and Python (PyGObject) and consists of the following main components:
 
 ## Component Hierarchy
 

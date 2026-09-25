@@ -66,4 +66,4 @@ Selected technology stack: **GTK 4 + Python (PyGObject)**
 - Cons: Heavier weight, less native feel, Oracle licensing concerns
 
 ## Conclusion
-GTK 4 + Python provides the optimal balance of developer familiarity, runtime efficiency, native integration, and long-term maintainability for the Shanios GUI client. The selection leverages existing Python expertise in the Shanios ecosystem while providing a modern, lightweight desktop application framework that aligns with the project's goals of being lightweight, long-term supported, and good-looking.
+GTK 4 + Python provides the optimal balance of developer familiarity, runtime efficiency, native integration, and long-term maintainability for the Shani Cassini. The selection leverages existing Python expertise in the Shanios ecosystem while providing a modern, lightweight desktop application framework that aligns with the project's goals of being lightweight, long-term supported, and good-looking.

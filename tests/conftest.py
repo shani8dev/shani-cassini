@@ -1,4 +1,4 @@
-"""Shared test fixtures for shani-gui test suite."""
+"""Shared test fixtures for shani-cassini test suite."""
 
 import sys
 import os
@@ -16,8 +16,8 @@ if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
 # Establish the httpx2-backed `httpx` alias before any test module does
-# `import httpx` — see shani_gui/_httpx_compat.py.
-import shani_gui._httpx_compat  # noqa: E402,F401
+# `import httpx` — see shani_cassini/_httpx_compat.py.
+import shani_cassini._httpx_compat  # noqa: E402,F401
 
 # Mock external modules BEFORE test modules import them.
 # shani_chronoa and shani_backup are not installed in this environment.
@@ -37,7 +37,7 @@ for _name, _mock in _mock_modules.items():
 
 @pytest.fixture(autouse=True)
 def clear_keyring_entries():
-    """Clear shani-gui keyring entries before and after each test.
+    """Clear shani-cassini keyring entries before and after each test.
 
     Ensures tests don't leak credentials into the real keyring or
     interfere with each other via leftover keyring state.
@@ -48,14 +48,14 @@ def clear_keyring_entries():
 
 
 def _clear_shani_keyring():
-    """Delete all shani-gui entries from the real keyring if available."""
+    """Delete all shani-cassini entries from the real keyring if available."""
     try:
         import keyring
     except ImportError:
         return
     for account in ("credentials", "__keyring_probe__"):
         try:
-            keyring.delete_password("shani-gui", account)
+            keyring.delete_password("shani-cassini", account)
         except Exception:
             pass
 
@@ -63,7 +63,7 @@ def _clear_shani_keyring():
 @pytest.fixture
 def app_state():
     """Provide a fresh AppState instance."""
-    from shani_gui.state import AppState
+    from shani_cassini.state import AppState
 
     return AppState()
 
@@ -71,7 +71,7 @@ def app_state():
 @pytest.fixture
 def auth_manager():
     """Provide a fresh AuthManager instance."""
-    from shani_gui.auth import AuthManager
+    from shani_cassini.auth import AuthManager
 
     return AuthManager()
 
@@ -79,7 +79,7 @@ def auth_manager():
 @pytest.fixture
 def api_client(auth_manager):
     """Provide an APIClient with a test base URL."""
-    from shani_gui.api_client import APIClient
+    from shani_cassini.api_client import APIClient
 
     client = APIClient(auth_manager, base_url="http://localhost:9999")
     return client

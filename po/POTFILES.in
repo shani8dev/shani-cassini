@@ -1,4 +1,4 @@
-src/shani_gui/main_window.py
-src/shani_gui/notebook.py
-src/shani_gui/tabs/settings.py
-src/shani_gui/tabs/overview.py
+src/shani_cassini/main_window.py
+src/shani_cassini/notebook.py
+src/shani_cassini/tabs/settings.py
+src/shani_cassini/tabs/overview.py

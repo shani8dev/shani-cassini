@@ -1,4 +1,4 @@
-# Shanios GUI Client
+# Shani Cassini
 
 A native GUI client for managing Shanios systems, built with GTK 4 and Python.
 
@@ -30,8 +30,8 @@ A native GUI client for managing Shanios systems, built with GTK 4 and Python.
 
 ```bash
 # From source
-git clone https://github.com/shani8dev/shani-gui.git
-cd shani-gui
+git clone https://github.com/shani8dev/shani-cassini.git
+cd shani-cassini
 pip install -e .
 
 # Or install via package manager (when available)
@@ -41,7 +41,7 @@ pip install -e .
 ## Usage
 
 ```bash
-shani-gui
+shani-cassini
 ```
 
 ## Development
@@ -67,7 +67,7 @@ pre-commit install
 pytest
 
 # Run all tests with coverage
-pytest --cov=shani_gui tests/
+pytest --cov=shani_cassini tests/
 ```
 
 ### Code formatting
@@ -80,12 +80,12 @@ ruff check --fix .
 ruff check --select I --fix .
 
 # Format code with black
-black shani_gui tests/
+black shani_cassini tests/
 ```
 
 ## Architecture
 
-The Shanios GUI follows a modular architecture:
+The Shani Cassini follows a modular architecture:
 
 - **Main Application**: Handles application lifecycle and global state
 - **Main Window**: Contains the header bar and tabbed interface

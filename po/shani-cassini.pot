@@ -1,187 +1,188 @@
-# English translations for shani-cassini
+#
 msgid ""
 msgstr ""
 "Project-Id-Version: shani-cassini 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
-"Language: en\n"
 "Content-Transfer-Encoding: 8bit\n"
+"Language-Team: Shani Localization\n"
+"MIME-Version: 1.0\n"
 
 msgid "Welcome to Shani"
-msgstr "Welcome to Shani"
+msgstr ""
 
 msgid "Settings"
-msgstr "Settings"
+msgstr ""
 
 msgid "Apply"
-msgstr "Apply"
+msgstr ""
 
 msgid "Cancel"
-msgstr "Cancel"
+msgstr ""
 
 msgid "Save"
-msgstr "Save"
+msgstr ""
 
 msgid "Shani Cassini"
-msgstr "Shani Cassini"
+msgstr ""
 
 msgid "System Information"
-msgstr "System Information"
+msgstr ""
 
 msgid "Health Summary"
-msgstr "Health Summary"
+msgstr ""
 
 msgid "Recommended Apps"
-msgstr "Recommended Apps"
+msgstr ""
 
 msgid "Check Health"
-msgstr "Check Health"
+msgstr ""
 
 msgid "Install Update"
-msgstr "Install Update"
+msgstr ""
 
 msgid "Personal Settings"
-msgstr "Personal Settings"
+msgstr ""
 
 msgid "Hardware Settings"
-msgstr "Hardware Settings"
+msgstr ""
 
 msgid "System Settings"
-msgstr "System Settings"
+msgstr ""
 
 msgid "Theme:"
-msgstr "Theme:"
+msgstr ""
 
 msgid "Dark"
-msgstr "Dark"
+msgstr ""
 
 msgid "Light"
-msgstr "Light"
+msgstr ""
 
 msgid "System Default"
-msgstr "System Default"
+msgstr ""
 
 msgid "Font:"
-msgstr "Font:"
+msgstr ""
 
 msgid "Small"
-msgstr "Small"
+msgstr ""
 
 msgid "Medium"
-msgstr "Medium"
+msgstr ""
 
 msgid "Large"
-msgstr "Large"
+msgstr ""
 
 msgid "Language:"
-msgstr "Language:"
+msgstr ""
 
 msgid "Region:"
-msgstr "Region:"
+msgstr ""
 
 msgid "Format:"
-msgstr "Format:"
+msgstr ""
 
 msgid "English (US)"
-msgstr "English (US)"
+msgstr ""
 
 msgid "French"
-msgstr "French"
+msgstr ""
 
 msgid "German"
-msgstr "German"
+msgstr ""
 
 msgid "Spanish"
-msgstr "Spanish"
+msgstr ""
 
 msgid "India"
-msgstr "India"
+msgstr ""
 
 msgid "United States"
-msgstr "United States"
+msgstr ""
 
 msgid "Canada"
-msgstr "Canada"
+msgstr ""
 
 msgid "Australia"
-msgstr "Australia"
+msgstr ""
 
 msgid "USD ($)"
-msgstr "USD ($)"
+msgstr ""
 
 msgid "Check Again"
-msgstr "Check Again"
+msgstr ""
 
 msgid "Run Full Check"
-msgstr "Run Full Check"
+msgstr ""
 
 msgid "Confirm Update Installation"
-msgstr "Confirm Update Installation"
+msgstr ""
 
 msgid "System is up to date"
-msgstr "System is up to date"
+msgstr ""
 
 msgid "No recommended apps available"
-msgstr "No recommended apps available"
+msgstr ""
 
 msgid "Release Notes"
-msgstr "Release Notes"
+msgstr ""
 
 msgid "Release notes not available"
-msgstr "Release notes not available"
+msgstr ""
 
 msgid "Overview"
-msgstr "Overview"
+msgstr ""
 
 msgid "System"
-msgstr "System"
+msgstr ""
 
 msgid "Updates"
-msgstr "Updates"
+msgstr ""
 
 msgid "Services"
-msgstr "Services"
+msgstr ""
 
 msgid "Fleet"
-msgstr "Fleet"
+msgstr ""
 
 msgid "Health"
-msgstr "Health"
+msgstr ""
 
 msgid "Deploy"
-msgstr "Deploy"
+msgstr ""
 
 msgid "Skills"
-msgstr "Skills"
+msgstr ""
 
 msgid "Backup"
-msgstr "Backup"
+msgstr ""
 
 msgid "Chronoa"
-msgstr "Chronoa"
+msgstr ""
 
 msgid "Kernel"
-msgstr "Kernel"
+msgstr ""
 
 msgid "Secure Boot"
-msgstr "Secure Boot"
+msgstr ""
 
 msgid "Drivers"
-msgstr "Drivers"
+msgstr ""
 
 msgid "Error loading {label} tab"
-msgstr "Error loading {label} tab"
+msgstr ""
 
 msgid "ShaniosApplication"
-msgstr "ShaniosApplication"
+msgstr ""
 
 msgid "Shanios Main Window"
-msgstr "Shanios Main Window"
+msgstr ""
 
 msgid "Show input menu in menu bar"
-msgstr "Show input menu in menu bar"
+msgstr ""
 
 msgid "About This System"
-msgstr "About This System"
+msgstr ""
 
 msgid "Boot Slot Status"
-msgstr "Boot Slot Status"
+msgstr ""

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from shani_gui.catalog import CatalogApp, load_apps, app_package_for
+from shani_cassini.catalog import CatalogApp, load_apps, app_package_for
 
 
 class TestLoadApps:

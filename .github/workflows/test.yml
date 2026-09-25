@@ -7,7 +7,7 @@ on:
     branches: [master]
 
 concurrency:
-  group: shani-gui-ci
+  group: shani-cassini-ci
   cancel-in-progress: true
 
 jobs:
@@ -26,9 +26,9 @@ jobs:
       test-command: |
         # httpx2 (declared in pyproject) does not ship an `httpx` module;
         # the codebase still does `import httpx`, so the alias shim in
-        # src/shani_gui/_httpx_compat.py must run first or pytest silently
+        # src/shani_cassini/_httpx_compat.py must run first or pytest silently
         # falls back to any legacy httpx on the runner.
-        python3 -c "import shani_gui._httpx_compat"
+        python3 -c "import shani_cassini._httpx_compat"
         # GTK4 windows need a display: headless, test_application segfaults
         xvfb-run -a python3 -m pytest tests/ -v
       python-version: "3.12"

@@ -1,4 +1,4 @@
-"""Tests for shani-gui auth manager.
+"""Tests for shani-cassini auth manager.
 
 Covers in-memory auth behavior and keyring-backed credential storage
 (save/load round-trip, not-available fallback, logout clears).
@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from shani_gui.auth import AuthManager
+from shani_cassini.auth import AuthManager
 
 
 class MockKeyring:
@@ -329,7 +329,7 @@ class TestKeyringStorage:
     def test_save_load_roundtrip(self):
         """Credentials saved to keyring can be loaded by a new AuthManager."""
         mock_kr = MockKeyring()
-        with patch("shani_gui.auth.keyring", mock_kr):
+        with patch("shani_cassini.auth.keyring", mock_kr):
             am = AuthManager(base_url="http://localhost:9999")
             am._access_token = "tok-abc"
             am._refresh_token = "tok-refresh"
@@ -350,7 +350,7 @@ class TestKeyringStorage:
 
     def test_keyring_not_available_fallback(self):
         """App works with in-memory storage when keyring is unavailable."""
-        with patch("shani_gui.auth.keyring", None):
+        with patch("shani_cassini.auth.keyring", None):
             am = AuthManager(base_url="http://localhost:9999")
             assert am._keyring_available is False
             assert am._access_token is None
@@ -359,7 +359,7 @@ class TestKeyringStorage:
     def test_logout_clears_keyring(self):
         """Logout deletes credentials from keyring."""
         mock_kr = MockKeyring()
-        with patch("shani_gui.auth.keyring", mock_kr):
+        with patch("shani_cassini.auth.keyring", mock_kr):
             am = AuthManager(base_url="http://localhost:9999")
             am._access_token = "tok-abc"
             am._refresh_token = "tok-refresh"
@@ -371,10 +371,10 @@ class TestKeyringStorage:
             am._save_credentials()
 
             # Verify credentials are in keyring
-            cred = mock_kr.get_credential("shani-gui", "credentials")
+            cred = mock_kr.get_credential("shani-cassini", "credentials")
             assert cred is not None
 
             # Logout should clear keyring
             am.logout()
-            cred = mock_kr.get_credential("shani-gui", "credentials")
+            cred = mock_kr.get_credential("shani-cassini", "credentials")
             assert cred is None

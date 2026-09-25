@@ -1,1 +1,0 @@
-"""Shanios GUI Client - Main Package"""

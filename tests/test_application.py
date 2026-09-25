@@ -1,4 +1,4 @@
-"""Tests for shani-gui application construction and activation."""
+"""Tests for shani-cassini application construction and activation."""
 
 import gi
 import pytest
@@ -12,22 +12,22 @@ class TestShaniosApplication:
 
     def test_application_instantiation(self):
         """ShaniosApplication can be constructed with correct application_id."""
-        from shani_gui.application import ShaniosApplication
+        from shani_cassini.application import ShaniosApplication
 
         app = ShaniosApplication()
         assert app is not None
-        assert app.get_application_id() == "dev.shani8.gui"
+        assert app.get_application_id() == "dev.shani.cassini"
         assert app.get_flags() & Gio.ApplicationFlags.HANDLES_COMMAND_LINE
 
     def test_application_is_gtk_application(self):
         """ShaniosApplication is a Gtk.Application subclass."""
-        from shani_gui.application import ShaniosApplication
+        from shani_cassini.application import ShaniosApplication
 
         assert issubclass(ShaniosApplication, Gtk.Application)
 
     def test_application_has_state_and_auth(self):
         """Application initializes with None state and auth_manager."""
-        from shani_gui.application import ShaniosApplication
+        from shani_cassini.application import ShaniosApplication
 
         app = ShaniosApplication()
         assert app._state is None
@@ -37,9 +37,9 @@ class TestShaniosApplication:
 
     def test_application_do_startup(self):
         """do_startup initializes state and auth_manager."""
-        from shani_gui.application import ShaniosApplication
-        from shani_gui.state import AppState
-        from shani_gui.auth import AuthManager
+        from shani_cassini.application import ShaniosApplication
+        from shani_cassini.state import AppState
+        from shani_cassini.auth import AuthManager
 
         app = ShaniosApplication()
         # Bypass @override wrapper issue — call the implementation directly
@@ -51,8 +51,8 @@ class TestShaniosApplication:
 
     def test_application_do_activate_creates_window(self):
         """do_activate creates and presents the main window."""
-        from shani_gui.application import ShaniosApplication
-        from shani_gui.main_window import ShaniosMainWindow
+        from shani_cassini.application import ShaniosApplication
+        from shani_cassini.main_window import ShaniosMainWindow
 
         app = ShaniosApplication()
         app._state = type("S", (), {"is_connected": False, "username": None, "update_available": False})()
@@ -65,16 +65,16 @@ class TestShaniosApplication:
 
     def test_application_do_activate_creates_status_icon(self):
         """do_activate creates a status icon after window."""
-        from shani_gui.application import ShaniosApplication
+        from shani_cassini.application import ShaniosApplication
 
         app = ShaniosApplication()
         app._state = type("S", (), {"is_connected": False, "username": None, "update_available": False})()
         app._auth_manager = None
         if not app._main_window:
-            from shani_gui.main_window import ShaniosMainWindow
+            from shani_cassini.main_window import ShaniosMainWindow
             app._main_window = ShaniosMainWindow(app)
         if not app._status_icon:
-            from shani_gui.status_icon import StatusIcon
+            from shani_cassini.status_icon import StatusIcon
             app._status_icon = StatusIcon(
                 state=app._state,
                 auth_manager=app._auth_manager,
@@ -84,16 +84,16 @@ class TestShaniosApplication:
 
     def test_application_do_shutdown(self):
         """do_shutdown cleans up status icon."""
-        from shani_gui.application import ShaniosApplication
+        from shani_cassini.application import ShaniosApplication
 
         app = ShaniosApplication()
         app._state = type("S", (), {"is_connected": False, "username": None, "update_available": False})()
         app._auth_manager = None
         if not app._main_window:
-            from shani_gui.main_window import ShaniosMainWindow
+            from shani_cassini.main_window import ShaniosMainWindow
             app._main_window = ShaniosMainWindow(app)
         if not app._status_icon:
-            from shani_gui.status_icon import StatusIcon
+            from shani_cassini.status_icon import StatusIcon
             app._status_icon = StatusIcon(
                 state=app._state,
                 auth_manager=app._auth_manager,
@@ -108,7 +108,7 @@ class TestShaniosApplication:
 
     def test_application_has_quit_action(self):
         """Application has a quit action with Ctrl+Q accelerator."""
-        from shani_gui.application import ShaniosApplication
+        from shani_cassini.application import ShaniosApplication
 
         app = ShaniosApplication()
         app._create_actions()
@@ -120,7 +120,7 @@ class TestShaniosApplication:
 
     def test_application_has_about_action(self):
         """Application has an about action."""
-        from shani_gui.application import ShaniosApplication
+        from shani_cassini.application import ShaniosApplication
 
         app = ShaniosApplication()
         app._create_actions()
@@ -133,18 +133,18 @@ class TestShaniosMainWindow:
 
     def test_main_window_instantiation(self):
         """ShaniosMainWindow can be constructed with an application."""
-        from shani_gui.application import ShaniosApplication
-        from shani_gui.main_window import ShaniosMainWindow
+        from shani_cassini.application import ShaniosApplication
+        from shani_cassini.main_window import ShaniosMainWindow
 
         app = ShaniosApplication()
         window = ShaniosMainWindow(app)
         assert window is not None
-        assert window.get_title() == "Shanios System Manager"
+        assert window.get_title() == "Shani Cassini"
 
     def test_main_window_has_notebook(self):
         """Main window contains a ShaniosNotebook."""
-        from shani_gui.application import ShaniosApplication
-        from shani_gui.main_window import ShaniosMainWindow
+        from shani_cassini.application import ShaniosApplication
+        from shani_cassini.main_window import ShaniosMainWindow
 
         app = ShaniosApplication()
         window = ShaniosMainWindow(app)
@@ -152,8 +152,8 @@ class TestShaniosMainWindow:
 
     def test_main_window_default_size(self):
         """Main window has correct default size."""
-        from shani_gui.application import ShaniosApplication
-        from shani_gui.main_window import ShaniosMainWindow
+        from shani_cassini.application import ShaniosApplication
+        from shani_cassini.main_window import ShaniosMainWindow
 
         app = ShaniosApplication()
         window = ShaniosMainWindow(app)
@@ -162,8 +162,8 @@ class TestShaniosMainWindow:
 
     def test_main_window_has_header_bar(self):
         """Main window has a header bar with status indicators."""
-        from shani_gui.application import ShaniosApplication
-        from shani_gui.main_window import ShaniosMainWindow
+        from shani_cassini.application import ShaniosApplication
+        from shani_cassini.main_window import ShaniosMainWindow
 
         app = ShaniosApplication()
         window = ShaniosMainWindow(app)
@@ -173,9 +173,9 @@ class TestShaniosMainWindow:
 
     def test_main_window_update_status_indicators(self):
         """update_status_indicators works with AppState."""
-        from shani_gui.application import ShaniosApplication
-        from shani_gui.main_window import ShaniosMainWindow
-        from shani_gui.state import AppState
+        from shani_cassini.application import ShaniosApplication
+        from shani_cassini.main_window import ShaniosMainWindow
+        from shani_cassini.state import AppState
 
         app = ShaniosApplication()
         window = ShaniosMainWindow(app)

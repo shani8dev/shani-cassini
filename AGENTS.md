@@ -1,4 +1,4 @@
-# Agent instructions — shani-gui
+# Agent instructions — shani-cassini
 
 This file applies to any AI coding assistant working in this repository
 (Claude Code, opencode, Kilo Code, Cursor, Aider, or similar). Read this
@@ -11,7 +11,7 @@ A native GTK4/Python GUI client for managing Shanios systems. Provides
 system overview, hardware/software info, service management, update
 management, fleet management, health diagnostics, deployment/rollback
 management, and Chronoa AI assistant integration. Uses PyGObject (GTK4),
-httpx2, and keyring for secure credential storage (`src/shani_gui/auth.py`
+httpx2, and keyring for secure credential storage (`src/shani_cassini/auth.py`
 loads/saves via the system keyring with a graceful memory-only fallback
 when unavailable — commit `a77f5b7`, 2026-09-18; superseded the earlier
 in-memory-only implementation this file used to describe). Follows a modular
@@ -57,7 +57,7 @@ summary — what's true right now, not how it got that way.
   versions before committing the fix.
 - **Stale duplicate `src/api_client.py` — removed (2026-09-18,
   `1bc719e`).** A top-level 435-line duplicate of
-  `src/shani_gui/api_client.py`, one method behind (missing
+  `src/shani_cassini/api_client.py`, one method behind (missing
   `get_gateway_status()`, which `deploy.py`/`updates.py` actually call)
   and unreferenced anywhere (grepped the whole tree before deleting).
 - **`tests/` was previously empty (roadmap item #17) — no longer true.**
@@ -100,7 +100,7 @@ Based on a full scan of 29 garuda-linux repos mapped against shani (see `../garu
 
 ### Architecture comparison vs garuda-assistant
 
-| Aspect | Shani GUI | Garuda Assistant |
+| Aspect | Shani Cassini | Garuda Assistant |
 |--------|-----------|------------------|
 | Tech stack | Python/GTK4 (PyGObject) | C++/Qt6 (CMake) |
 | Architecture | Native GTK4 app, tabbed notebook | Native Qt6 app, single window |
@@ -136,7 +136,7 @@ Based on a full scan of 29 garuda-linux repos mapped against shani (see `../garu
 
 ### 🔗 Cross-repo trust chain
 
-5. **Chronoa integration** — shani-gui's ChronoaTab integrates with `shani-chronoa` via GSettings (`org.shani.chronoa` schema) and `ChronoaConfig`. See `shani-chronoa/AGENTS.md` for the critical security gaps (sandbox, secrets vault) that this tab's config display will eventually surface to users.
+5. **Chronoa integration** — shani-cassini's ChronoaTab integrates with `shani-chronoa` via GSettings (`org.shani.chronoa` schema) and `ChronoaConfig`. See `shani-chronoa/AGENTS.md` for the critical security gaps (sandbox, secrets vault) that this tab's config display will eventually surface to users.
 
 6. **API client** — The api_client.py handles communication with Shanios platform services (auth, fleet, licensing). Changes here may affect shani-platform/AGENTS.md's route contracts.
 
@@ -147,7 +147,7 @@ This is a GTK4 application. A source read can miss runtime-only bugs (removed GT
 # Construct real GTK objects to catch API-removal bugs
 python3 -c "
 import gi; gi.require_version('Gtk','4.0')
-from shani_gui.application import ShaniosApplication
+from shani_cassini.application import ShaniosApplication
 from gi.repository import Gtk
 app = Gtk.Application(application_id='test.shani.gui')
 app.connect('activate', lambda a: (a.do_activate(), a.quit()))
@@ -159,17 +159,17 @@ app.run([])
 
 A green `pytest` run proves construction and logic, not actual rendering
 — it's the floor, not the ceiling. For anything touching layout, styling,
-or widget visibility, also run `shani-gui` with a real display (or a
+or widget visibility, also run `shani-cassini` with a real display (or a
 headless Wayland/X compositor) and look at it, the same way `test_tabs.py`
 proves objects construct but a `SyntaxError` in `about_dialog.py` still
 shipped past it once because nothing had actually launched the app.
 
 ```bash
 # Syntax check
-python3 -m py_compile src/shani_gui/*.py src/shani_gui/tabs/*.py
+python3 -m py_compile src/shani_cassini/*.py src/shani_cassini/tabs/*.py
 
 # Run the app (if display available) or construct objects as above
-shani-gui
+shani-cassini
 ```
 
 ## Cross-repo impact
@@ -189,19 +189,19 @@ Re-scan against `../garuda-catalog.md` (29 repos, not 34). **Confirmed mapping: 
 
 **Fundamentally different stacks**:
 
-- shani-gui: GTK4/Python (PyGObject), GSettings + keyring, tabbed notebook
+- shani-cassini: GTK4/Python (PyGObject), GSettings + keyring, tabbed notebook
 - garuda GUI apps: Qt6/C++ (CMake) — garuda-assistant, garuda-welcome, garuda-boot-options, garuda-boot-repair, garuda-downloader, garuda-gamer, garuda-network-assistant, garuda-nix-manager, garuda-system-maintenance, firefly, btrfs-assistant; garuda-settings-manager is Qt5/KF5
 
-**Key gap — Qt GUI fleet**: garuda has **12 Qt system-management GUI apps** (11 Qt6/C++ + garuda-settings-manager on Qt5/KF5); shani has only **1** (shani-gui). Garuda's fleet covers boot options, boot repair, network assistant, gamer, downloader, nix manager, system maintenance, btrfs assistant, welcome — shani-gui is expected to cover all of those surfaces from one tabbed app.
+**Key gap — Qt GUI fleet**: garuda has **12 Qt system-management GUI apps** (11 Qt6/C++ + garuda-settings-manager on Qt5/KF5); shani has only **1** (shani-cassini). Garuda's fleet covers boot options, boot repair, network assistant, gamer, downloader, nix manager, system maintenance, btrfs assistant, welcome — shani-cassini is expected to cover all of those surfaces from one tabbed app.
 
-**New gaps** (garuda-assistant has, shani-gui lacks):
+**New gaps** (garuda-assistant has, shani-cassini lacks):
 
-1. **pkexec policy file** — garuda-assistant ships `org.garuda.garuda-assistant.pkexec.policy` for privileged operations; shani-gui ships `data/dev.shani8.gui.policy` (action id `org.shani.gui.pkexec`) for privileged operations.
-2. **Translations infrastructure** — garuda-assistant has `translations/` + `qt6_create_translation` extraction; shani-gui has `po/` (`en.po`, `hi.po`, `shani-gui.pot`, `POTFILES.in`) with real, filled-in translations (61 entries each, verified 2026-09-19 — `hi.po`'s `msgstr`s are genuine Devanagari text, not copies of the English source), a `po/update_translations.sh` regen script (`xgettext`+`msgmerge`+`msgfmt -c`), and runtime locale detection via `GLib.get_language_names()` in `i18n.py`'s `detect_locale()`.
-3. **CI/CD** — garuda-assistant has GitLab CI; shani-gui has no CI workflows.
-4. **Build-time config** — garuda-assistant uses CMake `config.h.in`; shani-gui uses `pyproject.toml` only.
+1. **pkexec policy file** — garuda-assistant ships `org.garuda.garuda-assistant.pkexec.policy` for privileged operations; shani-cassini ships `data/dev.shani.cassini.policy` (action id `org.shani.cassini.pkexec`) for privileged operations.
+2. **Translations infrastructure** — garuda-assistant has `translations/` + `qt6_create_translation` extraction; shani-cassini has `po/` (`en.po`, `hi.po`, `shani-cassini.pot`, `POTFILES.in`) with real, filled-in translations (61 entries each, verified 2026-09-19 — `hi.po`'s `msgstr`s are genuine Devanagari text, not copies of the English source), a `po/update_translations.sh` regen script (`xgettext`+`msgmerge`+`msgfmt -c`), and runtime locale detection via `GLib.get_language_names()` in `i18n.py`'s `detect_locale()`.
+3. **CI/CD** — garuda-assistant has GitLab CI; shani-cassini has no CI workflows.
+4. **Build-time config** — garuda-assistant uses CMake `config.h.in`; shani-cassini uses `pyproject.toml` only.
 
-**Shani advantages** (shani-gui has, garuda lacks):
+**Shani advantages** (shani-cassini has, garuda lacks):
 
 - Fleet management tab (talks to shani-platform `/api/*` — garuda has no fleet concept)
 - Chronoa AI assistant integration tab (garuda-assistant has no AI assistant)
@@ -212,11 +212,11 @@ Re-scan against `../garuda-catalog.md` (29 repos, not 34). **Confirmed mapping: 
 
 Implementation priorities are per `../IMPLEMENTATION-ROADMAP.md` (master roadmap for the whole shani ecosystem).
 
-shani-gui already leads garuda's GUI fleet where it counts for this project: a fleet-management tab talking to `shani-platform`, a Chronoa AI-assistant integration tab, a tabbed all-in-one design instead of garuda's one-app-per-task Qt fleet, and real system-keyring credential storage (shipped 2026-09-18, no longer intended-only). The items below port *patterns* from garuda-assistant, never its Qt6/C++ code — shani-gui is GTK4/Python and stays that way.
+shani-cassini already leads garuda's GUI fleet where it counts for this project: a fleet-management tab talking to `shani-platform`, a Chronoa AI-assistant integration tab, a tabbed all-in-one design instead of garuda's one-app-per-task Qt fleet, and real system-keyring credential storage (shipped 2026-09-18, no longer intended-only). The items below port *patterns* from garuda-assistant, never its Qt6/C++ code — shani-cassini is GTK4/Python and stays that way.
 
 1. **Test Suite** (P2, 3-5 days) — `tests/` has a foundation (`conftest.py`, `test_api_client.py`, `test_application.py`, `test_auth.py`, `test_tabs.py`) but needs expansion. Add mock-HTTP tests for `api_client.py`, keyring integration tests for `auth.py`, and broader tab coverage (pattern: shani-fleet's 88 functional tests). Wire `python3 -m pytest tests/ -v` into CI (roadmap #17).
 
-2. **pkexec Policy for Privileged Operations** (P2, 1 day) — Deploy, health, and service tabs need root. A policy ships (`data/dev.shani8.gui.policy`, action id `org.shani.gui.pkexec`); the remaining work is to whitelist the specific D-Bus methods / CLI commands needing elevation and integrate it with the existing CLI wrappers (pattern: garuda-assistant's `org.garuda.garuda-assistant.pkexec.policy`; roadmap #18).
+2. **pkexec Policy for Privileged Operations** (P2, 1 day) — Deploy, health, and service tabs need root. A policy ships (`data/dev.shani.cassini.policy`, action id `org.shani.cassini.pkexec`); the remaining work is to whitelist the specific D-Bus methods / CLI commands needing elevation and integrate it with the existing CLI wrappers (pattern: garuda-assistant's `org.garuda.garuda-assistant.pkexec.policy`; roadmap #18).
 
 3. **i18n / Translation Infrastructure — DONE** (verified 2026-09-19) — `po/` has filled `en.po`/`hi.po` (61 entries each, real Hindi translations), `po/update_translations.sh` regenerates the catalog via `xgettext`+`msgmerge`+`msgfmt -c` (script itself verified by reading + a real `babel` parse/compile of both `.po` files since `xgettext`/`msgfmt` binaries aren't installed in this sandbox and passwordless sudo isn't available to add them — a human with those tools should run the script for real at least once), and `i18n.py`'s `detect_locale()` does runtime locale detection via `GLib.get_language_names()` with `LANGUAGE`/`LC_ALL`/`LC_MESSAGES`/`LANG` env-var fallback. Remaining: more languages beyond en/hi, and CI wiring (see #4 below).
 

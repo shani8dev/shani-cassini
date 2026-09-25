@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Shani Cassini
+GenericName=System Manager
+Comment=Keep your Shanios system updated, healthy and recoverable
+Exec=shani-cassini
+Icon=dev.shani.cassini
+Terminal=false
+Categories=System;GTK;
+Keywords=update;rollback;deploy;health;services;drivers;kernel;secure boot;backup;fleet;
+StartupNotify=true
+StartupWMClass=dev.shani.cassini

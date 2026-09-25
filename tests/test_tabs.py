@@ -1,4 +1,4 @@
-"""Tests for shani-gui tab construction."""
+"""Tests for shani-cassini tab construction."""
 
 import subprocess
 import unittest.mock
@@ -12,15 +12,15 @@ gi.require_version("Gtk", "4.0")
 
 # Tab classes that can be imported directly
 DIRECT_TABS = [
-    ("OverviewTab", "shani_gui.tabs.overview"),
-    ("SystemTab", "shani_gui.tabs.system"),
-    ("UpdatesTab", "shani_gui.tabs.updates"),
-    ("ServicesTab", "shani_gui.tabs.services"),
-    ("DeployTab", "shani_gui.tabs.deploy"),
-    ("SettingsTab", "shani_gui.tabs.settings"),
-    ("KernelTab", "shani_gui.tabs.kernel"),
-    ("SecureBootTab", "shani_gui.tabs.secureboot"),
-    ("DriversTab", "shani_gui.tabs.drivers"),
+    ("OverviewTab", "shani_cassini.tabs.overview"),
+    ("SystemTab", "shani_cassini.tabs.system"),
+    ("UpdatesTab", "shani_cassini.tabs.updates"),
+    ("ServicesTab", "shani_cassini.tabs.services"),
+    ("DeployTab", "shani_cassini.tabs.deploy"),
+    ("SettingsTab", "shani_cassini.tabs.settings"),
+    ("KernelTab", "shani_cassini.tabs.kernel"),
+    ("SecureBootTab", "shani_cassini.tabs.secureboot"),
+    ("DriversTab", "shani_cassini.tabs.drivers"),
 ]
 
 
@@ -32,8 +32,8 @@ class TestDirectTabs:
         """Each tab can be constructed with state and auth_manager."""
         mod = __import__(module_name, fromlist=[tab_name])
         tab_class = getattr(mod, tab_name)
-        from shani_gui.state import AppState
-        from shani_gui.auth import AuthManager
+        from shani_cassini.state import AppState
+        from shani_cassini.auth import AuthManager
 
         state = AppState()
         auth = AuthManager()
@@ -46,8 +46,8 @@ class TestDirectTabs:
         """Each tab stores state and auth_manager references."""
         mod = __import__(module_name, fromlist=[tab_name])
         tab_class = getattr(mod, tab_name)
-        from shani_gui.state import AppState
-        from shani_gui.auth import AuthManager
+        from shani_cassini.state import AppState
+        from shani_cassini.auth import AuthManager
 
         state = AppState()
         auth = AuthManager()
@@ -61,9 +61,9 @@ class TestFleetTab:
 
     def test_fleet_tab_constructs(self):
         """FleetTab can be constructed."""
-        from shani_gui.tabs.fleet import FleetTab
-        from shani_gui.state import AppState
-        from shani_gui.auth import AuthManager
+        from shani_cassini.tabs.fleet import FleetTab
+        from shani_cassini.state import AppState
+        from shani_cassini.auth import AuthManager
 
         state = AppState()
         auth = AuthManager()
@@ -77,9 +77,9 @@ class TestHealthTab:
 
     def test_health_tab_constructs(self):
         """HealthTab can be constructed."""
-        from shani_gui.tabs.health import HealthTab
-        from shani_gui.state import AppState
-        from shani_gui.auth import AuthManager
+        from shani_cassini.tabs.health import HealthTab
+        from shani_cassini.state import AppState
+        from shani_cassini.auth import AuthManager
 
         state = AppState()
         auth = AuthManager()
@@ -98,12 +98,12 @@ class TestSkillsTab:
 
         # SkillsTab calls auth_manager.get_cli_wrapper() which doesn't exist.
         # Mock it before construction.
-        from shani_gui.auth import AuthManager
+        from shani_cassini.auth import AuthManager
         if not hasattr(AuthManager, "get_cli_wrapper"):
             AuthManager.get_cli_wrapper = lambda self: MagicMock()
 
-        from shani_gui.tabs.skills import SkillsTab
-        from shani_gui.state import AppState
+        from shani_cassini.tabs.skills import SkillsTab
+        from shani_cassini.state import AppState
 
         state = AppState()
         auth = AuthManager()
@@ -117,7 +117,7 @@ class TestNotebook:
 
     def test_notebook_creates_all_tabs(self):
         """ShaniosNotebook creates all 14 tabs."""
-        from shani_gui.notebook import ShaniosNotebook
+        from shani_cassini.notebook import ShaniosNotebook
         from unittest.mock import MagicMock
 
         # Mock external modules if not already done
@@ -137,7 +137,7 @@ class TestNotebook:
 
     def test_notebook_tab_labels(self):
         """Notebook tabs have correct labels."""
-        from shani_gui.notebook import ShaniosNotebook
+        from shani_cassini.notebook import ShaniosNotebook
         from unittest.mock import MagicMock
 
         import sys
@@ -178,10 +178,10 @@ class TestOverviewRecommendedApps:
 
     def test_overview_has_recommended_apps_card(self):
         """OverviewTab includes a Recommended Apps card from the catalog."""
-        from shani_gui.tabs.overview import OverviewTab
-        from shani_gui.widgets import Card
-        from shani_gui.state import AppState
-        from shani_gui.auth import AuthManager
+        from shani_cassini.tabs.overview import OverviewTab
+        from shani_cassini.widgets import Card
+        from shani_cassini.state import AppState
+        from shani_cassini.auth import AuthManager
 
         state = AppState()
         auth = AuthManager()
@@ -210,9 +210,9 @@ class TestSecureBootGenEfiRouting:
     """Prove the SecureBoot tab routes MOK actions through gen-efi, not mokutil."""
 
     def _make_tab(self):
-        from shani_gui.tabs.secureboot import SecureBootTab
-        from shani_gui.state import AppState
-        from shani_gui.auth import AuthManager
+        from shani_cassini.tabs.secureboot import SecureBootTab
+        from shani_cassini.state import AppState
+        from shani_cassini.auth import AuthManager
         return SecureBootTab(state=AppState(), auth_manager=AuthManager())
 
     def _find_button(self, tab, name):
@@ -244,8 +244,8 @@ class TestSecureBootGenEfiRouting:
         tab = self._make_tab()
         btn = self._find_button(tab, "mok-enroll-btn")
         assert btn is not None, "enroll button must exist"
-        with patch("shani_gui.tabs.secureboot.subprocess.run") as mock_run, \
-             patch("shani_gui.tabs.secureboot.SecureBootTab._show_gen_efi_result"):
+        with patch("shani_cassini.tabs.secureboot.subprocess.run") as mock_run, \
+             patch("shani_cassini.tabs.secureboot.SecureBootTab._show_gen_efi_result"):
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
             tab._on_enroll_mok(btn)
             mock_run.assert_called_once()
@@ -260,8 +260,8 @@ class TestSecureBootGenEfiRouting:
         tab = self._make_tab()
         btn = self._find_button(tab, "mok-cleanup-btn")
         assert btn is not None, "cleanup button must exist"
-        with patch("shani_gui.tabs.secureboot.subprocess.run") as mock_run, \
-             patch("shani_gui.tabs.secureboot.SecureBootTab._show_gen_efi_result"):
+        with patch("shani_cassini.tabs.secureboot.subprocess.run") as mock_run, \
+             patch("shani_cassini.tabs.secureboot.SecureBootTab._show_gen_efi_result"):
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
             tab._on_cleanup_mok(btn)
             mock_run.assert_called_once()
@@ -276,8 +276,8 @@ class TestSecureBootGenEfiRouting:
         from unittest.mock import patch, MagicMock
         tab = self._make_tab()
         btn = self._find_button(tab, "mok-enroll-btn")
-        with patch("shani_gui.tabs.secureboot.subprocess.run") as mock_run, \
-             patch("shani_gui.tabs.secureboot.SecureBootTab._show_gen_efi_result"):
+        with patch("shani_cassini.tabs.secureboot.subprocess.run") as mock_run, \
+             patch("shani_cassini.tabs.secureboot.SecureBootTab._show_gen_efi_result"):
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
             tab._on_enroll_mok(btn)
             tab._on_cleanup_mok(self._find_button(tab, "mok-cleanup-btn"))
@@ -291,9 +291,9 @@ class TestKernelTab:
     """Prove the Kernel tab is info-only on an immutable distro."""
 
     def _make_tab(self):
-        from shani_gui.tabs.kernel import KernelTab
-        from shani_gui.state import AppState
-        from shani_gui.auth import AuthManager
+        from shani_cassini.tabs.kernel import KernelTab
+        from shani_cassini.state import AppState
+        from shani_cassini.auth import AuthManager
         return KernelTab(state=AppState(), auth_manager=AuthManager())
 
     def test_kernel_tab_constructs(self):
@@ -303,7 +303,7 @@ class TestKernelTab:
 
     def test_kernel_tab_has_no_mutating_buttons(self):
         """Immutable gate: the Kernel tab must NOT expose install/remove/update UI."""
-        from shani_gui.tabs import kernel as kernel_mod
+        from shani_cassini.tabs import kernel as kernel_mod
         import inspect
         src = inspect.getsource(kernel_mod)
         button_labels = []
@@ -328,7 +328,7 @@ class TestKernelTab:
 
     def test_kernel_helpers_read_proc(self):
         """_booted_slot and _modules_info read read-only /proc data."""
-        from shani_gui.tabs.kernel import _booted_slot, _modules_info
+        from shani_cassini.tabs.kernel import _booted_slot, _modules_info
         # booted slot parses subvol=@<slot> from /proc/cmdline; on this host
         # it is either a real slot name or empty string — never raises.
         slot = _booted_slot()
@@ -340,7 +340,7 @@ class TestKernelTab:
 
     def test_kernel_helpers_read_proc(self):
         """_booted_slot and _modules_info read read-only /proc data."""
-        from shani_gui.tabs.kernel import _booted_slot, _modules_info
+        from shani_cassini.tabs.kernel import _booted_slot, _modules_info
         # booted slot parses subvol=@<slot> from /proc/cmdline; on this host
         # it is either a real slot name or empty string — never raises.
         slot = _booted_slot()
@@ -355,7 +355,7 @@ class TestSecureBootGenEfiErrorPaths:
     """Verify _run_gen_efi error enrichment (FileNotFoundError + timeout)."""
 
     def _make_tab(self):
-        from shani_gui.tabs.secureboot import SecureBootTab
+        from shani_cassini.tabs.secureboot import SecureBootTab
         # bypass __init__ — we only exercise _run_gen_efi's error routing
         tab = SecureBootTab.__new__(SecureBootTab)
         tab._show_gen_efi_result = unittest.mock.MagicMock()
@@ -363,7 +363,7 @@ class TestSecureBootGenEfiErrorPaths:
 
     def test_filenotfound_enriches_and_surfaces(self):
         tab = self._make_tab()
-        with unittest.mock.patch("shani_gui.tabs.secureboot.subprocess.run",
+        with unittest.mock.patch("shani_cassini.tabs.secureboot.subprocess.run",
                                  side_effect=FileNotFoundError("no pkexec")):
             tab._run_gen_efi("enroll-mok", "Enroll", "detail")
         tab._show_gen_efi_result.assert_called_once()
@@ -374,7 +374,7 @@ class TestSecureBootGenEfiErrorPaths:
     def test_timeout_enriches_and_surfaces(self):
         import subprocess as sp
         tab = self._make_tab()
-        with unittest.mock.patch("shani_gui.tabs.secureboot.subprocess.run",
+        with unittest.mock.patch("shani_cassini.tabs.secureboot.subprocess.run",
                                  side_effect=sp.TimeoutExpired(cmd="gen-efi", timeout=60)):
             tab._run_gen_efi("cleanup-mok", "Cleanup", "detail")
         tab._show_gen_efi_result.assert_called_once()
@@ -387,15 +387,15 @@ class TestUpdatesTabCliWrapper:
     shani-deploy subprocess logic."""
 
     def _make_tab(self):
-        from shani_gui.tabs.updates import UpdatesTab
-        from shani_gui.state import AppState
-        from shani_gui.auth import AuthManager
+        from shani_cassini.tabs.updates import UpdatesTab
+        from shani_cassini.state import AppState
+        from shani_cassini.auth import AuthManager
         return UpdatesTab(state=AppState(), auth_manager=AuthManager())
 
     def test_cli_wrapper_is_initialized(self):
         """The latent missing-init bug: _cli_wrapper must be assigned in
         __init__ so _fetch_update_info can call it."""
-        from shani_gui.cli_wrapper import CLIWrapper
+        from shani_cassini.cli_wrapper import CLIWrapper
         tab = self._make_tab()
         assert isinstance(tab._cli_wrapper, CLIWrapper)
 
@@ -412,7 +412,7 @@ class TestUpdatesTabCliWrapper:
                 "latest_version": "20260912",
                 "update_available": True,
             }
-            with patch("shani_gui.tabs.updates.GLib.idle_add") as mock_idle:
+            with patch("shani_cassini.tabs.updates.GLib.idle_add") as mock_idle:
                 mock_idle.side_effect = lambda fn, *a, **k: fn(*a, **k)
                 tab._check_updates_thread()
         mock_check.assert_called_once_with()
@@ -427,7 +427,7 @@ class TestUpdatesTabCliWrapper:
             tab._cli_wrapper, "get_deploy_updates", return_value=None
         ):
             with patch.object(tab, "_show_check_error") as mock_error:
-                with patch("shani_gui.tabs.updates.GLib.idle_add") as mock_idle:
+                with patch("shani_cassini.tabs.updates.GLib.idle_add") as mock_idle:
                     mock_idle.side_effect = lambda fn, *a, **k: fn(*a, **k)
                     tab._check_updates_thread()
         mock_error.assert_called_once()
@@ -439,9 +439,9 @@ class TestUpdatesTabChannelContract:
     shani-deploy --set-channel via CLIWrapper."""
 
     def _make_tab(self):
-        from shani_gui.tabs.updates import UpdatesTab
-        from shani_gui.state import AppState
-        from shani_gui.auth import AuthManager
+        from shani_cassini.tabs.updates import UpdatesTab
+        from shani_cassini.state import AppState
+        from shani_cassini.auth import AuthManager
         return UpdatesTab(state=AppState(), auth_manager=AuthManager())
 
     def test_set_update_channel_rejects_unsupported(self):
@@ -459,7 +459,7 @@ class TestUpdatesTabChannelContract:
         """set_update_channel must call shani-deploy --set-channel <chan>
         via the shared wrapper."""
         from unittest.mock import patch, MagicMock
-        from shani_gui.cli_wrapper import CLIWrapper
+        from shani_cassini.cli_wrapper import CLIWrapper
         wrapper = CLIWrapper()
         with patch.object(
             wrapper, "run_shani_deploy"
@@ -480,7 +480,7 @@ class TestUpdatesTabChannelContract:
         with patch.object(
             tab._cli_wrapper, "set_update_channel"
         ) as mock_set:
-            with patch("shani_gui.tabs.updates.GLib.idle_add") as mock_idle:
+            with patch("shani_cassini.tabs.updates.GLib.idle_add") as mock_idle:
                 mock_idle.side_effect = lambda fn, *a, **k: fn(*a, **k)
                 tab._channel_latest.set_active(True)
                 # Wait for the daemon thread to call the wrapper.
@@ -500,7 +500,7 @@ class TestUpdatesTabChannelContract:
         with patch.object(
             tab._cli_wrapper, "set_update_channel"
         ) as mock_set:
-            with patch("shani_gui.tabs.updates.GLib.idle_add") as mock_idle:
+            with patch("shani_cassini.tabs.updates.GLib.idle_add") as mock_idle:
                 mock_idle.side_effect = lambda fn, *a, **k: fn(*a, **k)
                 # _fetch_update_info already ran during construction; the
                 # programmatic selection must have left no in-flight request.
@@ -522,9 +522,9 @@ class TestUpdatesTabReadFileOrDefault:
     the method returns the filtered content or default."""
 
     def _make_tab(self):
-        from shani_gui.tabs.updates import UpdatesTab
-        from shani_gui.state import AppState
-        from shani_gui.auth import AuthManager
+        from shani_cassini.tabs.updates import UpdatesTab
+        from shani_cassini.state import AppState
+        from shani_cassini.auth import AuthManager
         return UpdatesTab(state=AppState(), auth_manager=AuthManager())
 
     def test_missing_file_returns_default(self, tmp_path):
