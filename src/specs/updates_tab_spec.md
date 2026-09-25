@@ -1,50 +1,49 @@
-# Updates Tab Component Specification
+# Updates, Notifications, and Testbed Compatibility Specification
 
-## Purpose
-The Updates tab allows users to check for available updates, manage update channels, view update history, and initiate updates.
+## Current User Interface
 
-## Data Sources
-- Current version: from shani-deploy or os-release
-- Latest version: from shani-platform API (/updates/check)
-- Update available: boolean from API response
-- Current channel: from shani-platform API (/updates/channel)
-- Available channels: stable, testing, undefined (from API or configuration)
-- Update history: list of past updates from shani-platform API (/updates/history) or local logs
+Shani Cassini has one **Updates & Rollback** page. There is no separate
+updates API, update history, or retired `shani-update` command in the
+current application. The page contract is specified in
+`deploy_tab_spec.md`; this document defines the background notification and
+testbed interfaces around it.
 
-## UI Elements
-- Update Status Section:
-  - Current Version label
-  - Latest Version label
-  - Update Available label (with visual indicator)
-  - Last Check label
+## Background Notification Agent
 
-- Channel Management Section:
-  - Current Channel dropdown
-  - Available Channels label (informational)
-  - Check for Updates button (primary action)
-  - Change Channel button
+- `data/systemd/shani-cassini-agent.service` is a oneshot service with
+  `ExecStart=/usr/bin/shani-cassini --agent`.
+- `src/shani_cassini/agent.py` runs
+  `shani-deploy --status --check --json` without root.
+- It sends notifications for available updates and relevant boot/recovery
+  state. Activating a notification opens Shani Cassini's
+  **Updates & Rollback** page.
+- The agent is notification-only. It never runs `shani-deploy` with deploy,
+  rollback, cleanup, or channel-changing arguments.
 
-- Update History Section:
-  - Table or list view with columns: Date, Version, Action, Status
-  - View Details button (for selected update)
-  - Clear History button
+## Timer and Packaging Contract
 
-## User Actions
-- Click "Check for Updates": initiates a check for updates via API
-- Select channel from dropdown: displays the selected channel (change requires confirmation)
-- Click "Change Channel": initiates channel change via API (may require license sync)
-- Click "View Details": shows detailed information about a selected update
-- Click "Clear History": clears the update history (with confirmation)
+- `data/systemd/shani-cassini-agent.timer` uses `OnStartupSec=2min`,
+  `OnUnitInactiveSec=2h`, and `RandomizedDelaySec=5min`.
+- `WantedBy=timers.target` makes it a user timer.
+- `shani-pkgbuilds/shani-cassini/shani-cassini.install` runs
+  `systemctl --global enable shani-cassini-agent.timer` during package
+  installation.
 
-## Expected Output Formats
-- Version strings: plain text (e.g., "v1.2.3")
-- Update availability: colored indicator (● Yes, ○ No) plus optional description
-- Channel: plain text string
-- Update history: each entry has date (string), version (string), action (string), status (string)
+## Testbed-Only `update-check`
 
-## Implementation Notes
-- The check for updates should show a loading state during the API call
-- Channel changes may require license synchronization and should be handled accordingly
-- Update history should be paginated or limited to a reasonable number of entries
-- Errors during update checks should be displayed gracefully
-- Consider integrating with shani-update.sh or shani-deploy for actual update operations
+`shani-testbed` retains `update-check` as a compatibility interface for the
+old `update` test-command name. From `shani-install-media`:
+
+```bash
+./run_in_container.sh build.sh test update-check \
+    --local-src=/opt/shani-deploy/scripts
+./run_in_container.sh build.sh test update-check --json
+```
+
+The shim is implemented in `shani-testbed/lib/deploy.sh`. It exercises the
+read-only `shani-deploy --status --check --json` contract and may print or
+emit that JSON. It does not install an image, switch a slot, send
+notifications, or run `shani-cassini --agent`.
+
+`update-check` is not a user updater and must not be documented as a
+replacement for **Updates & Rollback**.

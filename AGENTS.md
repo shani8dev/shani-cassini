@@ -37,9 +37,20 @@ polkit: Cassini ships **no policy of its own** — its `pkexec` calls use the
 system's rules in `shani-settings/.../99-shani.rules` (shani-deploy: any
 active local user, own password; gen-efi: wheel; shani-reset: wheel + admin).
 An action with `org.freedesktop.policykit.exec.path` for one of those programs
-would override those rules for every caller, shani-update included (it did,
-briefly: 2026-09-25). Styling: libadwaita + the Saturn accent
+would override those rules for every caller. The retired `shani-update`
+wrapper briefly had such an override on 2026-09-25; that is historical
+context, not a current interface. Styling: libadwaita + the Saturn accent
 (`widgets.py`), prefer-dark.
+
+The packaged background path is `shani-cassini-agent.timer` plus
+`shani-cassini-agent.service` in `data/systemd/`. Package installation
+enables the timer globally. The timer starts two minutes after the user
+manager starts, then repeats two hours after each agent run with up to a
+five-minute randomized delay. The oneshot service runs
+`/usr/bin/shani-cassini --agent`; `agent.py` reads
+`shani-deploy --status --check --json`, sends update and boot-state
+notifications, and opens **Updates & Rollback** when a notification is
+activated. It never deploys or rolls back.
 
 ## Empirical verification (mandatory)
 
@@ -64,6 +75,12 @@ If you haven't seen it work (or fail) for real, it isn't verified.
    `build.sh test desktop <slot> --local-pkg=<pkg> --local-src=/opt/shani-deploy/scripts --exec="(shani-cassini --section=<id> &); sleep 25"`
    — `--exec` must return (a GUI that keeps running blocks the probe).
    `--section=<id>` / the `app.show-section` action open any page.
+4. For changes to the agent or the read-only deploy-status contract, the
+   testbed command `./run_in_container.sh build.sh test update-check
+   --local-src=/opt/shani-deploy/scripts` exercises
+   `shani-deploy --status --check --json`. `update-check` is a testbed
+   compatibility shim for the old `update` test-command name: it is
+   read-only and does not install, switch slots, or run the agent.
 
 ## Known issues (current state, 2026-09-25)
 
