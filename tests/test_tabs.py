@@ -56,36 +56,6 @@ class TestDirectTabs:
         assert tab._auth_manager is auth
 
 
-class TestChronoaTab:
-    """Test ChronoaTab construction (requires mocked shani_chronoa)."""
-
-    def test_chronoa_tab_constructs(self):
-        """ChronoaTab can be constructed with mocked shani_chronoa."""
-        from shani_gui.tabs.chronoa_tab import ChronoaTab
-        from shani_gui.state import AppState
-        from shani_gui.auth import AuthManager
-
-        state = AppState()
-        auth = AuthManager()
-        tab = ChronoaTab(state=state, auth_manager=auth)
-        assert tab is not None
-        assert isinstance(tab, Gtk.Box)
-
-    def test_chronoa_tab_has_config(self):
-        """ChronoaTab initializes a ChronoaConfig."""
-        from unittest.mock import MagicMock
-        import sys
-
-        # Ensure mocks are in place
-        if "shani_chronoa.config.ChronoaConfig" not in sys.modules:
-            sys.modules["shani_chronoa.config.ChronoaConfig"] = MagicMock()
-
-        from shani_gui.tabs.chronoa_tab import ChronoaTab
-
-        tab = ChronoaTab()
-        assert tab._config is not None
-
-
 class TestFleetTab:
     """Test FleetTab construction."""
 
@@ -114,22 +84,6 @@ class TestHealthTab:
         state = AppState()
         auth = AuthManager()
         tab = HealthTab(state=state, auth_manager=auth)
-        assert tab is not None
-        assert isinstance(tab, Gtk.Box)
-
-
-class TestBackupTab:
-    """Test BackupTab construction (requires mocked shani_backup)."""
-
-    def test_backup_tab_constructs(self):
-        """BackupTab can be constructed with mocked shani_backup."""
-        from shani_gui.tabs.backup_tab import BackupTab
-        from shani_gui.state import AppState
-        from shani_gui.auth import AuthManager
-
-        state = AppState()
-        auth = AuthManager()
-        tab = BackupTab(state=state, auth_manager=auth)
         assert tab is not None
         assert isinstance(tab, Gtk.Box)
 

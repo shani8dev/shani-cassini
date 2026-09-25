@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Shanios System Manager
+GenericName=System Manager
+Comment=Updates, rollback, health, services and backups for Shanios
+Exec=shani-gui
+Icon=dev.shani8.gui
+Terminal=false
+Categories=System;GTK;
+Keywords=update;rollback;deploy;health;services;drivers;kernel;secure boot;backup;fleet;
+StartupNotify=true
+StartupWMClass=dev.shani8.gui

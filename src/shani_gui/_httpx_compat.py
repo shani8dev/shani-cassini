@@ -14,8 +14,15 @@ establishes the httpx2-backed alias process-wide.
 
 Usage: ``import shani_gui._httpx_compat  # noqa: F401`` at the top of any
 module that does ``import httpx``.
+
+On a ShaniOS/Arch install there is no httpx2 package - the distro ships
+``python-httpx``, which the httpx2 API mirrors - so without httpx2 the
+plain ``httpx`` module is used as is.
 """
 
-import httpx2
-
-httpx2.alias_httpx()
+try:
+    import httpx2
+except ModuleNotFoundError:
+    import httpx  # noqa: F401  (python-httpx: the packaged dependency)
+else:
+    httpx2.alias_httpx()
