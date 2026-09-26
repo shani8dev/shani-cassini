@@ -30,6 +30,8 @@ from shani_cassini.tabs.smartcard import SmartcardTab
 from shani_cassini.tabs.security_keys import SecurityKeysTab
 from shani_cassini.tabs.kerberos import KerberosTab
 from shani_cassini.tabs.storage import StorageTab
+from shani_cassini.tabs.smart import SmartTab
+from shani_cassini.tabs.ssh_keys import SshKeysTab
 from shani_cassini.tabs.maintenance import MaintenanceTab
 from shani_cassini.tabs.kernel import KernelTab
 logger = logging.getLogger(__name__)
@@ -53,6 +55,9 @@ SECTIONS = [
         (HealthTab, "health", "Health", "object-select-symbolic", "Checks and diagnostics"),
         (StorageTab, "storage", "Storage", "drive-harddisk-symbolic",
          "Btrfs subvolumes, space and the checks that keep a filesystem healthy"),
+        (SmartTab, "smart", "Disk Health", "drive-harddisk-symbolic",
+         "What smartctl reports for each disk - the overall verdict, and the "
+         "attributes it actually returned"),
         (SystemInfoPage, "system", "System Info", "dialog-information-symbolic", "Hardware, software and kernel"),
         (DriversTab, "drivers", "Drivers", "drive-harddisk-symbolic", "PCI devices and kernel drivers"),
     ]),
@@ -65,6 +70,8 @@ SECTIONS = [
          "Point a certificate at an account, so a card can sign you in"),
         (SecurityKeysTab, "securitykeys", "Security Keys", "dialog-password-symbolic",
          "FIDO2 security keys and Yubico one-time passwords"),
+        (SshKeysTab, "sshkeys", "SSH Keys", "dialog-password-symbolic",
+         "The public keys allowed to sign in to this account over SSH"),
         (KerberosTab, "kerberos", "Kerberos", "network-vpn-symbolic",
          "Realm, domain mapping and credential cache"),
     ]),

@@ -95,10 +95,12 @@ class TestNotebook:
     """The sidebar lists every section, in order; pages build on demand."""
 
     EXPECTED = ["Overview", "Health",
-        "Storage", "System Info", "Drivers", "Secure Boot", "Encryption",
+        "Storage", "Disk Health", "System Info", "Drivers", "Secure Boot",
+                "Encryption",
                 "Fingerprint",
         "Smartcard",
         "Security Keys",
+        "SSH Keys",
         "Kerberos", "Updates & Rollback", "Services", "Backup", "Maintenance",
                 "Chronoa", "Fleet"]
 
@@ -313,7 +315,7 @@ class TestBiometricsNoPrivilegeEscalation:
         security = dict(SECTIONS)["Security"]
         assert [p[1] for p in security] == ["secureboot", "encryption", "biometrics",
                                                     "smartcard", "securitykeys",
-                                                    "kerberos"]
+                                                    "sshkeys", "kerberos"]
         # Fingerprint is no longer last: smartcard, security keys and Kerberos
         # follow it, so its icon is asserted by position rather than by [-1].
         assert security[2][3] == "auth-fingerprint-symbolic"
