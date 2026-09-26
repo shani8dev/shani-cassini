@@ -27,6 +27,23 @@ from typing import Callable, Optional
 
 from gi.repository import Gio, GLib  # type: ignore
 
+from shani_cassini.config_io import (
+    ConfigRefused,
+    Document,
+    Staged,
+    parse_braces,
+    parse_flat,
+    parse_ini,
+    read_document,
+    stage,
+    write_staged_privileged,
+    write_staged_unprivileged,
+)
+
+# config_io calls the three grammars a parser and indexes them by identity;
+# naming that callable is how a caller states which one a file is written in.
+_Parser = Callable[..., Document]
+
 logger = logging.getLogger(__name__)
 
 DEPLOY = "shani-deploy"
@@ -885,3 +902,521 @@ def hardware_auth_status() -> list:
                      "detail": f"not available: {why}"})
 
     return rows
+
+
+# --- the sign-in configuration files --------------------------------------
+#
+# Five files decide how someone signs in, and every one of them can lock a
+# machine out, so none of them is edited by re-rendering it: config_io
+# rewrites the single line a page names and refuses anything it could not
+# read back. Two rules hold for everything below.
+#
+# * A refusal is a message, not an exception. ConfigRefused is how the engine
+#   says "nothing was written", and it must never reach the GTK main loop, so
+#   every writer here reports it as done(message, "").
+# * An absent file is a state, not a failure. pam_u2f falls back to its
+#   built-in defaults, and a machine may simply have no krb5.conf - a reader
+#   says so and invents nothing.
+
+PKCS11_CONF = "/etc/pam_pkcs11/pam_pkcs11.conf"
+SUBJECT_MAPPING = "/etc/pam_pkcs11/subject_mapping"
+# Written by the distro's pam_pkcs11 packaging; one line, the path of the
+# PC/SC provider opensc installs. Absent on Arch, where pam_pkcs11.conf names
+# the module inline - so its absence is not reported as a fault.
+PKCS11_MODULE_PATH = "/etc/pam_pkcs11/opensc-module-path"
+PAM_YUBICO_CONF = "/etc/security/pam_yubico.conf"
+KRB5_CONF = "/etc/krb5.conf"
+# pam_yubico's own default, with its per-user mapping file format
+# (username:first_public_id:second_public_id).
+YUBICO_AUTHFILE_DEFAULT = "~/.yubico/authorized_yubikeys"
+
+# The keys pam_yubico documents, and no others: a file holding a key outside
+# this list is reported with known_only False rather than quietly rewritten.
+PAM_YUBICO_KEYS = (
+    "authfile", "id", "key", "alwaysok", "try_first_pass", "use_first_pass",
+    "always_prompt", "nullok", "ldap_starttls", "ldap_bind_as_user",
+    "urllist", "mode", "debug", "debug_file", "chalresp_path",
+)
+
+# The settings pam-u2f 1.4.0's own cfg.c accepts, and nothing else. Each is a
+# bare flag or takes a value; there is no touchauth and no verbose, so a page
+# must never offer them.
+U2F_KEYS = (
+    "authfile", "origin", "appid", "alwaysok", "nouserok", "interactive",
+    "cue", "nodetect", "expand", "sshformat", "openasuser", "manual", "debug",
+)
+
+# A Kerberos realm is a name: letters, digits, dots and dashes.
+_REALM_RE = re.compile(r"^[A-Za-z0-9.-]+$")
+
+# krb5.conf is strictly sectioned, so a credential cache is only usable at an
+# ordinary login when it is a file. KEYRING: needs the session keyring and
+# KCM: a running KCM daemon, and a login that starts before either does gets
+# no ticket at all.
+_CACACHE_PREFIXES = ("FILE:", "DIR:", "KEYRING:", "KCM:")
+
+# A flat line whose own separator is 'key = value' rather than 'key value'.
+_KEY_EQUALS = re.compile(r"^\s*\S+\s*=")
+# krb5.conf's own include forms, which parse_ini cannot represent and which
+# _ini_pieces' pre-section whitelist therefore never gets to see.
+_INCLUDE_RE = re.compile(r"^\s*(?:include|includedir)\s+\S")
+# A pcsc_scan row starts with its reader number, which is what tells a reader
+# from the table's own header and separator.
+_PCSC_ROW_RE = re.compile(r"^\s*(\d+)\s+(\S.*?)\s*$")
+
+# Every /etc file below is root-owned, and a save refuses one that is not: a
+# config file that changed hands is not the file this page was written for.
+# The user's own pam_u2f.conf is the exception and passes expect_owner=None.
+CONFIG_OWNER: Optional[tuple[int, int]] = (0, 0)
+
+
+def _unreadable(doc: Document) -> list[str]:
+    """One message per line this engine could not read, for a page to show."""
+    return [f"line {index + 1} cannot be read: {doc.lines[index].raw.strip()}"
+            for index in doc.has_other()]
+
+
+def _open(path: str, parser: _Parser) -> Optional[Document]:
+    """A config file to read, or None with the reason in the log.
+
+    Ownership is deliberately not checked: these are readers, and a file this
+    process cannot edit is still a file it can report on.
+    """
+    try:
+        return read_document(path, parser, expect_owner=None)
+    except ConfigRefused as refused:
+        logger.warning("%s: %s", path, refused)
+        return None
+
+
+def _unmarked(value: str) -> str:
+    """A flat value without the optional '=' parse_flat leaves in front of it.
+
+    Both flat formats are `key value` and `key = value`, and parse_flat's
+    separator is the whitespace, so an '=' lands in the value it reads. The
+    reader drops it and the writer puts back the one the line being edited
+    already had - see _set_value.
+    """
+    return value[1:].strip() if value.startswith("=") else value
+
+
+def _unmapped_setting(raw: str) -> Optional[tuple[str, str]]:
+    """A single-token flat line read as (key, value), or None.
+
+    parse_flat needs a run of whitespace to find a key, so both forms these
+    two modules accept - `key=value` and a bare flag - come back as ``other``.
+    config_io's own docstring makes ``Line.raw`` the authoritative text and
+    says a caller must split a shape the grammar cannot model itself, so this
+    is that split, and only for a line with no whitespace in it at all.
+    """
+    body = raw.strip()
+    if not body or body.startswith("#"):
+        return None
+    key, equals, value = body.partition("=")
+    key = key.strip()
+    if not key or any(character.isspace() for character in key):
+        return None
+    return key, (value.strip() if equals else "")
+
+
+def _flat_settings(path: str, known: tuple[str, ...]) -> dict:
+    """The settings a flat module config holds, and whether all are known.
+
+    A presence-only flag reads as an empty value, so the page can tell "this
+    is on" from "this has been given something".
+    """
+    conf = {"exists": os.path.exists(path), "values": {}, "known_only": True,
+            "path": path}
+    if not conf["exists"]:
+        return conf
+    doc = _open(path, parse_flat)
+    if doc is None:
+        return conf
+    for line in doc.lines:
+        if line.kind == "directive":
+            key, value = line.key, _unmarked(line.value)
+        elif line.kind == "other":
+            unmapped = _unmapped_setting(line.raw)
+            if unmapped is None:
+                continue
+            key, value = unmapped
+        else:
+            continue
+        if key not in known:
+            conf["known_only"] = False
+        conf["values"][key] = value
+    return conf
+
+
+def pam_pkcs11_state() -> dict:
+    """The smartcard login path: the module, its mappers, its provider.
+
+    ``mappers`` is ``Document.mappers()`` - the block header text to its
+    directives - so a page can show the ``mapper subject`` block that decides
+    who a card signs in as, and the ``mapper openssh`` / ``mapper opensc``
+    blocks that match $HOME/.ssh/authorized_keys and
+    $HOME/.eid/authorized_certificates. Never raises: a conf that is missing
+    or unreadable is a ``problems`` entry, not a traceback.
+    """
+    state = {"installed": _pam_module_installed("pam_pkcs11.so"),
+             "conf_exists": os.path.exists(PKCS11_CONF), "mappers": {},
+             "provider": _read_text(PKCS11_MODULE_PATH).strip(), "problems": []}
+    if not state["conf_exists"]:
+        state["problems"].append(
+            f"{PKCS11_CONF} is missing - the module has no configuration to use")
+        return state
+    doc = _open(PKCS11_CONF, parse_braces)
+    if doc is None:
+        state["problems"].append(f"{PKCS11_CONF} could not be read")
+        return state
+    state["mappers"] = doc.mappers()
+    state["problems"] = _unreadable(doc)
+    return state
+
+
+def _mapping_lines(doc: Document) -> tuple[list[dict], list[dict]]:
+    """(entries, problems) for one parsed subject_mapping.
+
+    Each line is split on the LAST '->', because a DN may contain one and the
+    separator is the last one on the line. ``lineno`` is the 0-based index of
+    the line, which is what a later edit needs to rewrite that exact line.
+    """
+    entries: list[dict] = []
+    problems: list[dict] = []
+    for index, line in enumerate(doc.lines):
+        if line.kind in ("blank", "comment"):
+            continue
+        cut = line.raw.rfind("->")
+        if cut < 0:
+            problems.append({"lineno": index, "raw": line.raw,
+                             "why": "there is no '->' in it"})
+            continue
+        subject, login = line.raw[:cut].strip(), line.raw[cut + 2:].strip()
+        if not subject or not login:
+            problems.append({"lineno": index, "raw": line.raw,
+                             "why": "a certificate subject and a login name are both needed"})
+            continue
+        entries.append({"subject": subject, "login": login, "lineno": index})
+    return entries, problems
+
+
+def subject_mappings() -> dict:
+    """Who each smartcard signs in as, read from the live subject_mapping.
+
+    The file pam_pkcs11 installs is a comment-only template, so ``entries == []``
+    with no problems is the normal state of a fresh machine and not a fault.
+    A non-blank line with no '->', or with only one side of one, is a problem
+    with its line number, and a write refuses the whole file rather than
+    rewriting a line it could not read. Never raises; a ``lineno`` below zero
+    means the file as a whole could not be read.
+    """
+    state = {"exists": os.path.exists(SUBJECT_MAPPING), "entries": [],
+             "problems": [], "path": SUBJECT_MAPPING}
+    if not state["exists"]:
+        return state
+    doc = _open(SUBJECT_MAPPING, parse_flat)
+    if doc is None:
+        state["problems"].append({"lineno": -1, "raw": "",
+                                  "why": f"{SUBJECT_MAPPING} could not be read"})
+        return state
+    state["entries"], state["problems"] = _mapping_lines(doc)
+    return state
+
+
+def pam_yubico_config() -> dict:
+    """The Yubico OTP settings, as pam_yubico.conf holds them.
+
+    ``known_only`` is False when the file holds a key this version of the
+    module does not document, so a page can say so instead of dropping it on
+    the next save.
+    """
+    return _flat_settings(PAM_YUBICO_CONF, PAM_YUBICO_KEYS)
+
+
+def u2f_conf_path() -> str:
+    """Where pam-u2f looks for its per-user config."""
+    base = os.environ.get("XDG_CONFIG_HOME") or \
+        os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(base, "Yubico", "pam_u2f.conf")
+
+
+def u2f_config() -> dict:
+    """The FIDO2/U2F settings, as ~/.config/Yubico/pam_u2f.conf holds them.
+
+    An absent file yields ``exists: False`` and no values: that is the module
+    running on its built-in defaults, and rendering anything else would be
+    inventing settings nobody wrote.
+    """
+    return _flat_settings(u2f_conf_path(), U2F_KEYS)
+
+
+def krb5_config() -> dict:
+    """What /etc/krb5.conf says, with the includes named but not followed.
+
+    ``default_realm`` and ``default_ccache_name`` are read from
+    [libdefaults] and nowhere else: krb5.conf is strictly sectioned, so a
+    top-level one is not a setting it would honour. ``includes`` lists the
+    include/includedir lines Cassini deliberately does not follow - they can
+    pull in a whole directory tree, and a page that showed their contents as
+    this file's would be reporting a file the user never opened. Everything
+    else is ``other``, as (section, key, value).
+    """
+    conf = {"exists": os.path.exists(KRB5_CONF), "default_realm": "",
+            "default_ccache_name": "", "domain_realm": {}, "other": [],
+            "includes": [], "problems": []}
+    if not conf["exists"]:
+        return conf
+    doc = _open(KRB5_CONF, parse_ini)
+    if doc is None:
+        conf["problems"].append(f"{KRB5_CONF} could not be read")
+        return conf
+    conf["default_realm"] = doc.get("default_realm", "libdefaults") or ""
+    conf["default_ccache_name"] = doc.get("default_ccache_name", "libdefaults") or ""
+    for index, line in enumerate(doc.lines):
+        if _INCLUDE_RE.match(line.raw):
+            conf["includes"].append(line.raw.strip())
+        elif line.kind != "directive":
+            if line.kind == "other":
+                conf["problems"].append(
+                    f"line {index + 1} cannot be read: {line.raw.strip()}")
+        elif line.section == "domain_realm":
+            conf["domain_realm"][line.key] = line.value
+        elif line.section == "libdefaults" and \
+                line.key in ("default_realm", "default_ccache_name"):
+            continue
+        else:
+            conf["other"].append((line.section, line.key, line.value))
+    return conf
+
+
+def pcsc_readers(done: Callable[[Optional[list], str], None]) -> None:
+    """The smartcard and NFC readers pcsc-lite can see, unprivileged.
+
+    done(readers_or_None, error) on the main loop, the shape every other
+    reader here uses. An empty list means pcsc_scan answered and no reader is
+    attached; None means it did not answer at all, and a page must be able to
+    tell those apart rather than showing "no reader" for a daemon that is not
+    running.
+
+    pcsc-lite prints a free-text card column that may be two words wide, so
+    the row is reported as its number and the rest of the line rather than
+    guessed into card and features.
+    """
+    lines: list[str] = []
+
+    def scanned(status: int) -> None:
+        if status != 0:
+            tail = next((line for line in reversed(lines) if line.strip()), "")
+            GLib.idle_add(done, None, tail or f"pcsc_scan exited {status}")
+            return
+        readers = []
+        for line in lines:
+            row = _PCSC_ROW_RE.match(line)
+            if row:
+                readers.append({"nr": int(row.group(1)), "text": row.group(2)})
+        GLib.idle_add(done, readers, "")
+
+    run_streaming(["pcsc_scan", "-n"], lines.append, scanned)
+
+
+# --- writing them ---------------------------------------------------------
+#
+# Every writer here is synchronous and may block: a privileged save runs
+# install(1) under pkexec, and config_io's own docstring says the caller runs
+# it off the main loop. A page that calls these from a Gio.Thread and hands the
+# callback back to the main loop keeps the window alive.
+
+
+def _set_value(doc: Document, key: str, value: str, section: str) -> None:
+    """doc.set(), keeping the '=' marker the line being edited already used.
+
+    A flat line's separator is the whitespace, so an '=' belongs to the value
+    parse_flat reads back; the reader drops it, and this puts back the one
+    that line had rather than the one its neighbours use.
+    """
+    found = doc.find(key, section)
+    marked = found and doc.syntax == "flat" and \
+        _KEY_EQUALS.match(doc.lines[found[0]].raw) is not None
+    doc.set(key, f"= {value}" if marked else value, section=section)
+
+
+def _confirm(path: str, key: str, value: str, section: str, parser: _Parser,
+             done: Callable[[str, str], None]) -> None:
+    """Read the file back and check the setting is what was asked for.
+
+    A save that reports success has been confirmed by whoever wrote it - by
+    install(1) for a privileged file, by os.replace for our own. What this
+    catches is the one thing neither can: a page that then renders a value the
+    file does not hold.
+    """
+    doc = _open(path, parser)
+    if doc is None:
+        done(f"{path} was saved but cannot be read back to check it", "")
+        return
+    if _unmarked(doc.get(key, section) or "") != value:
+        done(f"{path} was saved, but {key} does not hold the new value - "
+             "check the file by hand", "")
+        return
+    done("", f"Saved {path}")
+
+
+def _install(staged: Staged, done: Callable[[str, str], None],
+             on_saved: Callable[[], None]) -> None:
+    """Write staged with the writer the file's owner calls for, then on_saved."""
+    if not staged.privileged:
+        try:
+            write_staged_unprivileged(staged)
+        except OSError as exc:
+            done(f"{staged.path} could not be saved: {exc.strerror or exc}", "")
+            return
+        on_saved()
+        return
+    write_staged_privileged(staged, lambda error, note: done(error, note) if error
+                            else on_saved())
+
+
+def set_config_value(path: str, key: str, value: str, *, section: str = "",
+                     parser: _Parser, must_contain: tuple[str, ...] = (),
+                     done: Callable[[str, str], None],
+                     validator: Optional[Callable[[str], None]] = None,
+                     expect_owner: Optional[tuple[int, int]] = CONFIG_OWNER) -> None:
+    """Set one setting in one config file, and report done(error, note).
+
+    ``parser`` and ``must_contain`` are arguments rather than guesses here:
+    the caller states which grammar the file is written in and which marker
+    proves the file on disk is the one this page means, and the engine refuses
+    when neither holds. ``expect_owner`` defaults to CONFIG_OWNER - root, the
+    owner of every /etc file below - and a file of the user's own passes None
+    and is then written unprivileged, without a polkit dialog.
+
+    ``validator`` is handed the text that would be written and raises anything
+    to refuse it; the refusal arrives as done(message, "") like every other.
+    Never raises: nothing here leaves this function as an exception.
+    """
+    try:
+        doc = read_document(path, parser, must_contain=must_contain,
+                            expect_owner=expect_owner)
+        _set_value(doc, key, value, section)
+        staged = stage(doc, validator=validator)
+    except ConfigRefused as refused:
+        done(str(refused), "")
+        return
+    _install(staged, done, lambda: _confirm(path, key, value, section, parser, done))
+
+
+def _mapping_grammar(subject: str, login: str) -> str:
+    """Why this pair cannot be written, or "" when it can.
+
+    A '->' inside either side is refused even though the reader copes with one,
+    because that is the module's own line format to define and not Cassini's.
+    """
+    if not subject.strip() or not login.strip():
+        return "a certificate subject and a login name are both needed"
+    for side, what in ((subject, "certificate subject"), (login, "login name")):
+        if "->" in side:
+            return f"a '->' inside the {what} cannot be written - the mapfile's own "
+            "format has no way to say which one separates"
+    return ""
+
+
+def _mapping_document() -> tuple[Optional[Document], list[dict], str]:
+    """The live subject_mapping, its entries, and the reason it is unusable.
+
+    Returns (None, [], why) rather than raising, so a caller only has to hand
+    ``why`` to done.
+    """
+    try:
+        doc = read_document(SUBJECT_MAPPING, parse_flat, expect_owner=CONFIG_OWNER)
+    except ConfigRefused as refused:
+        return None, [], str(refused)
+    entries, problems = _mapping_lines(doc)
+    if problems:
+        return None, [], (f"{SUBJECT_MAPPING} has a line that cannot be read "
+                          f"(line {problems[0]['lineno'] + 1}) - fix it by hand, "
+                          "nothing was changed")
+    return doc, entries, ""
+
+
+def set_mapping(subject: str, login: str, *, done: Callable[[str, str], None]) -> None:
+    """Point one certificate subject at one login name.
+
+    A subject that is already mapped is rewritten on its own line, so a
+    certificate never ends up on two lines and the comments and blank lines
+    around it are untouched. A file with a line Cassini could not read is never
+    rewritten at all. done(error, note) - never an exception.
+    """
+    why = _mapping_grammar(subject, login)
+    if why:
+        done(why, "")
+        return
+    doc, entries, why = _mapping_document()
+    if doc is None:
+        done(why, "")
+        return
+    mapped = [entry for entry in entries if entry["subject"] == subject]
+    if mapped:
+        doc.replace_line(mapped[0]["lineno"], f"{subject} -> {login}")
+    else:
+        done(f"{SUBJECT_MAPPING} has no entry for this certificate, and Cassini "
+             "cannot add a line to it - add it in a terminal, then set its login "
+             "name here", "")
+        return
+    _save_mapping(doc, done)
+
+
+def remove_mapping(subject: str, *, done: Callable[[str, str], None]) -> None:
+    """Take one subject's mapping away. Its line is emptied, not deleted, so
+    every other line keeps its place. done(error, note)."""
+    doc, entries, why = _mapping_document()
+    if doc is None:
+        done(why, "")
+        return
+    mapped = [entry for entry in entries if entry["subject"] == subject]
+    if not mapped:
+        done(f"{SUBJECT_MAPPING} has no entry for that certificate", "")
+        return
+    doc.remove_line(mapped[0]["lineno"])
+    _save_mapping(doc, done)
+
+
+def _save_mapping(doc: Document, done: Callable[[str, str], None]) -> None:
+    try:
+        staged = stage(doc)
+    except ConfigRefused as refused:
+        done(str(refused), "")
+        return
+    _install(staged, done, lambda: done("", f"Saved {SUBJECT_MAPPING}"))
+
+
+def _krb5_valid(text: str) -> None:
+    """Refuse a realm that is not a name, and a cache an ordinary login
+    cannot read. Raises; stage() turns that into one refusal."""
+    doc = parse_ini(text, path=KRB5_CONF)
+    realm = doc.get("default_realm", "libdefaults")
+    if realm is not None and not _REALM_RE.match(realm):
+        raise ValueError(f"a Kerberos realm is a name like SHANI.LAN - "
+                         f"{realm!r} is not one")
+    ccache = doc.get("default_ccache_name", "libdefaults")
+    if ccache is not None and ccache:
+        kind = next((prefix for prefix in _CACACHE_PREFIXES
+                     if ccache.upper().startswith(prefix)), "")
+        if not kind:
+            raise ValueError(f"{ccache!r} is not a credential cache type krb5 "
+                             "knows - use FILE: for an ordinary login")
+        if kind != "FILE:":
+            raise ValueError(f"a {kind} credential cache cannot be used for an "
+                             "ordinary login - it needs a running keyring or KCM "
+                             "daemon that a login at this machine does not have. "
+                             "Use FILE:")
+
+
+def krb5_set(key: str, value: str, *, done: Callable[[str, str], None]) -> None:
+    """Set one [libdefaults] setting in /etc/krb5.conf, root save.
+
+    default_realm must be a realm name and default_ccache_name a FILE: cache -
+    see _krb5_valid. done(error, note), never an exception.
+    """
+    set_config_value(KRB5_CONF, key, value, section="libdefaults", parser=parse_ini,
+                     must_contain=("[libdefaults]",), done=done, validator=_krb5_valid,
+                     expect_owner=CONFIG_OWNER)
+

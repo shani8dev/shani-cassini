@@ -1254,3 +1254,658 @@ def test_shanios_system_auth_makes_fido2_ok_not_inactive(tmp_path, monkeypatch):
     key = rows["Security key (FIDO2/U2F) login"]
     assert key["state"] == "ok", key
     assert "system-auth" in key["detail"]
+
+
+# --- the sign-in configuration files --------------------------------------
+#
+# The sign-in pages read and write the four files the login stack actually
+# reads, plus the user's own pam_u2f.conf. Every save goes through
+# config_io, which refuses rather than guesses, and a refusal is an exception
+# there - so the whole point of this layer is that it never reaches the GTK
+# main loop as one. Each test here drives a real refusal or a real write.
+#
+# The file contents below are the shipped formats, not invented ones: the
+# subject_mapping template is what pam_pkcs11 installs, the braces conf is
+# upstream's own example (every directive inside a block ends with a ';'),
+# and krb5.conf keeps a tab indent and a trailing comment.
+
+# What `make install` writes to /etc/pam_pkcs11/subject_mapping: comments and
+# nothing else. Zero entries is the normal state, not a fault.
+SHIPPED_MAPPING = (
+    "# The subject_mapping file contains a list of certificate subject to\n"
+    "# user name mappings.\n"
+    "#\n"
+    "# Format:\n"
+    "#\n"
+    "#   Certificate Subject -> user_name\n"
+    "#\n"
+    "# Example:\n"
+    "#   \"Smartcard Certificate\" -> \"jdoe\"\n"
+)
+
+MAPPED_FILE = (
+    "# the admin's card\n"
+    "CN=Shani Admin,O=SHANI,C=LOCAL -> shani\n"
+    "\n"
+    "CN=Shani Ops,O=SHANI,C=LOCAL -> ops\n"
+    "# keep this trailing comment where it is\n"
+)
+
+# A subject that itself contains an arrow: only the LAST one separates.
+ARROWED_SUBJECT = "CN=Shani,OU=A->B,C=LOCAL -> shani\n"
+
+# pam_pkcs11.conf with both mapper block forms, and a mapfile value that
+# contains a '//' which is not a comment.
+PKCS11_CONF = (
+    "// pam_pkcs11.conf\n"
+    "/* Certificate and CRL handling */\n"
+    "open_ssl = /usr/bin/openssl\n"
+    "use_crl = true;\n"
+    "\n"
+    "mapper subject { module = internal; "
+    "mapfile = file:///etc/pam_pkcs11/subject_mapping; }\n"
+    "\n"
+    "mapper opensc {\n"
+    "    module = opensc-pkcs11.so;\n"
+    "    mapfile = file:///etc/pam_pkcs11/opensc_pkcs11_mapfile;\n"
+    "}\n"
+    "mapper openssh {\n"
+    "    module = openssh;\n"
+    "    mapfile = pubkey:file:///home/$USER/.ssh/authorized_keys;\n"
+    "}\n"
+)
+
+
+# /etc/krb5.conf, in the form a save can round-trip.
+KRB5_PLAIN = (
+    "[libdefaults]\n"
+    "\tdefault_realm = SHANI.LAN\n"
+    "default_ccache_name = FILE:/tmp/krb5cc_%{uid}\n"
+    "\n"
+    "[domain_realm]\n"
+    ".shani.lan = SHANI.LAN\n"
+    "shani.lan = SHANI.LAN\n"
+    "\n"
+    "[realms]\n"
+    " SHANI.LAN = { kdc = kdc.shani.lan }\n"
+)
+
+# The same file as a stock krb5.conf carries it: a pre-section includedir and
+# a trailing comment on the realm.
+KRB5_CONF = (
+    "includedir /etc/krb5.conf.d\n"
+    "\n"
+    "[libdefaults]\n"
+    "\tdefault_realm = SHANI.LAN   # the only realm here\n"
+    "default_ccache_name = FILE:/tmp/krb5cc_%{uid}\n"
+    "\n"
+    "[domain_realm]\n"
+    ".shani.lan = SHANI.LAN\n"
+    "shani.lan = SHANI.LAN\n"
+    "\n"
+    "[realms]\n"
+    " SHANI.LAN = { kdc = kdc.shani.lan }\n"
+)
+
+# pam_yubico.conf: one setting per line, a comment and a blank line.
+PAM_YUBICO_CONF = (
+    "# yubico settings - one setting per line\n"
+    "authfile  /etc/security/pam_yubico/authorized_yubikeys\n"
+    "alwaysok   off\n"
+    "\n"
+    "id example.com:shani.lan\n"
+    "debug_file /tmp/pam.log\n"
+)
+
+# What a fake pcsc_scan prints, in pcsc-lite's own column layout.
+PCSC_SCAN = (
+    "Nr.  Card  Features               ATR Info            AID Info\n"
+    "------------------------------------------------\n"
+    " 0   Yubico YubiKey OTP+FIDO+CCID 00 00 00 00 00 00 00 00 00 00 00 00\n"
+    " 1   Feitian ePass FIDO2          3b 65 00 00 81 01 81 01 81 05 00\n"
+)
+
+
+@pytest.fixture(autouse=True)
+def config_backup_root(tmp_path, monkeypatch):
+    """A save backs the original up before it writes, so BACKUP_ROOT has to
+    point into this test's tmp dir - never the real user state dir."""
+    from shani_cassini import config_io
+    root = tmp_path / "config-backups"
+    monkeypatch.setattr(config_io, "_backup_root", lambda: str(root))
+    return root
+
+
+@pytest.fixture
+def config_pkexec(fake_bin):
+    """pkexec on PATH that logs its argv and installs faithfully, so a
+    privileged save is really the last two arguments copied over the target."""
+    log = fake_bin / "config-pkexec.log"
+    (fake_bin / "pkexec").write_text(
+        "#!/bin/bash\n"
+        f'echo "$@" >> {log}\n'
+        'cp "${@: -2:1}" "${@: -1}"\n'
+        "exit 0\n")
+    (fake_bin / "pkexec").chmod(0o755)
+    return log
+
+
+def _point(monkeypatch, name, tmp_path, text=None):
+    """Point one of system_status's path constants at a file in tmp_path.
+
+    The file keeps the real basename, because config_io derives the staging
+    and backup file names from it.
+    """
+    from shani_cassini import system_status as ss
+    path = tmp_path / name
+    if text is not None:
+        path.write_text(text)
+    monkeypatch.setattr(ss, name, str(path))
+    return path
+
+
+@pytest.fixture
+def own_config(monkeypatch):
+    """These tests own the files they edit, so the engine's root-ownership
+    check is satisfied by whoever runs them rather than by a chown."""
+    from shani_cassini import system_status as ss
+    monkeypatch.setattr(ss, "CONFIG_OWNER", None)
+
+
+def _done(got):
+    """A done callback that records (error, note) calls."""
+    return lambda error, note: got.append((error, note))
+
+
+# --- reading the files the login stack reads -------------------------------
+
+def test_the_shipped_empty_mapping_template_is_not_a_problem(tmp_path, monkeypatch):
+    """`make install` writes a comment-only subject_mapping. Reporting that as
+    an unreadable file would put a fault on a system that is fine."""
+    from shani_cassini import system_status as ss
+    path = _point(monkeypatch, "SUBJECT_MAPPING", tmp_path, SHIPPED_MAPPING)
+
+    state = ss.subject_mappings()
+    assert state["exists"] is True
+    assert state["entries"] == [], "an empty template has no mappings, and says so"
+    assert state["problems"] == [], "comments and blank lines are not a fault"
+    assert state["path"] == str(path)
+
+
+def test_a_subject_that_contains_an_arrow_splits_on_the_last_one(tmp_path, monkeypatch):
+    """A DN may legally contain '->'. Splitting on the first one would file it
+    under a subject of 'CN=Shani,OU=A' - a login that does not exist."""
+    from shani_cassini import system_status as ss
+    _point(monkeypatch, "SUBJECT_MAPPING", tmp_path, ARROWED_SUBJECT)
+
+    state = ss.subject_mappings()
+    assert state["problems"] == []
+    assert state["entries"] == [
+        {"subject": "CN=Shani,OU=A->B,C=LOCAL", "login": "shani", "lineno": 0}]
+
+
+def test_a_line_without_an_arrow_is_reported_and_never_written_over(own_config, tmp_path, monkeypatch):
+    from shani_cassini import system_status as ss
+    path = _point(monkeypatch, "SUBJECT_MAPPING", tmp_path,
+                  MAPPED_FILE + "CN=Shani Ops,O=SHANI,C=LOCAL ops\n")
+    before = path.read_text()
+
+    state = ss.subject_mappings()
+    assert [(p["lineno"], p["why"]) for p in state["problems"]] == \
+        [(5, "there is no '->' in it")], state["problems"]
+    assert [e["login"] for e in state["entries"]] == ["shani", "ops"]
+
+    got = []
+    ss.set_mapping("CN=Shani New,C=LOCAL", "new", done=_done(got))
+    assert got and got[0][1] == "", "a refusal carries no note"
+    assert "line 6" in got[0][0], got[0][0]
+    assert path.read_text() == before, "a file we could not read is never rewritten"
+
+
+def test_setting_a_subject_that_is_already_mapped_replaces_that_line(own_config, tmp_path, monkeypatch):
+    """The template has no entries, so this is the case a page hits first: the
+    same certificate must not end up on two lines, and the comments around it
+    must survive byte for byte."""
+    from shani_cassini import system_status as ss
+    path = _point(monkeypatch, "SUBJECT_MAPPING", tmp_path, MAPPED_FILE)
+
+    got = []
+    ss.set_mapping("CN=Shani Ops,O=SHANI,C=LOCAL", "ops2", done=_done(got))
+    assert got == [("", f"Saved {ss.SUBJECT_MAPPING}")], got
+
+    assert path.read_text() == MAPPED_FILE.replace("-> ops", "-> ops2")
+    state = ss.subject_mappings()
+    assert [e["login"] for e in state["entries"]] == ["shani", "ops2"]
+    assert len(state["entries"]) == 2, "the subject was replaced, not appended to"
+    assert state["problems"] == []
+
+
+def test_pam_pkcs11_state_reads_the_mappers_and_the_provider(tmp_path, monkeypatch):
+    from shani_cassini import system_status as ss
+    _point(monkeypatch, "PKCS11_CONF", tmp_path, PKCS11_CONF)
+    (tmp_path / "opensc-module-path").write_text("/usr/lib/opensc-pkcs11.so\n")
+    monkeypatch.setattr(ss, "PKCS11_MODULE_PATH", str(tmp_path / "opensc-module-path"))
+    monkeypatch.setattr(ss, "_pam_module_installed", lambda module: module == "pam_pkcs11.so")
+
+    state = ss.pam_pkcs11_state()
+    assert state["installed"] is True
+    assert state["conf_exists"] is True
+    assert state["provider"] == "/usr/lib/opensc-pkcs11.so"
+    assert state["problems"] == []
+    assert state["mappers"]["mapper subject"] == {
+        "module": "internal", "mapfile": "file:///etc/pam_pkcs11/subject_mapping"}
+    # a multi-line block, whose mapfile value contains a '//' that is not a comment
+    assert state["mappers"]["mapper openssh"]["mapfile"] == \
+        "pubkey:file:///home/$USER/.ssh/authorized_keys"
+    assert set(state["mappers"]) == {"mapper subject", "mapper openssh", "mapper opensc"}
+
+
+def test_pam_pkcs11_state_without_a_conf_is_a_fault_not_an_absence(tmp_path, monkeypatch):
+    """The module is installed but has no configuration to use: smartcard login
+    cannot work, and a page must be able to say which half is missing."""
+    from shani_cassini import system_status as ss
+    _point(monkeypatch, "PKCS11_CONF", tmp_path, None)
+    monkeypatch.setattr(ss, "_pam_module_installed", lambda module: True)
+
+    state = ss.pam_pkcs11_state()
+    assert state["installed"] is True and state["conf_exists"] is False
+    assert state["mappers"] == {}
+    assert len(state["problems"]) == 1 and "is missing" in state["problems"][0]
+
+
+def test_pam_yubico_config_says_when_the_file_holds_a_key_it_does_not_know(tmp_path, monkeypatch):
+    from shani_cassini import system_status as ss
+    known = _point(monkeypatch, "PAM_YUBICO_CONF", tmp_path, PAM_YUBICO_CONF)
+
+    conf = ss.pam_yubico_config()
+    assert conf["exists"] is True and conf["known_only"] is True
+    assert conf["values"] == {
+        "authfile": "/etc/security/pam_yubico/authorized_yubikeys",
+        "alwaysok": "off", "id": "example.com:shani.lan", "debug_file": "/tmp/pam.log"}
+
+    # a setting this version of the module does not document must not be
+    # dropped in silence
+    known.write_text(PAM_YUBICO_CONF + "wibble 1\n")
+    conf = ss.pam_yubico_config()
+    assert conf["known_only"] is False
+    assert conf["values"]["wibble"] == "1"
+
+
+def test_an_absent_u2f_config_is_the_modules_defaults_not_an_error(tmp_path, monkeypatch):
+    """pam_u2f falls back to its compiled-in defaults when the file is not
+    there. That is an answer, and inventing values for it would be a lie."""
+    from shani_cassini import system_status as ss
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "no-such-dir"))
+
+    conf = ss.u2f_config()
+    assert conf["exists"] is False
+    assert conf["values"] == {}, "an absent file has no values, not default ones"
+    assert conf["known_only"] is True
+    assert conf["path"] == str(tmp_path / "no-such-dir" / "Yubico" / "pam_u2f.conf")
+
+
+def test_u2f_config_path_follows_xdg_then_home(tmp_path, monkeypatch):
+    from shani_cassini import system_status as ss
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    assert ss.u2f_conf_path() == str(tmp_path / "xdg" / "Yubico" / "pam_u2f.conf")
+    monkeypatch.delenv("XDG_CONFIG_HOME")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    assert ss.u2f_conf_path() == str(tmp_path / "home" / ".config" / "Yubico" / "pam_u2f.conf")
+
+
+def test_u2f_config_reads_the_keys_the_module_really_has(tmp_path, monkeypatch):
+    """`authfile = ...`, a presence-only flag and a `key=value` line, which is
+    what pam-u2f 1.4.0's own parser accepts. touchauth and verbose are not
+    settings it has, so a value for them is not a value it would read."""
+    from shani_cassini import system_status as ss
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    path = tmp_path / "xdg" / "Yubico" / "pam_u2f.conf"
+    path.parent.mkdir(parents=True)
+    path.write_text("# a comment\n"
+                    "authfile = /home/shani/.config/Yubico/u2f_keys\n"
+                    "appid=https://shani.dev\n"
+                    "nouserok\n"
+                    "interactive\n")
+
+    conf = ss.u2f_config()
+    assert conf["exists"] is True and conf["known_only"] is True
+    assert conf["values"] == {"authfile": "/home/shani/.config/Yubico/u2f_keys",
+                              "appid": "https://shani.dev",
+                              "nouserok": "", "interactive": ""}
+    assert "touchauth" not in conf["values"] and "verbose" not in conf["values"]
+
+
+def test_krb5_config_reads_libdefaults_and_says_which_includes_it_skipped(tmp_path, monkeypatch):
+    """default_realm only counts inside [libdefaults] - a top-level one is not
+    a setting krb5.conf accepts, so it is never read as the realm."""
+    from shani_cassini import system_status as ss
+    _point(monkeypatch, "KRB5_CONF", tmp_path, KRB5_CONF)
+
+    conf = ss.krb5_config()
+    assert conf["exists"] is True
+    assert conf["default_realm"] == "SHANI.LAN"
+    assert conf["default_ccache_name"] == "FILE:/tmp/krb5cc_%{uid}"
+    assert conf["domain_realm"] == {".shani.lan": "SHANI.LAN", "shani.lan": "SHANI.LAN"}
+    assert conf["includes"] == ["includedir /etc/krb5.conf.d"], \
+        "an include is either followed or named, never silently ignored"
+    assert conf["other"] == [("realms", "SHANI.LAN", "{ kdc = kdc.shani.lan }")]
+    assert conf["problems"] == []
+
+
+def test_a_save_refuses_a_krb5_conf_that_includes_another_file(own_config, tmp_path, monkeypatch):
+    """config_io's INI grammar has no whitespace-separated directive, so the
+    includedir a stock krb5.conf carries is a line it will not write back. The
+    file is left exactly as it was rather than saved with that line dropped."""
+    from shani_cassini import system_status as ss
+    path = _point(monkeypatch, "KRB5_CONF", tmp_path, KRB5_CONF)
+    before = path.read_text()
+
+    got = []
+    ss.krb5_set("default_realm", "SHANI.EXAMPLE", done=_done(got))
+    assert got and got[0][0] and "line 1" in got[0][0], got
+    assert path.read_text() == before
+
+
+# --- writing them ---------------------------------------------------------
+
+def test_writing_the_users_own_u2f_config_never_asks_for_root(pkexec_log, tmp_path, monkeypatch):
+    """~/.config/Yubico/pam_u2f.conf belongs to the user: a save here must not
+    raise a polkit dialog, or every security-key setting would ask for a
+    password to edit a file the user already owns."""
+    from shani_cassini.config_io import parse_flat
+    from shani_cassini import system_status as ss
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    path = tmp_path / "xdg" / "Yubico" / "pam_u2f.conf"
+    path.parent.mkdir(parents=True)
+    path.write_text("# a comment\nauthfile /home/shani/old_keys\n")
+
+    got = []
+    ss.set_config_value(ss.u2f_conf_path(), "authfile", "/home/shani/new_keys",
+                        parser=parse_flat, expect_owner=None, done=_done(got))
+    assert got[0][0] == "", got
+    assert not pkexec_log.exists(), f"pkexec ran: {pkexec_log.read_text()}"
+    assert path.read_text() == "# a comment\nauthfile /home/shani/new_keys\n"
+    assert list(path.parent.iterdir()) == [path], "no staging file left behind"
+
+
+def test_a_file_that_is_not_ours_is_installed_through_pkexec(config_pkexec, own_config, tmp_path, monkeypatch):
+    """A root config file goes through pkexec install(1), and the value travels
+    in the staged file - never in argv, where anyone could read it."""
+    from shani_cassini import config_io
+    from shani_cassini import system_status as ss
+    path = _point(monkeypatch, "KRB5_CONF", tmp_path, KRB5_PLAIN)
+    # a tmp file belongs to whoever ran the tests; stage() reads the target's
+    # owner to decide, so this is what makes it a root file here
+    monkeypatch.setattr(config_io.os, "getuid", lambda: 0)
+
+    got = []
+    ss.krb5_set("default_realm", "SHANI.EXAMPLE", done=_done(got))
+    assert got[0][0] == "", got
+    argv = config_pkexec.read_text().split()
+    assert argv[0] == "/usr/bin/install", argv
+    assert argv[1:2] == ["-m"] and argv[3:4] == ["-o"] and argv[5:6] == ["-g"], argv
+    assert argv[-1] == str(path), "the target is the last argument"
+    assert argv[-2].endswith(f"{config_io.TMP_PREFIX}KRB5_CONF"), \
+        f"the content comes from a staged file, not from argv: {argv[-2]}"
+    assert "SHANI.EXAMPLE" not in config_pkexec.read_text(), \
+        "the new value must never appear in argv"
+    assert "default_realm = SHANI.EXAMPLE" in path.read_text()
+
+
+def test_krb5_set_refuses_a_credential_cache_an_ordinary_login_cannot_use(own_config, tmp_path, monkeypatch):
+    """KEYRING: and KCM: need a running keyring or the KCM daemon at every
+    login, which is not what someone signing in at this machine gets."""
+    from shani_cassini import system_status as ss
+    path = _point(monkeypatch, "KRB5_CONF", tmp_path, KRB5_PLAIN)
+    before = path.read_text()
+
+    for value in ("KEYRING:persistent:0", "KCM:persistent:0", "DIR:/run/user/0/krb5cc"):
+        got = []
+        ss.krb5_set("default_ccache_name", value, done=_done(got))
+        assert got and got[0][1] == "", got
+        assert "login" in got[0][0], got[0][0]
+        assert path.read_text() == before, f"{value} was written"
+
+
+def test_krb5_set_refuses_a_realm_that_is_not_a_realm(own_config, tmp_path, monkeypatch):
+    from shani_cassini import system_status as ss
+    path = _point(monkeypatch, "KRB5_CONF", tmp_path, KRB5_PLAIN)
+    got = []
+    ss.krb5_set("default_realm", "SHANI LAN", done=_done(got))
+    assert got and got[0][1] == ""
+    assert "SHANI.LAN" in path.read_text(), "the realm on disk is unchanged"
+
+
+def test_krb5_set_writes_into_libdefaults_and_says_so(own_config, tmp_path, monkeypatch):
+    from shani_cassini import system_status as ss
+    path = _point(monkeypatch, "KRB5_CONF", tmp_path, KRB5_PLAIN)
+    got = []
+    ss.krb5_set("default_realm", "SHANI.EXAMPLE", done=_done(got))
+    assert got[0][0] == "", got
+    assert path.read_text() == KRB5_PLAIN.replace(
+        "\tdefault_realm = SHANI.LAN", "\tdefault_realm = SHANI.EXAMPLE"), \
+        "the tab indent and every other line survive"
+    assert ss.krb5_config()["default_realm"] == "SHANI.EXAMPLE"
+
+
+def test_a_save_that_would_glue_a_comment_onto_the_value_is_refused(own_config, tmp_path, monkeypatch):
+    """config_io rebuilds a line as indent+key+sep+value+tail, and the run of
+    whitespace a trailing comment was separated by is in neither part, so the
+    saved value would end in '# the only realm here' and krb5 would reject the
+    whole file. The validator sees the glued value and refuses; nothing is
+    written. Reported upstream as a config_io defect, not worked around."""
+    from shani_cassini import system_status as ss
+    path = _point(monkeypatch, "KRB5_CONF", tmp_path, KRB5_CONF)
+    before = path.read_text()
+
+    got = []
+    ss.krb5_set("default_realm", "SHANI.EXAMPLE", done=_done(got))
+    assert got and got[0][0], "a save that would break the file must not report success"
+    assert path.read_text() == before
+
+
+def test_removing_a_mapping_leaves_the_rest_of_the_file_alone(own_config, tmp_path, monkeypatch):
+    from shani_cassini import system_status as ss
+    path = _point(monkeypatch, "SUBJECT_MAPPING", tmp_path, MAPPED_FILE)
+
+    got = []
+    ss.remove_mapping("CN=Shani Admin,O=SHANI,C=LOCAL", done=_done(got))
+    assert got[0][0] == "", got
+    assert [e["login"] for e in ss.subject_mappings()["entries"]] == ["ops"]
+    assert path.read_text() == MAPPED_FILE.replace(
+        "CN=Shani Admin,O=SHANI,C=LOCAL -> shani\n", "\n"), path.read_text()
+
+
+def test_a_certificate_that_is_not_mapped_yet_cannot_be_added(own_config, tmp_path, monkeypatch):
+    """config_io's stage() refuses any document whose line count changed, and
+    that is what Document.add() does - so a subject that is not in the file
+    yet cannot be written through this engine at all. Reported upstream; here
+    it must refuse rather than lose the line. The file is left as it was."""
+    from shani_cassini import system_status as ss
+    path = _point(monkeypatch, "SUBJECT_MAPPING", tmp_path, MAPPED_FILE)
+    before = path.read_text()
+
+    got = []
+    ss.set_mapping("CN=Shani New,C=LOCAL", "new", done=_done(got))
+    assert got and got[0][0], "adding a line the engine cannot save must not report success"
+    assert path.read_text() == before
+
+
+def test_a_u2f_config_with_a_bare_flag_can_be_read_but_not_saved(tmp_path, monkeypatch):
+    """`nouserok` on its own is a setting pam-u2f reads, and the reader reports
+    it. parse_flat needs whitespace to find a key, so the line is one it cannot
+    reproduce, and a save refuses the file rather than rewrite the flag as
+    'nouserok ' - a change nobody asked for. Reported upstream."""
+    from shani_cassini.config_io import parse_flat
+    from shani_cassini import system_status as ss
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    path = tmp_path / "xdg" / "Yubico" / "pam_u2f.conf"
+    path.parent.mkdir(parents=True)
+    path.write_text("authfile /home/shani/keys\nnouserok\n")
+    before = path.read_text()
+
+    assert ss.u2f_config()["values"]["nouserok"] == "", "the flag is still reported"
+    got = []
+    ss.set_config_value(ss.u2f_conf_path(), "authfile", "/home/shani/other",
+                        parser=parse_flat, expect_owner=None, done=_done(got))
+    assert got and got[0][0] and "line 2" in got[0][0], got
+    assert path.read_text() == before
+
+
+def test_the_keys_offered_are_the_ones_the_modules_really_have():
+    """pam-u2f 1.4.0's own cfg.c has no touchauth and no verbose, and
+    pam_yubico's documented list is the one above - a page must not offer a
+    setting the module would ignore."""
+    from shani_cassini import system_status as ss
+    assert "touchauth" not in ss.U2F_KEYS and "verbose" not in ss.U2F_KEYS
+    assert set(ss.U2F_KEYS) == {
+        "debug", "manual", "nouserok", "openasuser", "alwaysok", "interactive",
+        "cue", "nodetect", "expand", "sshformat", "authfile", "origin", "appid"}
+    assert set(ss.PAM_YUBICO_KEYS) == {
+        "authfile", "id", "key", "alwaysok", "try_first_pass", "use_first_pass",
+        "always_prompt", "nullok", "ldap_starttls", "ldap_bind_as_user",
+        "urllist", "mode", "debug", "debug_file", "chalresp_path"}
+
+
+def test_the_yubico_authfile_default_is_spelled_the_way_the_file_is():
+    """The mapping file is authorized_yubikeys; a page that offers the default
+    path has to offer one the module can open."""
+    from shani_cassini import system_status as ss
+    assert ss.YUBICO_AUTHFILE_DEFAULT == "~/.yubico/authorized_yubikeys"
+
+
+# --- nothing refuses by raising -------------------------------------------
+
+def test_no_refusal_reaches_a_page_as_an_exception(own_config, tmp_path, monkeypatch):
+    """ConfigRefused is how config_io says "nothing was written". A page has
+    one callback and no try/except, so every refusal must arrive as
+    done(message, "") - and the file must be byte for byte what it was."""
+    from shani_cassini.config_io import ConfigRefused, parse_flat, parse_ini
+    from shani_cassini import system_status as ss
+
+    mapping = _point(monkeypatch, "SUBJECT_MAPPING", tmp_path, MAPPED_FILE)
+    krb5 = _point(monkeypatch, "KRB5_CONF", tmp_path, KRB5_PLAIN)
+    missing = tmp_path / "not-there"
+    refuse = lambda text: (_ for _ in ()).throw(ValueError("no"))  # noqa: E731
+
+    cases = [
+        ("a file that is not there", lambda d: ss.set_config_value(
+            str(missing), "authfile", "x", parser=parse_flat, expect_owner=None, done=d)),
+        ("a key that is not there", lambda d: ss.set_config_value(
+            str(krb5), "dns_lookup_kdc", "true", section="libdefaults",
+            parser=parse_ini, done=d)),
+        ("a file that is not the one we mean", lambda d: ss.set_config_value(
+            str(krb5), "default_realm", "SHANI.EXAMPLE", section="libdefaults",
+            parser=parse_ini, must_contain=("[realms]",), done=d)),
+        ("a caller's own check", lambda d: ss.set_config_value(
+            str(krb5), "default_realm", "SHANI.EXAMPLE", section="libdefaults",
+            parser=parse_ini, done=d, validator=refuse)),
+        ("a cache type no login can use", lambda d: ss.krb5_set(
+            "default_ccache_name", "KEYRING:persistent:0", done=d)),
+        ("a realm that is not a realm", lambda d: ss.krb5_set(
+            "default_realm", "not a realm", done=d)),
+        ("an empty login name", lambda d: ss.set_mapping("CN=A,C=LOCAL", "  ", done=d)),
+        ("an empty certificate subject", lambda d: ss.set_mapping("", "shani", done=d)),
+        ("an arrow inside the subject", lambda d: ss.set_mapping(
+            "CN=A->B,C=LOCAL", "shani", done=d)),
+        ("an arrow inside the login", lambda d: ss.set_mapping(
+            "CN=A,C=LOCAL", "a->b", done=d)),
+        ("a subject that is not mapped", lambda d: ss.set_mapping(
+            "CN=Nobody,C=LOCAL", "shani", done=d)),
+        ("a mapping to remove that is not there", lambda d: ss.remove_mapping(
+            "CN=Nobody,C=LOCAL", done=d)),
+    ]
+    for why, call in cases:
+        got = []
+        try:
+            call(_done(got))
+        except ConfigRefused as escaped:
+            raise AssertionError(f"{why} escaped as an exception: {escaped}")
+        assert got, f"{why} never called done()"
+        assert got[0][0], f"{why} reported success: {got}"
+        assert got[0][1] == "", f"{why} carried a note on a refusal: {got}"
+    assert mapping.read_text() == MAPPED_FILE
+    assert krb5.read_text() == KRB5_PLAIN
+
+
+def test_a_mapping_write_refuses_a_file_with_a_line_it_cannot_read(own_config, tmp_path, monkeypatch):
+    from shani_cassini import system_status as ss
+    path = _point(monkeypatch, "SUBJECT_MAPPING", tmp_path, MAPPED_FILE + "no arrow here\n")
+    before = path.read_text()
+
+    got = []
+    ss.set_mapping("CN=Shani Ops,O=SHANI,C=LOCAL", "ops2", done=_done(got))
+    assert got and got[0][0] and "line 6" in got[0][0], got
+    assert path.read_text() == before
+
+
+def test_no_reader_raises_on_a_file_that_is_not_there(tmp_path, monkeypatch):
+    """A missing config file is a state the pages must render, not a traceback:
+    'this system has none of these' is an answer, not a failure."""
+    from shani_cassini import system_status as ss
+    for name in ("PKCS11_CONF", "SUBJECT_MAPPING", "PAM_YUBICO_CONF", "KRB5_CONF"):
+        _point(monkeypatch, name, tmp_path, None)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    assert ss.subject_mappings()["exists"] is False
+    assert ss.subject_mappings()["entries"] == []
+    assert ss.krb5_config()["exists"] is False
+    assert ss.krb5_config()["default_realm"] == ""
+    assert ss.pam_yubico_config()["exists"] is False
+    assert ss.pam_pkcs11_state()["problems"], "a module with no conf is a fault"
+
+
+# --- the smartcard readers, through pcsc_scan ------------------------------
+#
+# pcsc-lite's own tool, the one the Fingerprint page already tells the user to
+# run by hand. It is the only thing here that talks to the reader daemon, and
+# it needs no root, so the reader list must never raise a polkit dialog.
+
+def _bin(directory, name, body):
+    path = directory / name
+    path.write_text("#!/bin/sh\n" + body)
+    path.chmod(0o755)
+    return path
+
+
+def test_pcsc_readers_lists_what_pcsc_scan_prints(fake_bin):
+    from shani_cassini import system_status as ss
+    _bin(fake_bin, "pcsc_scan",
+         f"cat <<'EOF'\n{PCSC_SCAN}EOF\nexit 0\n")
+
+    got = []
+    ss.pcsc_readers(lambda readers, error: got.append((readers, error)))
+    assert spin(lambda: got), "pcsc_readers never called back"
+    readers, error = got[0]
+    assert error == ""
+    assert [r["nr"] for r in readers] == [0, 1]
+    # pcsc-lite prints the card name in a free-text column, so a card may be
+    # two words: everything after the number is reported, not guessed apart
+    assert readers[0]["text"].startswith("Yubico YubiKey OTP+FIDO+CCID ")
+    assert readers[1]["text"].startswith("Feitian ePass FIDO2 ")
+
+
+def test_pcsc_scan_failing_is_reported_rather_than_shown_as_no_reader(fake_bin):
+    """An empty list means no reader. A pcsc_scan that failed means nobody
+    answered, and a page must be able to say which of the two it is."""
+    from shani_cassini import system_status as ss
+    _bin(fake_bin, "pcsc_scan",
+         "echo 'SCardEstablishContext: Resource temporarily unavailable' >&2\nexit 1\n")
+
+    got = []
+    ss.pcsc_readers(lambda readers, error: got.append((readers, error)))
+    assert spin(lambda: got)
+    readers, error = got[0]
+    assert readers is None, "a failure is not an empty list"
+    assert "SCardEstablishContext" in error, error
+
+
+def test_pcsc_scan_with_no_reader_attached_is_an_empty_list(fake_bin):
+    from shani_cassini import system_status as ss
+    _bin(fake_bin, "pcsc_scan",
+         "echo 'Nr.  Card  Features               ATR Info            AID Info'\n"
+         "echo '------------------------------------------------'\nexit 0\n")
+
+    got = []
+    ss.pcsc_readers(lambda readers, error: got.append((readers, error)))
+    assert spin(lambda: got)
+    assert got[0] == ([], "")
