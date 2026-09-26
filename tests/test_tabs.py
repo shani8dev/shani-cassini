@@ -94,7 +94,8 @@ class TestHealthTab:
 class TestNotebook:
     """The sidebar lists every section, in order; pages build on demand."""
 
-    EXPECTED = ["Overview", "Health", "System Info", "Drivers", "Secure Boot", "Encryption",
+    EXPECTED = ["Overview", "Health",
+        "Storage", "System Info", "Drivers", "Secure Boot", "Encryption",
                 "Fingerprint",
         "Smartcard",
         "Security Keys",

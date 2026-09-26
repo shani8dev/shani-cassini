@@ -29,6 +29,7 @@ from shani_cassini.tabs.biometrics import BiometricsTab
 from shani_cassini.tabs.smartcard import SmartcardTab
 from shani_cassini.tabs.security_keys import SecurityKeysTab
 from shani_cassini.tabs.kerberos import KerberosTab
+from shani_cassini.tabs.storage import StorageTab
 from shani_cassini.tabs.maintenance import MaintenanceTab
 from shani_cassini.tabs.kernel import KernelTab
 logger = logging.getLogger(__name__)
@@ -50,6 +51,8 @@ SECTIONS = [
     ("System", [
         (OverviewTab, "overview", "Overview", "computer-symbolic", "This machine at a glance"),
         (HealthTab, "health", "Health", "object-select-symbolic", "Checks and diagnostics"),
+        (StorageTab, "storage", "Storage", "drive-harddisk-symbolic",
+         "Btrfs subvolumes, space and the checks that keep a filesystem healthy"),
         (SystemInfoPage, "system", "System Info", "dialog-information-symbolic", "Hardware, software and kernel"),
         (DriversTab, "drivers", "Drivers", "drive-harddisk-symbolic", "PCI devices and kernel drivers"),
     ]),
