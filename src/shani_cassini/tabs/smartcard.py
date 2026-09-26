@@ -328,9 +328,12 @@ class SmartcardTab(Gtk.Box):
         # command that needs it, and nothing else reads it. Angle brackets when
         # it is unknown, because a plausible-looking path that is not this
         # machine's is worse than an obvious gap.
-        self._row_objects.set_title(
-            f"pkcs11-tool --module {self._provider or '<the provider path above>'} "
-            f"-O --list-objects")
+        # set_title parses markup, so the placeholder's angle brackets (and any
+        # '&' in a real path) have to be escaped or GTK rejects the whole title
+        # and renders nothing.
+        self._row_objects.set_title(_esc(
+            f"pkcs11-tool --module {self._provider or '[the provider path above]'} "
+            f"-O --list-objects"))
 
         installed = bool(state.get("installed"))
         self._set(self._row_module, "pam_pkcs11.so",
