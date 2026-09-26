@@ -145,7 +145,24 @@ def _raws(text: str) -> list[str]:
 
 
 def _is_continuation(raw: str) -> bool:
+    """The rarer form, where the continuation line itself starts with a
+    backslash."""
     return raw.lstrip(" \t").startswith("\\")
+
+
+def _opens_continuation(raw: str) -> bool:
+    """True when a line ends with an unescaped backslash, which is what makes
+    the NEXT line a continuation of it.
+
+    This is the form configparser and krb5.conf actually use, and getting it
+    backwards is not cosmetic: a folded value's tail line has no '=' , so
+    classifying it as anything but a continuation marks it unreadable and makes
+    the whole file refuse to save.
+    """
+    stripped = raw.rstrip()
+    if not stripped.endswith("\\"):
+        return False
+    return not stripped.endswith("\\\\")
 
 
 def _comment_at(body: str, markers: Sequence[str]) -> int:
@@ -297,22 +314,45 @@ def _ini_pieces(raws: list[str]) -> list[_Piece]:
     pieces: list[_Piece] = []
     section = ""
     owner = -1
+    folded_from = -1
     for raw in raws:
+        text = raw.strip()
+        if folded_from >= 0 and text and not text.startswith((";", "#", "[")):
+            target = pieces[folded_from]
+            body = text[1:].strip() if _is_continuation(raw) else text
+            if _opens_continuation(raw):
+                body = body[:-1].rstrip()  # the marker is not part of the value
+            merged = f"{target.value} {body}".strip() if target.value else body
+            pieces[folded_from] = replace(target, value=merged)
+            pieces.append(_Piece("directive", raw=raw, key="", value=body,
+                                 section=target.section))
+            # Each physical line decides on its own whether the fold goes on, so
+            # the next line is only a continuation if THIS one also ends with a
+            # backslash. Without this a following directive is swallowed into the
+            # value above it, which is the normal shape of a real krb5.conf.
+            if not _opens_continuation(raw):
+                folded_from = -1
+            continue
+        folded_from = -1
         piece = _split_ini(raw, section, pieces[owner] if owner >= 0 else None)
         if piece.kind == "section":
             section = piece.section
+            owner = -1
         elif piece.kind == "directive" and piece.key:
             if not section and piece.key not in _ALLOWED_PRE_SECTION:
                 piece = replace(piece, kind="other")
+                owner = -1
             else:
                 owner = len(pieces)
-        elif piece.kind == "directive" and owner >= 0:  # a continuation
-            folded = pieces[owner].value
-            pieces[owner] = replace(pieces[owner],
-                                    value=f"{folded} {piece.value}".strip())
+        elif piece.kind == "directive" and owner >= 0:
+            target = pieces[owner]
+            pieces[owner] = replace(target,
+                                    value=f"{target.value} {piece.value}".strip())
         else:
             owner = -1
         pieces.append(piece)
+        if piece.kind == "directive" and piece.key and _opens_continuation(raw):
+            folded_from = owner
     return pieces
 
 
@@ -505,7 +545,14 @@ class Document:
 
 
 def _folded_after(lines: list[Line], index: int) -> bool:
-    return any(_is_continuation(line.raw) for line in lines[index + 1:index + 2])
+    """Does the directive at `index` continue onto further physical lines?
+
+    Rewriting it on one line would silently drop the tail, so set() refuses.
+    """
+    if _opens_continuation(lines[index].raw):
+        return True
+    at = index + 1
+    return at < len(lines) and _is_continuation(lines[at].raw)
 
 
 def _label(path: str) -> str:

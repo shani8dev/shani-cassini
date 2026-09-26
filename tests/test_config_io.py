@@ -456,3 +456,55 @@ def test_privileged_follows_the_owner_of_the_file(tmp_path):
     doc.uid = os.getuid() + 1
     doc.set("alwaysok", "on")
     assert stage(doc).privileged is True
+
+
+# --- INI folding, the shapes a real krb5.conf actually has ---------------
+#
+# The single-continuation fixture above passed while both of these were wrong,
+# so they are pinned here against the multi-line shapes instead.
+
+KRB_FOLDED = (
+    "[libdefaults]\n"
+    "    default_realm = SHANI.LAN\n"
+    "    ticket_lifetime = 24h \\\n"
+    "        2h\n"
+    "    dns_lookup_kdc = false\n"
+    "\n"
+    "[domain_realm]\n"
+    ".shani.lan = SHANI.LAN\n"
+)
+
+
+def test_a_directive_after_a_folded_value_is_not_swallowed_into_it():
+    """INI folds while the *previous physical line* ends in a backslash, so the
+    fold stops at the first line that does not. Consuming one line too many put
+    the next directive's text into the value above it - and since that line has
+    no '=', it was also classified unreadable, which made the whole krb5.conf
+    refuse to save."""
+    doc = parse_ini(KRB_FOLDED, path="/etc/krb5.conf")
+    assert doc.get("ticket_lifetime", "libdefaults") == "24h 2h"
+    assert doc.get("dns_lookup_kdc", "libdefaults") == "false", \
+        "the directive after a fold must keep its own value"
+    assert doc.has_other() == [], "a folded tail must stay readable"
+    assert doc.text() == KRB_FOLDED
+
+
+def test_a_fold_spanning_three_lines_drops_every_marker():
+    """The trailing backslash marks the fold; it is not part of the value. The
+    marker on the middle line used to survive into the folded text."""
+    three = "[libdefaults]\n  k = a \\\n      b \\\n      c\n  next = 1\n"
+    doc = parse_ini(three)
+    assert doc.get("k", "libdefaults") == "a b c"
+    assert doc.get("next", "libdefaults") == "1"
+    assert doc.text() == three
+
+
+def test_set_refuses_a_folded_value_but_allows_the_clean_one_beside_it():
+    """Rewriting a folded value on one line would silently drop its tail."""
+    doc = parse_ini(KRB_FOLDED, path="/etc/krb5.conf")
+    with pytest.raises(ConfigRefused) as excinfo:
+        doc.set("ticket_lifetime", "8h", section="libdefaults")
+    assert "3" in str(excinfo.value), "the refusal must name the line"
+    doc.set("default_realm", "OTHER.LAN", section="libdefaults")
+    assert doc.get("default_realm", "libdefaults") == "OTHER.LAN"
+    assert doc.changed_indexes() == {1}, "only the edited line may change"
