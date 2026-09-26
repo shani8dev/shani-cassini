@@ -32,6 +32,8 @@ from shani_cassini.tabs.kerberos import KerberosTab
 from shani_cassini.tabs.storage import StorageTab
 from shani_cassini.tabs.smart import SmartTab
 from shani_cassini.tabs.ssh_keys import SshKeysTab
+from shani_cassini.tabs.firewall import FirewallTab
+from shani_cassini.tabs.directory import DirectoryTab
 from shani_cassini.tabs.maintenance import MaintenanceTab
 from shani_cassini.tabs.kernel import KernelTab
 logger = logging.getLogger(__name__)
@@ -64,6 +66,9 @@ SECTIONS = [
     ("Security", [
         (SecureBootTab, "secureboot", "Secure Boot", "security-high-symbolic", "Secure Boot and MOK keys"),
         (EncryptionTab, "encryption", "Encryption", "channel-secure-symbolic", "Disk encryption and TPM unlock"),
+        (FirewallTab, "firewall", "Firewall", "security-high-symbolic",
+         "What firewalld and fail2ban report - zones, services, ports, jails "
+         "and bans, read-only"),
         (BiometricsTab, "biometrics", "Fingerprint", "auth-fingerprint-symbolic",
          "Fingerprint reader, and the fingers enrolled on it"),
         (SmartcardTab, "smartcard", "Smartcard", "auth-smartcard-symbolic",
@@ -74,6 +79,9 @@ SECTIONS = [
          "The public keys allowed to sign in to this account over SSH"),
         (KerberosTab, "kerberos", "Kerberos", "network-vpn-symbolic",
          "Realm, domain mapping and credential cache"),
+        (DirectoryTab, "directory", "Directory", "network-workgroup-symbolic",
+         "SSSD and OpenLDAP as shani-health reports them, and whether "
+         "name resolution is wired to a directory at all"),
     ]),
     ("Updates", [
         (UpdatesTab, "updates", "Updates & Rollback", "view-refresh-symbolic",

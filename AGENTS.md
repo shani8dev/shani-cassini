@@ -38,6 +38,8 @@ for an "is not installed" status page when its app is missing.
 | Security Keys | reads/edits `~/.config/Yubico/pam_u2f.conf` (per-user, **never** privileged) and `/etc/security/pam_yubico.conf`; `u2f_config()`, `pam_yubico_config()`, `set_config_value()` |
 | Kerberos | reads/edits `/etc/krb5.conf`; `krb5_config()`, `krb5_set()`, plus `pam_stacks_loading()` to tell whether any stack actually loads `pam_krb5.so` |
 | SSH Keys | `~/.ssh/authorized_keys` via `config_io`, and `ssh-keygen -lf` for fingerprints. The file is the user's own, so this path takes **no privilege at all** — no `pkexec`, no polkit action, no helper, and an AST gate in `tests/test_ssh_keys_page.py` fails if any appear. It leads with the file's and its directory's mode, because sshd refusing a group/world-writable file is the most useful thing it can say |
+| Firewall | `firewall-cmd --state`, `--get-default-zone`, `--get-active-zones`, `--get-zones` (session queries), then the three *configuration* reads `--list-services`, `--list-ports`, `--list-rich-rules`, which are privileged in firewalld's own design, plus `fail2ban-client status` against a root-owned socket. **Read-only: it changes nothing, and it offers no way to change anything** — a zone is edited with `firewall-config` or `firewall-cmd`, which the page names and can launch |
+| Directory | `pkexec shani-health --security --json` and `pkexec shani-health --info --json`, keyed off each report's `key` (`sssd`, `slapd`, `nsswitch`) and **not** its `section`. `shani-health` is the single source of truth here: it already parses SSSD, slapd and `/etc/nsswitch.conf`, and a second parser in the GUI would be a second opinion that drifts. **Read-only** — the fourth group exists to say that these belong to their own tools, in a terminal |
 
 The three sign-in pages share a contract worth knowing before editing them:
 
@@ -136,6 +138,27 @@ If you haven't seen it work (or fail) for real, it isn't verified.
   Note `ssh-keygen` resolves from `/usr/bin` on Arch, so plain `shutil.which`
   is correct for it — unlike `smartctl`, which is `/usr/sbin`-only and needs
   the sbin fallback `smart.py` uses.
+
+- **Firewall and Directory have been rendered for real, but only in their
+  "tool absent" state.** Both pages were driven through the real entry point
+  (`shani_cassini.main --section=firewall` / `--section=directory`) on Arch
+  under GTK4/libadwaita and captured as PNGs, so the widget tree, the sidebar
+  registration and the honest empty states are confirmed rather than assumed.
+  What those captures show is `firewall-cmd`/`fail2ban-client` absent and
+  `shani-health` absent, because both ship inside the image and not on a
+  development host — which is the correct thing for the page to say, but it
+  means **no row has been seen with real data**. Closing that needs a real slot
+  with `firewalld` running, exactly like the `fprintd` and SMART items above.
+  Do not read the passing fake-CLI tests as evidence that a populated row
+  renders correctly.
+
+- **`tabs/firewall.py` still carries a private `_tool_path()` and should use
+  `system_status.have_tool()` / `run_json_tool()` instead.** `ba3321b` added the
+  shared sbin-aware runner precisely so the next page would not grow its own
+  copy, and Firewall — added in the same batch — is that copy. It works and is
+  tested, so this is duplication rather than a bug; folding it in is a
+  behaviour-preserving cleanup that wants its own re-verification (the page's
+  fake-CLI tests plus a fresh render), not a drive-by edit inside a page commit.
 
 - **The Fingerprint tab's live `fprintd` path is UNVERIFIED against a running
   daemon — proven impossible in a container, so it needs a real slot.** The D-Bus

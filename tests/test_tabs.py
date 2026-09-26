@@ -97,11 +97,12 @@ class TestNotebook:
     EXPECTED = ["Overview", "Health",
         "Storage", "Disk Health", "System Info", "Drivers", "Secure Boot",
                 "Encryption",
+                "Firewall",
                 "Fingerprint",
         "Smartcard",
         "Security Keys",
         "SSH Keys",
-        "Kerberos", "Updates & Rollback", "Services", "Backup", "Maintenance",
+        "Kerberos", "Directory", "Updates & Rollback", "Services", "Backup", "Maintenance",
                 "Chronoa", "Fleet"]
 
     def test_sections(self):
@@ -313,12 +314,15 @@ class TestBiometricsNoPrivilegeEscalation:
     def test_biometrics_is_registered_in_the_security_group(self):
         from shani_cassini.notebook import SECTIONS, REQUIRES
         security = dict(SECTIONS)["Security"]
-        assert [p[1] for p in security] == ["secureboot", "encryption", "biometrics",
+        assert [p[1] for p in security] == ["secureboot", "encryption", "firewall",
+                                                    "biometrics",
                                                     "smartcard", "securitykeys",
-                                                    "sshkeys", "kerberos"]
-        # Fingerprint is no longer last: smartcard, security keys and Kerberos
-        # follow it, so its icon is asserted by position rather than by [-1].
-        assert security[2][3] == "auth-fingerprint-symbolic"
+                                                    "sshkeys", "kerberos",
+                                                    "directory"]
+        # By id, not by position: inserting a section used to move this assertion
+        # silently onto a different page, which is how the wrong icon passes.
+        assert next(p[3] for p in security if p[1] == "biometrics") == \
+            "auth-fingerprint-symbolic"
 
     def test_biometrics_page_is_not_gated_on_fprintd(self):
         """The page reports the other hardware-auth login methods too, and a
