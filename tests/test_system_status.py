@@ -1913,3 +1913,80 @@ def test_pcsc_scan_with_no_reader_attached_is_an_empty_list(fake_bin):
     ss.pcsc_readers(lambda readers, error: got.append((readers, error)))
     assert spin(lambda: got)
     assert got[0] == ([], "")
+
+# --- shani-health --storage-info -----------------------------------------
+#
+# The fixture below is the REAL captured output of
+# `shani-health --storage-info --json` from a Btrfs Shanios layout, not
+# something written to match the parser. That is the point: the flag's shape is
+# nothing like its name suggests, and an invented fixture would agree with
+# whatever the parser was written to expect.
+REAL_STORAGE_INFO = '{"timestamp":"2026-09-26T10:13:21+00:00","checks":[{"section":"","key":"Free","status":"warning","message":" 11.3 GB — getting low"},{"section":"","key":"Quotas","status":"ok","message":"consistent"},{"section":"","key":"Scrub tmr","status":"critical","message":"btrfs-scrub.timer not enabled"},{"section":"","key":"Scrub","status":"info","message":"no scrub recorded yet"},{"section":"","key":"Maint tmrs","status":"critical","message":"all not enabled: balance defrag trim"},{"section":"","key":"bees","status":"info","message":"not configured (run beesd-setup to enable dedup)"},{"section":"","key":"Dev errors","status":"ok","message":"all zero"},{"section":"","key":"Total","status":"info","message":"12.00GiB"},{"section":"","key":"Used","status":"info","message":"82.68MiB"},{"section":"","key":"@blue","status":"info","message":"960K (ratio: 16M)"},{"section":"","key":"@containers","status":"info","message":"36K (ratio: 888K)"},{"section":"","key":"@data","status":"info","message":"36K (ratio: 888K)"},{"section":"","key":"@green","status":"info","message":"960K (ratio: 16M)"},{"section":"","key":"@home","status":"info","message":"36K (ratio: 888K)"},{"section":"","key":"@nix","status":"info","message":"36K (ratio: 888K)"},{"section":"","key":"@swap","status":"info","message":"?"},{"section":"","key":"@waydroid","status":"info","message":"36K (ratio: 888K)"},{"section":"","key":"@blue_backup_20260820090000","status":"info","message":"960K (ratio: 16M)"},{"section":"","key":"@green_backup_20260924120000","status":"info","message":"960K (ratio: 16M)"},{"section":"","key":"@cache","status":"info","message":"36K (ratio: 888K)"},{"section":"","key":"@flatpak","status":"info","message":"36K (ratio: 888K)"},{"section":"","key":"@libvirt","status":"info","message":"?"},{"section":"","key":"@log","status":"info","message":"?"},{"section":"","key":"@lxc","status":"info","message":"?"},{"section":"","key":"@lxd","status":"info","message":"?"},{"section":"","key":"@machines","status":"info","message":"?"},{"section":"","key":"@qemu","status":"info","message":"?"},{"section":"","key":"@root","status":"info","message":"?"},{"section":"","key":"@snapd","status":"info","message":"?"},{"section":"","key":"Flatpak","status":"info","message":"8 MB  (0 apps, 0 runtimes)"},{"section":"","key":"Snapshots","status":"info","message":"6 total"},{"section":"","key":"Dedup","status":"info","message":"duperemove not installed — cross-slot deduplication unavailable"},{"section":"","key":"bees","status":"info","message":"not configured (run beesd-setup to enable dedup)"}]}\n'
+
+
+def _storage(monkeypatch, payload, error=""):
+    from shani_cassini import system_status as ss
+    got = []
+    if error:
+        monkeypatch.setattr(ss, "run_json",
+                            lambda argv, done: done(None, error))
+    else:
+        import json
+        monkeypatch.setattr(ss, "run_json",
+                            lambda argv, done: done(json.loads(payload), ""))
+    ss.storage_info(got.append)
+    assert got, "storage_info never called back"
+    return got[0]
+
+
+def test_storage_info_reads_the_real_captured_output(monkeypatch):
+    """Every claim below was read off the captured file, not the help text."""
+    out = _storage(monkeypatch, REAL_STORAGE_INFO)
+    assert out["ok"] and out["problem"] == ""
+    assert out["timestamp"], "the payload carries a timestamp"
+    # Sizes are human strings, and the figure after "ratio:" is the
+    # UNCOMPRESSED size - not a compression ratio.
+    blue = [s for s in out["subvolumes"] if s["name"] == "@blue"]
+    assert blue and blue[0]["used"] == "960K", blue
+    assert blue[0]["uncompressed"] == "16M", blue
+    # Total is a string from `btrfs filesystem usage`, not a number.
+    assert out["summary"]["Total"]["message"] == "12.00GiB", out["summary"]["Total"]
+    # A leading space survives in the raw message; the summary strips it.
+    assert out["summary"]["Free"]["message"].startswith("11.3 GB"), out["summary"]["Free"]
+    # Snapshots counts @blue and @green too, because they are snapshots.
+    assert out["summary"]["Snapshots"]["message"] == "6 total"
+
+
+def test_storage_info_separates_warnings_from_the_rest(monkeypatch):
+    out = _storage(monkeypatch, REAL_STORAGE_INFO)
+    assert out["warnings"], "the captured run has warnings (Free space, timers)"
+    assert all(w["status"] in ("warning", "critical", "fail")
+               for w in out["warnings"]), out["warnings"]
+    assert any(w["key"] == "Free" for w in out["warnings"]), out["warnings"]
+
+
+def test_storage_info_reports_a_missing_binary_instead_of_raising(monkeypatch):
+    """A page that raises during build renders blank; ok=False with a reason
+    is the only version a user can do anything with."""
+    out = _storage(monkeypatch, "", error="shani-health is not installed")
+    assert out["ok"] is False
+    assert "not installed" in out["problem"]
+    assert out["summary"] == {} and out["subvolumes"] == []
+
+
+def test_storage_info_reports_malformed_json_instead_of_raising(monkeypatch):
+    """The real risk: _print_json builds the document by string concatenation
+    and _json_escape only escapes backslash and double-quote, so a message
+    containing a newline yields invalid JSON. The shared run_json reports that
+    as an error and this must pass it through, not swallow it."""
+    out = _storage(monkeypatch, "", error="Expecting value: line 1 column 1")
+    assert out["ok"] is False
+    assert out["problem"]
+
+
+def test_storage_size_returns_nothing_rather_than_guessing():
+    from shani_cassini import system_status as ss
+    assert ss._storage_size("") == {}
+    assert ss._storage_size("not a size at all") == {"used": "not a size at all"}
+    # A shape we do not recognise must not produce a fabricated number.
+    assert "uncompressed" not in ss._storage_size("12.00GiB")

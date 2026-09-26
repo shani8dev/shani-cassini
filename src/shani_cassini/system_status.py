@@ -1420,3 +1420,89 @@ def krb5_set(key: str, value: str, *, done: Callable[[str, str], None]) -> None:
                      must_contain=("[libdefaults]",), done=done, validator=_krb5_valid,
                      expect_owner=CONFIG_OWNER)
 
+# --- storage ------------------------------------------------------------
+# shani-health --storage-info --json is the only storage interface we have, and
+# its shape is not what the flag name suggests. Everything below is written
+# against output captured from a real Btrfs Shanios layout, not from the docs.
+#
+# The four things a parser here must not assume, all confirmed by reading the
+# captured file rather than the help text:
+#
+#   * `section` is "" for every check. analyze_storage never calls
+#     _set_section, so there is nothing to group rows by.
+#   * `key` is NOT unique - "bees" appears twice, once from the dedup check and
+#     once from the reclaim-hint check - so it cannot be used as an identifier.
+#   * sizes are pre-formatted human strings in `message`, not numbers:
+#     "960K (ratio: 16M)", where that second figure is the UNCOMPRESSED size,
+#     not a compression ratio. Total/Used are likewise strings straight out of
+#     `btrfs filesystem usage`, e.g. "12.00GiB".
+#   * the JSON is assembled by string concatenation (_print_json), not jq, and
+#     _json_escape only escapes backslash and double-quote - a newline inside
+#     any message produces malformed JSON. So a parse failure is reported, not
+#     papered over.
+
+STORAGE_INFO_KEYS = ("Free", "Total", "Used", "Snapshots", "Quotas", "Scrub",
+                     "Scrub tmr", "Maint tmrs", "bees", "Dev errors", "Dedup")
+
+
+def _storage_size(message: str) -> dict:
+    """Pull the numbers back out of a human-formatted size string.
+
+    Returns {} rather than guessing when the string is not the shape we know,
+    so a caller can say "not reported" instead of showing a wrong figure.
+    """
+    out: dict = {}
+    text = message.strip()
+    if not text:
+        return out
+    head = text.split(" (ratio:", 1)[0].strip()
+    out["used"] = head
+    if " (ratio:" in text:
+        out["uncompressed"] = text.split(" (ratio:", 1)[1].rstrip(")").strip()
+    return out
+
+
+def storage_info(done: Callable[[dict], None]) -> None:
+    """Parse `shani-health --storage-info --json` into rows a page can render.
+
+    done receives {"ok", "problem", "summary", "subvolumes", "warnings",
+    "timestamp"}. Never raises and never calls back with an exception: a missing
+    binary, a non-zero exit or unparseable JSON all arrive as ok=False with a
+    reason, because a page that raises during build renders blank and says
+    nothing. --storage-info exits 0 on success; run_json reads the JSON from
+    stdout regardless of exit status, which is what the "JSON even on exit 1"
+    contract for the other modes relies on too.
+    """
+    empty = {"ok": False, "problem": "", "summary": {}, "subvolumes": [],
+             "warnings": [], "timestamp": ""}
+
+    def finish(payload: Optional[dict], error: str) -> None:
+        if payload is None:
+            done({**empty, "problem": error or "shani-health did not answer"})
+            return
+        checks = payload.get("checks")
+        if not isinstance(checks, list):
+            done({**empty, "problem": "shani-health --storage-info --json has no "
+                                      "checks list"})
+            return
+        result = {**empty, "ok": True, "problem": "",
+                  "timestamp": str(payload.get("timestamp") or "")}
+        for check in checks:
+            if not isinstance(check, dict):
+                continue
+            key = str(check.get("key") or "")
+            status = str(check.get("status") or "")
+            message = str(check.get("message") or "")
+            if key.startswith("@"):
+                result["subvolumes"].append({"name": key, "status": status,
+                                             **_storage_size(message)})
+            elif key in STORAGE_INFO_KEYS:
+                result["summary"][key] = {"status": status,
+                                          "message": message.strip(),
+                                          **_storage_size(message)}
+                if status in ("warning", "critical", "fail"):
+                    result["warnings"].append({"key": key, "status": status,
+                                               "message": message.strip()})
+        done(result)
+
+    run_json(["shani-health", "--storage-info", "--json"], finish)
