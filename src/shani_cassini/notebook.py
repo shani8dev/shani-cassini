@@ -34,9 +34,19 @@ from shani_cassini.tabs.smart import SmartTab
 from shani_cassini.tabs.ssh_keys import SshKeysTab
 from shani_cassini.tabs.firewall import FirewallTab
 from shani_cassini.tabs.directory import DirectoryTab
-from shani_cassini.tabs.access import AccessTab
 from shani_cassini.tabs.maintenance import MaintenanceTab
+from shani_cassini.tabs.btrfs import BtrfsTab
+from shani_cassini.tabs.persistence import PersistenceTab
+from shani_cassini.tabs.timers import TimersTab
+from shani_cassini.tabs.lsm import LsmTab
+from shani_cassini.tabs.audit import AuditTab
+from shani_cassini.tabs.boot_recovery import BootRecoveryTab
+from shani_cassini.tabs.containers import ContainersTab
+from shani_cassini.tabs.virtualization import VirtualizationTab
 from shani_cassini.tabs.kernel import KernelTab
+from shani_cassini.tabs.access import AccessTab
+from shani_cassini.tabs.remote_access import RemoteAccessTab
+from shani_cassini.tabs.sharing import SharingTab
 logger = logging.getLogger(__name__)
 
 
@@ -63,10 +73,25 @@ SECTIONS = [
          "attributes it actually returned"),
         (SystemInfoPage, "system", "System Info", "dialog-information-symbolic", "Hardware, software and kernel"),
         (DriversTab, "drivers", "Drivers", "drive-harddisk-symbolic", "PCI devices and kernel drivers"),
+        (BtrfsTab, "btrfs", "Btrfs", "drive-harddisk-symbolic",
+         "What btrfs reports for this filesystem - the subvolumes, the space, "
+         "and whether the last scrub found anything wrong"),
+        (PersistenceTab, "persistence", "Persistence", "content-loading-symbolic",
+         "What a blue/green switch keeps and what it discards, and why a "
+         "stopped service can still remember things"),
+        (TimersTab, "timers", "Timers & Background Tasks", "preferences-system-time-symbolic",
+         "The systemd timers on this machine, and your own crontab - the whole "
+         "scheduler is listed, not just the calendar-based part of it"),
     ]),
     ("Security", [
         (SecureBootTab, "secureboot", "Secure Boot", "security-high-symbolic", "Secure Boot and MOK keys"),
         (EncryptionTab, "encryption", "Encryption", "channel-secure-symbolic", "Disk encryption and TPM unlock"),
+        (LsmTab, "lsm", "LSM", "security-high-symbolic",
+         "The kernel security modules actually active here, and what Lynis "
+         "and rkhunter last reported"),
+        (AuditTab, "audit", "Audit", "view-list-symbolic",
+         "The kernel audit trail - search it behind a click, because reading "
+         "it costs an administrator password"),
         (FirewallTab, "firewall", "Firewall", "security-high-symbolic",
          "What firewalld and fail2ban report - zones, services, ports, jails "
          "and bans, read-only"),
@@ -86,13 +111,28 @@ SECTIONS = [
         (AccessTab, "access", "Access", "dialog-password-symbolic",
          "Accounts allowed to run sudo without a password, as a drop-in "
          "visudo checks before it is installed"),
+        (RemoteAccessTab, "remoteaccess", "Remote Access", "network-server-symbolic",
+         "The sshd settings Cassini keeps in its own drop-in, and the ones "
+         "sshd's main file decides"),
     ]),
     ("Updates", [
+        (BootRecoveryTab, "boot", "Boot & Recovery", "media-removable-symbolic",
+         "The blue and green slots, the markers left by a boot that did not "
+         "come up, and the deployments you can roll back to"),
         (UpdatesTab, "updates", "Updates & Rollback", "view-refresh-symbolic",
          "Update channel, updates and going back to the previous system"),
     ]),
     ("Manage", [
         (ServicesTab, "services", "Services", "system-run-symbolic", "System services"),
+        (ContainersTab, "containers", "Containers", "package-x-generic-symbolic",
+         "Podman and Distrobox as they are right now - an inventory, not a "
+         "second container manager"),
+        (VirtualizationTab, "virtualization", "Virtualization", "computer-symbolic",
+         "libvirt, LXC, LXD and nspawn as they are right now - three different "
+         "tools, three different clients"),
+        (SharingTab, "sharing", "Sharing", "folder-publicshare-symbolic",
+         "NFS exports from a drop-in, and only what exportfs accepted - not "
+         "proof that a client can mount them"),
         (BackupTab, "backup", "Backup", "drive-multidisk-symbolic", "Snapshots and backups"),
         (MaintenanceTab, "maintenance", "Maintenance", "applications-utilities-symbolic",
          "Disk space, diagnostic report, reset"),

@@ -95,14 +95,17 @@ class TestNotebook:
     """The sidebar lists every section, in order; pages build on demand."""
 
     EXPECTED = ["Overview", "Health",
-        "Storage", "Disk Health", "System Info", "Drivers", "Secure Boot",
-                "Encryption",
+        "Storage", "Disk Health", "System Info", "Drivers",
+        "Btrfs", "Persistence", "Timers & Background Tasks",
+                "Secure Boot",
+                "Encryption", "LSM", "Audit",
                 "Firewall",
                 "Fingerprint",
         "Smartcard",
         "Security Keys",
         "SSH Keys",
-        "Kerberos", "Directory", "Access", "Updates & Rollback", "Services", "Backup", "Maintenance",
+        "Kerberos", "Directory", "Access", "Remote Access", "Boot & Recovery", "Updates & Rollback", "Services",
+        "Containers", "Virtualization", "Sharing", "Backup", "Maintenance",
                 "Chronoa", "Fleet"]
 
     def test_sections(self):
@@ -314,11 +317,13 @@ class TestBiometricsNoPrivilegeEscalation:
     def test_biometrics_is_registered_in_the_security_group(self):
         from shani_cassini.notebook import SECTIONS, REQUIRES
         security = dict(SECTIONS)["Security"]
-        assert [p[1] for p in security] == ["secureboot", "encryption", "firewall",
+        assert [p[1] for p in security] == ["secureboot", "encryption", "lsm",
+                                                    "audit", "firewall",
                                                     "biometrics",
                                                     "smartcard", "securitykeys",
                                                     "sshkeys", "kerberos",
-                                                    "directory", "access"]
+                                                    "directory", "access",
+                                                    "remoteaccess"]
         # By id, not by position: inserting a section used to move this assertion
         # silently onto a different page, which is how the wrong icon passes.
         assert next(p[3] for p in security if p[1] == "biometrics") == \
