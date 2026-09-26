@@ -102,7 +102,7 @@ class TestNotebook:
         "Smartcard",
         "Security Keys",
         "SSH Keys",
-        "Kerberos", "Directory", "Updates & Rollback", "Services", "Backup", "Maintenance",
+        "Kerberos", "Directory", "Access", "Updates & Rollback", "Services", "Backup", "Maintenance",
                 "Chronoa", "Fleet"]
 
     def test_sections(self):
@@ -318,7 +318,7 @@ class TestBiometricsNoPrivilegeEscalation:
                                                     "biometrics",
                                                     "smartcard", "securitykeys",
                                                     "sshkeys", "kerberos",
-                                                    "directory"]
+                                                    "directory", "access"]
         # By id, not by position: inserting a section used to move this assertion
         # silently onto a different page, which is how the wrong icon passes.
         assert next(p[3] for p in security if p[1] == "biometrics") == \

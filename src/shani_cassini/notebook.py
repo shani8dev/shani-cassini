@@ -34,6 +34,7 @@ from shani_cassini.tabs.smart import SmartTab
 from shani_cassini.tabs.ssh_keys import SshKeysTab
 from shani_cassini.tabs.firewall import FirewallTab
 from shani_cassini.tabs.directory import DirectoryTab
+from shani_cassini.tabs.access import AccessTab
 from shani_cassini.tabs.maintenance import MaintenanceTab
 from shani_cassini.tabs.kernel import KernelTab
 logger = logging.getLogger(__name__)
@@ -82,6 +83,9 @@ SECTIONS = [
         (DirectoryTab, "directory", "Directory", "network-workgroup-symbolic",
          "SSSD and OpenLDAP as shani-health reports them, and whether "
          "name resolution is wired to a directory at all"),
+        (AccessTab, "access", "Access", "dialog-password-symbolic",
+         "Accounts allowed to run sudo without a password, as a drop-in "
+         "visudo checks before it is installed"),
     ]),
     ("Updates", [
         (UpdatesTab, "updates", "Updates & Rollback", "view-refresh-symbolic",

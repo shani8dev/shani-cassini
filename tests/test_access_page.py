@@ -1,0 +1,1114 @@
+"""The passwordless-sudo page, and the one privileged path it is allowed to have.
+
+Everything privileged here goes through a fake ``pkexec`` standing in for
+``/usr/local/bin/shani-cassini-save``, and the fake is shaped like the real
+helper rather than like a stub that always succeeds: it records its own argv
+and its stdin, refuses an empty payload, checks the bytes it received against
+``--expect-sha256``, validates them with a fake ``visudo -c -f``, checks the
+live config with ``visudo -c``, and only then commits the file at 0440 and reads
+it back. So "the exact argv" and "the content arrived on stdin" are statements
+about the same pipe the real helper would see, and a page that sent the content
+by any other route would fail them.
+
+The real drop-in is root-owned and this suite does not run as root, so
+``SUDOERS_OWNER`` is pointed at the test's own uid for the tests that want a
+readable drop-in, and at a uid that owns nothing for the one that wants a
+refusal. The shipped default is asserted separately: it is (0, 0).
+
+The gates at the end are the reason the page has no code path to
+``/etc/sudoers`` and no second writer. config_io is deliberately
+path-agnostic, so "this page cannot write the main sudoers file" is not
+something the engine can enforce and has to be enforced over the page's AST.
+"""
+
+from __future__ import annotations
+
+import ast
+import hashlib
+import inspect
+import os
+import re
+import time
+
+import pytest
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+
+from gi.repository import Adw, GLib, Gtk  # noqa: E402
+
+from shani_cassini.tabs import access as ac  # noqa: E402
+
+
+def spin(cond, timeout=20.0) -> bool:
+    """Iterate the main loop until cond() holds - the shape every other suite
+    here waits for an async answer with. A save runs on a thread and answers on
+    the main loop, so this is the only way to see the end of one."""
+    ctx = GLib.MainContext.default()
+    end = time.monotonic() + timeout
+    while not cond() and time.monotonic() < end:
+        ctx.iteration(False)
+        time.sleep(0.005)
+    return cond()
+
+
+# --- the fixture material --------------------------------------------------
+
+DROPIN_NAME = "50-shani-cassini"
+WHEEL = "%wheel ALL=(ALL:ALL) NOPASSWD: ALL"
+OPS = "ops ALL=(ALL:ALL) NOPASSWD: ALL"
+ASKED = "backup ALL=(ALL:ALL) PASSWD: ALL"
+
+VISUDO_TAIL = "visudo: /bin/reject-me is not allowed here"
+
+# The helper's own line when the validator said no, from the real script.
+HELPER_REFUSED = ("shani-cassini-save: validator rejected the fragment; nothing "
+                  "was installed")
+
+
+def visudo_says(env) -> str:
+    """What the fake visudo prints for a file holding /bin/reject-me, built from
+    the drop-in this fixture actually uses rather than from the shipped path."""
+    return f"visudo: parse error in {env['target']} line 2\n{VISUDO_TAIL}"
+
+
+# --- the fake pkexec, shaped like shani-cassini-save ------------------------
+
+PKEXEC_FAKE = r"""#!/bin/sh
+# A stand-in for `pkexec /usr/local/bin/shani-cassini-save`, with the real
+# helper's own order of operations: record what we were called with, read the
+# payload off the pipe, refuse an empty one, check it against --expect-sha256,
+# validate it with visudo -c -f, check the live config with visudo -c, and only
+# then commit - atomically, at the mode the target wants - and read it back.
+set -u
+: > "${CASSINI_FAKE_ARGV}"
+# $0 first: the record then names the program that was run, not just its words.
+printf '%s\n' "$0" >> "${CASSINI_FAKE_ARGV}"
+for arg in "$@"; do printf '%s\n' "$arg" >> "${CASSINI_FAKE_ARGV}"; done
+cat > "$CASSINI_FAKE_STDIN"
+
+if [ ! -s "$CASSINI_FAKE_STDIN" ]; then
+  echo "shani-cassini-save: REFUSING: refusing to install an empty config (stdin produced 0 bytes)" >&2
+  exit 1
+fi
+
+expect=""
+target=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+  --expect-sha256) expect="$2"; shift 2 ;;
+  --target) target="$2"; shift 2 ;;
+  *) shift ;;
+  esac
+done
+
+if [ "$target" != "sudoers" ]; then
+  echo "shani-cassini-save: REFUSING: unknown target '${target}' - not in the allowlist" >&2
+  exit 1
+fi
+
+got="$(sha256sum < "$CASSINI_FAKE_STDIN" | cut -d' ' -f1)"
+if [ -z "$expect" ]; then
+  echo "shani-cassini-save: REFUSING: no --expect-sha256" >&2
+  exit 1
+fi
+if [ "$got" != "$expect" ]; then
+  echo "shani-cassini-save: REFUSING: stdin does not match --expect-sha256 (got ${got})" >&2
+  exit 1
+fi
+
+if ! out="$(visudo -c -f "$CASSINI_FAKE_STDIN" 2>&1)"; then
+  echo "$out" >&2
+  echo "shani-cassini-save: validator rejected the fragment; nothing was installed" >&2
+  exit 1
+fi
+
+if ! out="$(visudo -c 2>&1)"; then
+  echo "$out" >&2
+  echo "shani-cassini-save: the live config was rejected; rolling back" >&2
+  exit 1
+fi
+
+# the commit: a temp beside the target, then one mv -f
+tmp="${CASSINI_FAKE_TARGET}.cassini.tmp.$$"
+cat -- "$CASSINI_FAKE_STDIN" > "$tmp" || exit 1
+chmod 0440 "$tmp" || exit 1
+mv -f -- "$tmp" "$CASSINI_FAKE_TARGET" || exit 1
+
+back="$(sha256sum -- "$CASSINI_FAKE_TARGET" | cut -d' ' -f1)"
+if [ "$back" != "$got" ]; then
+  echo "shani-cassini-save: readback mismatch on ${CASSINI_FAKE_TARGET}" >&2
+  exit 1
+fi
+echo "shani-cassini-save: installed ${target} -> ${CASSINI_FAKE_TARGET} (mode 440, readback verified)" >&2
+exit 0
+"""
+
+VISUDO_FAKE = r"""#!/bin/sh
+# The one check the real helper makes, and the only authority on sudoers syntax
+# in this suite: `visudo -c -f FILE` judges one fragment, `visudo -c` judges the
+# whole live set. A rule whose command list names /bin/reject-me is what it
+# refuses, so a refusal is about the file's content and not a number a test
+# chose.
+set -u
+file=""
+case "${1:-}" in
+-c)
+  shift
+  if [ "${1:-}" = "-f" ]; then file="${2:-}"; fi
+  ;;
+-f)
+  file="${2:-}"
+  ;;
+*) echo "unexpected visudo invocation: $*" >&2; exit 1 ;;
+esac
+if [ -n "$file" ] && grep -q '/bin/reject-me' "$file"; then
+  printf 'visudo: parse error in %s line %s\n' \
+    "$CASSINI_FAKE_TARGET" "$(grep -n '/bin/reject-me' "$file" | cut -d: -f1)"
+  echo "visudo: /bin/reject-me is not allowed here"
+  exit 1
+fi
+if [ -n "$file" ]; then
+  echo "parsed OK"
+else
+  echo "/etc/sudoers: parsed OK"
+fi
+exit 0
+"""
+
+
+def _script(path, body: str) -> None:
+    path.write_text(body, encoding="utf-8")
+    path.chmod(0o755)
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    """A drop-in, a fake pkexec in the helper's shape, and a fake visudo.
+
+    ``argv`` and ``stdin`` are files the fake writes, so a test can assert on
+    exactly what the helper was handed - one element per line for the argv, so
+    an extra flag cannot hide inside a joined string.
+    """
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    target = tmp_path / DROPIN_NAME
+    argv = tmp_path / "argv.txt"
+    stdin = tmp_path / "stdin.txt"
+    backups = tmp_path / "backups"
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("CASSINI_FAKE_TARGET", str(target))
+    monkeypatch.setenv("CASSINI_FAKE_ARGV", str(argv))
+    monkeypatch.setenv("CASSINI_FAKE_STDIN", str(stdin))
+    # Point the ownership check at this test's uid, so a drop-in the test wrote
+    # stands in for a root-owned one. The shipped default is asserted on its own.
+    monkeypatch.setattr(ac, "SUDOERS_OWNER", (os.getuid(), 0))
+    monkeypatch.setattr(ac, "SUDOERS_DROPIN", str(target))
+    # config_io's backup directory is under the user's real state dir; send it
+    # somewhere that disappears with the test.
+    monkeypatch.setattr(ac.config_io, "_backup_root", lambda: str(backups))
+    state = {"target": target, "argv": argv, "stdin": stdin,
+             "backups": backups, "bindir": bindir}
+
+    def install_tools(pkexec: bool = True, visudo: bool = True) -> None:
+        if pkexec:
+            _script(bindir / "pkexec", PKEXEC_FAKE)
+        else:
+            (bindir / "pkexec").unlink(missing_ok=True)
+        if visudo:
+            _script(bindir / "visudo", VISUDO_FAKE)
+        else:
+            (bindir / "visudo").unlink(missing_ok=True)
+
+    state["tools"] = install_tools
+    install_tools()
+    return state
+
+
+def write_dropin(env, text: str = f"{WHEEL}\n", mode: int = 0o440) -> None:
+    # Removed first, because a drop-in the fake helper installed is 0440 - the
+    # owner may read it and must not write it, which is the whole point of it.
+    env["target"].unlink(missing_ok=True)
+    env["target"].write_text(text, encoding="utf-8")
+    os.chmod(env["target"], mode)
+
+
+def build(env):
+    """A constructed page, with its toasts and its clipboard captured."""
+    page = ac.AccessTab()
+    page.toasted = []
+    page.clip = _Clip()
+    page.get_clipboard = lambda: page.clip
+    page._toast = page.toasted.append
+    return page
+
+
+class _Clip:
+    def __init__(self):
+        self.copied: list = []
+
+    def set(self, text: str) -> None:
+        self.copied.append(text)
+
+
+def recorded_argv(env) -> list | None:
+    """The fake's own command line, one element per line: ``$0`` (how PATH
+    resolved the program) then every argument, or None if it never ran."""
+    if not env["argv"].exists():
+        return None
+    return env["argv"].read_text(encoding="utf-8").splitlines()
+
+
+def add_rule(page, who: str = "%wheel") -> None:
+    """Drive the page the way a person does: type a principal, press Save."""
+    d = page._add_dialog()
+    entry_rows(d)[0].set_text(who)
+    d.emit("response", "save")
+
+
+def live_grants(env) -> list:
+    """The rules in the drop-in as the page's own grammar reads them, straight
+    off disk - so a test that removes one is removing a real line index."""
+    doc = ac.config_io.read_document(str(env["target"]), ac.config_io.parse_flat,
+                                     expect_owner=(os.getuid(), 0),
+                                     allow_missing=True)
+    grants, _unreadable = ac.read_grants(doc)
+    return grants
+
+
+def remove_rule(page, env, who: str) -> None:
+    grant = [g for g in live_grants(env) if g.who == who][0]
+    page._remove_dialog(grant).emit("response", "remove")
+
+
+# --- helpers over the widget tree ------------------------------------------
+
+def walk(widget):
+    out, stack = [], [widget]
+    while stack:
+        w = stack.pop(0)
+        out.append(w)
+        child = w.get_first_child()
+        while child is not None:
+            stack.append(child)
+            child = child.get_next_sibling()
+    return out
+
+
+def rows(page):
+    return [w for w in walk(page) if isinstance(w, Adw.ActionRow)]
+
+
+def texts(page):
+    return [(r.get_title(), r.get_subtitle()) for r in rows(page)]
+
+
+def subtitles(page):
+    return dict(texts(page))
+
+
+def buttons(page):
+    return [b.get_label() for b in walk(page)
+            if isinstance(b, Gtk.Button) and b.get_label()]
+
+
+def groups(page):
+    return [w for w in walk(page) if isinstance(w, Adw.PreferencesGroup)]
+
+
+def group_titled(page, needle):
+    for w in groups(page):
+        if needle in (w.get_title() or ""):
+            return w
+    raise AssertionError(f"no preferences group titled like {needle!r}; "
+                         f"there is {[g.get_title() for g in groups(page)]}")
+
+
+def entry_rows(dialog):
+    """The entry rows a dialog asks with. An Adw.AlertDialog keeps its content
+    out of the widget tree until it is presented, so the walk starts at the
+    extra child it was given."""
+    return [w for w in walk(dialog.get_extra_child()) if isinstance(w, Adw.EntryRow)]
+
+
+def saved(env, page, timeout=20.0) -> bool:
+    """Wait for the save thread's answer to land on the main loop."""
+    return spin(lambda: page._last_state in ("ok", "error"), timeout=timeout)
+
+
+# --- construction ----------------------------------------------------------
+
+def test_the_page_constructs_like_every_other_tab():
+    from shani_cassini.state import AppState
+    from shani_cassini.auth import AuthManager
+
+    state, auth = AppState(), AuthManager()
+    tab = ac.AccessTab(state=state, auth_manager=auth)
+    assert isinstance(tab, Gtk.Box)
+    assert tab.get_orientation() == Gtk.Orientation.VERTICAL
+    assert tab._state is state
+    assert tab._auth_manager is auth
+
+
+def test_the_content_lives_under_a_toast_overlay(env):
+    tab = ac.AccessTab()
+    overlays = [w for w in walk(tab) if isinstance(w, Adw.ToastOverlay)]
+    assert len(overlays) == 1
+    assert overlays[0].get_child() is not None
+
+
+def test_the_page_has_the_four_groups_it_promises(env):
+    tab = ac.AccessTab()
+    assert [g.get_title() for g in groups(tab)] == [
+        "Status", "Passwordless sudo", "Rules kept as they are",
+        "From a Terminal"], \
+        f"the page's groups are {[g.get_title() for g in groups(tab)]}"
+
+
+def test_the_page_reads_in_its_constructor(env):
+    """Otherwise the rows sit empty until something happens to press Refresh."""
+    write_dropin(env, f"{WHEEL}\n{ASKED}\n")
+    got = subtitles(ac.AccessTab())
+    assert got.get("Rules", "").startswith("2 grants"), \
+        f"the constructor did not read the drop-in: {got}"
+
+
+def test_the_page_builds_with_no_tools_installed_at_all(env, monkeypatch):
+    """A development host, and a machine where the helper is not installed: the
+    page still builds, and says what is missing instead of failing."""
+    env["tools"](pkexec=False, visudo=False)
+    monkeypatch.setenv("PATH", str(env["bindir"] / "nothing"))
+    write_dropin(env)
+    page = build(env)
+    assert "passwordless" in subtitles(page)["Rules"], subtitles(page)
+    add_rule(page, "%ops")
+    assert spin(lambda: page._last_state == "error"), \
+        "a save with no pkexec on PATH did not answer"
+    assert "pkexec is not installed" in page._last, page._last
+    assert recorded_argv(env) is None, "the helper was reached without pkexec"
+
+
+# --- 1. status -------------------------------------------------------------
+
+def test_the_dropin_row_names_the_one_file_sudo_reads(env):
+    write_dropin(env)
+    said = subtitles(build(env))["Drop-in"]
+    assert said == str(env["target"]), f"the drop-in row names something else: {said!r}"
+
+
+def test_the_mode_and_owner_shown_are_the_ones_on_disk(env):
+    """A mode is read, never assumed: 0640 here, because that is what was set,
+    and a mode that is not 0440 is said out loud with why sudo cares."""
+    write_dropin(env, f"{WHEEL}\n", mode=0o640)
+    said = subtitles(build(env))["Permissions"]
+    assert "0640" in said, f"the mode on disk was not read: {said!r}"
+    assert "sudo refuses" in said, f"the row does not say who refuses it: {said!r}"
+
+
+def test_a_0440_dropin_reports_no_risk(env):
+    write_dropin(env, f"{WHEEL}\n", mode=0o440)
+    said = subtitles(build(env))["Permissions"]
+    assert said.startswith("mode 0440"), said
+    assert "sudo refuses" not in said, f"a correct mode flagged a risk: {said!r}"
+
+
+def test_the_rule_count_separates_passwordless_from_the_rest(env):
+    write_dropin(env, f"{WHEEL}\n{OPS}\n{ASKED}\n")
+    got = subtitles(build(env))
+    assert got["Rules"] == "3 grants, 2 of them passwordless", got["Rules"]
+
+
+def test_a_dropin_with_no_rules_is_an_empty_one_not_a_fault(env):
+    write_dropin(env, "# nothing here yet\n")
+    page = build(env)
+    assert subtitles(page)["Rules"].startswith("None"), subtitles(page)
+    assert not page.toasted, f"an empty drop-in toasted: {page.toasted}"
+
+
+# --- 2. the rules ----------------------------------------------------------
+
+def test_a_passwordless_rule_is_rendered_as_its_own_row(env):
+    write_dropin(env, f"{WHEEL}\n")
+    got = dict(texts(group_titled(build(env), "Passwordless sudo")))
+    assert "%wheel" in got, f"the rule is not a row of its own: {got}"
+    said = got["%wheel"]
+    assert "no password asked" in said, f"the row does not say what it grants: {said!r}"
+    assert "root" in said, f"the row does not say what it becomes: {said!r}"
+
+
+def test_a_nopasswd_row_is_visually_unmistakable(env):
+    """Not colour alone: the icon, its css class, its tooltip and the sentence
+    all say the same thing, and a row that asks for a password looks different."""
+    write_dropin(env, f"{WHEEL}\n{ASKED}\n")
+    page = build(env)
+    group = group_titled(page, "Passwordless sudo")
+    row = [r for r in rows(group) if r.get_title() == "%wheel"][0]
+    marks = [w for w in walk(row) if isinstance(w, Gtk.Image)]
+    assert marks, "the NOPASSWD row has no mark in front of it"
+    warned = [m for m in marks if "warning-symbolic" in (m.get_icon_name() or "")]
+    assert warned, f"no warning icon on a NOPASSWD rule: {[m.get_icon_name() for m in marks]}"
+    assert "warning" in warned[0].get_css_classes(), \
+        f"the warning icon is not styled as one: {warned[0].get_css_classes()}"
+    assert warned[0].get_tooltip_text() == "NOPASSWD", \
+        f"the mark does not name the grant: {warned[0].get_tooltip_text()!r}"
+    other = [r for r in rows(group) if r.get_title() == "backup"][0]
+    assert "no password asked" not in (other.get_subtitle() or ""), \
+        "a rule that asks for a password claims to skip it"
+    assert [m for m in walk(other) if isinstance(m, Gtk.Image)
+            and "password-symbolic" in (m.get_icon_name() or "")], \
+        "a rule that asks for a password looks the same as one that does not"
+
+
+def test_the_runas_list_colon_does_not_hide_the_tag_list():
+    """`ALL=(ALL:ALL)` has a colon inside its parentheses. Splitting at the first
+    colon on the line would read every rule as having no command list, and
+    would make NOPASSWD undetectable - which is the whole point of the page."""
+    doc = ac.config_io.parse_flat(WHEEL + "\n", path="x")
+    grants, unreadable = ac.read_grants(doc)
+    assert not unreadable, f"a canonical rule was called unreadable: {unreadable}"
+    assert len(grants) == 1, grants
+    assert grants[0].runas == "ALL=(ALL:ALL)", grants[0].runas
+    assert grants[0].tags == ("NOPASSWD",), grants[0].tags
+    assert grants[0].commands == "ALL", grants[0].commands
+    assert grants[0].nopasswd is True
+
+
+def test_a_rule_with_no_tag_list_is_not_a_rule_this_page_can_read():
+    doc = ac.config_io.parse_flat("ops ALL=(ALL:ALL) ALL\n", path="x")
+    grants, unreadable = ac.read_grants(doc)
+    assert grants == [] and unreadable == [0], (grants, unreadable)
+
+
+def test_a_line_this_page_cannot_read_makes_the_file_read_only(env):
+    """A rule with no tag list is not something it can render, and the writer
+    refuses to rewrite a line it cannot read - so nothing is offered."""
+    write_dropin(env, f"{WHEEL}\nops ALL=(ALL:ALL) ALL\n")
+    page = build(env)
+    g = group_titled(page, "Passwordless sudo")
+    body = " ".join(f"{t} {s}" for t, s in texts(g))
+    assert "Line 2" in body, f"the bad line's number was not shown: {body}"
+    assert "ALL=(ALL:ALL) ALL" in body, f"the bad line was not shown: {body}"
+    assert "visudo" in body, f"the row does not say what to do about it: {body}"
+    assert buttons(g) == [], f"a file Cassini cannot read still offered editing: {buttons(g)}"
+
+
+def test_every_rule_offers_removal(env):
+    write_dropin(env, f"{WHEEL}\n{ASKED}\n")
+    g = group_titled(build(env), "Passwordless sudo")
+    assert buttons(g).count("Remove…") == 2, f"a rule offers no removal: {buttons(g)}"
+    assert "Add a rule…" in buttons(g), f"no way to add a rule: {buttons(g)}"
+
+
+def test_removing_asks_first_and_changes_nothing_until_it_is_confirmed(env):
+    write_dropin(env, f"{WHEEL}\n{ASKED}\n")
+    page = build(env)
+    before = env["target"].read_bytes()
+    d = page._remove_dialog([g for g in live_grants(env) if g.who == "%wheel"][0])
+    assert d.get_response_appearance("remove") == Adw.ResponseAppearance.DESTRUCTIVE
+    assert d.get_default_response() == "cancel"
+    d.emit("response", "cancel")
+    assert env["target"].read_bytes() == before, "cancelling still wrote the file"
+    assert recorded_argv(env) is None, "cancelling still reached the helper"
+
+
+def test_removing_blanks_exactly_that_rule_and_keeps_the_rest(env):
+    write_dropin(env, f"# a comment\n{WHEEL}\n{ASKED}\n")
+    page = build(env)
+    remove_rule(page, env, "%wheel")
+    assert saved(env, page), "the save never answered"
+    left = env["target"].read_text(encoding="utf-8")
+    assert WHEEL not in left, f"the rule is still there: {left!r}"
+    assert ASKED in left, f"removing one rule took another: {left!r}"
+    assert left.startswith("# a comment\n"), f"a comment was lost: {left!r}"
+
+
+def test_the_last_rule_can_be_removed(env):
+    """Revoking passwordless sudo has to be possible. An earlier version of the
+    page's own validator refused a drop-in that had become blank, which made the
+    one rule nobody wants to keep the one rule nobody could take away - the
+    refusal is now reserved for a file that is not a file at all."""
+    write_dropin(env, f"{WHEEL}\n")
+    page = build(env)
+    remove_rule(page, env, "%wheel")
+    assert saved(env, page), "the save never answered"
+    assert page._last_state == "ok", page._last
+    left = env["target"].read_text(encoding="utf-8")
+    assert WHEEL not in left, f"the rule is still there: {left!r}"
+    assert left.strip() == "", f"something else was written: {left!r}"
+    assert env["target"].exists(), "the drop-in was deleted instead of emptied"
+    got = subtitles(page)
+    assert got["Rules"].startswith("None"), got["Rules"]
+    assert "Nobody can use sudo without a password" in \
+        got["No passwordless sudo"], got["No passwordless sudo"]
+
+
+def test_defaults_and_aliases_are_shown_and_never_offered_for_editing(env):
+    """A Defaults line changes what sudo does. Hiding it would make the file
+    look smaller - and safer - than it is, and rewriting it would make this
+    page a second opinion of sudoers syntax."""
+    write_dropin(env, f"{WHEEL}\nDefaults !authenticate\nUser_Alias ADMINS = alice\n")
+    page = build(env)
+    g = group_titled(page, "Rules kept as they are")
+    body = " ".join(f"{t} {s}" for t, s in texts(g))
+    assert "!authenticate" in body, f"a Defaults rule was not shown: {body}"
+    assert "ADMINS" in body, f"an alias was not shown: {body}"
+    assert buttons(g) == [], f"a preserved rule was offered for editing: {buttons(g)}"
+    add_rule(page, "%ops")
+    assert saved(env, page), "the save never answered"
+    left = env["target"].read_text(encoding="utf-8")
+    assert "Defaults !authenticate\n" in left, f"a Defaults rule was lost: {left!r}"
+    assert "User_Alias ADMINS = alice\n" in left, f"an alias was lost: {left!r}"
+
+
+def test_markup_off_disk_is_escaped_not_rendered(env):
+    """The principal and the command list both came off disk, and markup in
+    either has to reach the labels as text."""
+    write_dropin(env, "<b>evil</b> ALL=(ALL:ALL) NOPASSWD: ls & co <i>x</i>\n")
+    page = build(env)
+    row = [r for r in rows(page) if "evil" in (r.get_title() or "")][0]
+    assert row.get_title() == GLib.markup_escape_text("<b>evil</b>"), \
+        f"the principal was not escaped: {row.get_title()!r}"
+    # A raw '&' or '<' reaching set_subtitle's markup makes GTK refuse the whole
+    # string, so the label renders nothing at all. The literal text being in a
+    # label is therefore the proof that both halves were escaped.
+    labels = [w.get_text() for w in walk(row) if isinstance(w, Gtk.Label)]
+    assert any("ls & co <i>x</i>" in text for text in labels), \
+        f"the command list never reached a label as text: {labels}"
+
+
+# --- 3. the add dialog -----------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "", "   ", "alice, bob", "alice bob", "Defaults",
+    "%", "a b", "*", "(ALL:ALL)", "a\tb",
+])
+def test_save_stays_disabled_until_the_principal_is_one_rule(env, text):
+    write_dropin(env)
+    d = build(env)._add_dialog()
+    entry_rows(d)[0].set_text(text)
+    assert d.get_response_enabled("save") is False, f"Save was enabled for {text!r}"
+
+
+@pytest.mark.parametrize("text", ["%wheel", "alice", "#1000", "@admins",
+                                  "svc-backup", "_svc"])
+def test_save_is_enabled_for_what_this_page_writes(env, text):
+    write_dropin(env)
+    d = build(env)._add_dialog()
+    entry_rows(d)[0].set_text(text)
+    assert d.get_response_enabled("save") is True, \
+        f"Save stayed disabled for {text!r}, which is one account name"
+
+
+def test_the_dialog_shows_the_line_it_is_about_to_write(env):
+    write_dropin(env)
+    d = build(env)._add_dialog()
+    entry_rows(d)[0].set_text("%wheel")
+    said = " ".join(s for _t, s in texts(d.get_extra_child()))
+    assert "ALL=(ALL:ALL) NOPASSWD: ALL" in said, \
+        f"the dialog does not show the line it will write: {said!r}"
+    assert "no password asked" in d.get_body(), \
+        f"the dialog does not say what the line does: {d.get_body()!r}"
+
+
+def test_a_sudoers_spec_list_is_refused_before_it_reaches_root(env):
+    """Not a warning the reader can scroll past: the helper is never reached."""
+    write_dropin(env, f"{WHEEL}\n")
+    page = build(env)
+    add_rule(page, "alice, bob")
+    assert recorded_argv(env) is None, "a spec list reached the helper"
+    assert env["target"].read_text(encoding="utf-8") == f"{WHEEL}\n", \
+        "a refused rule still wrote the file"
+
+
+def test_a_malformed_principal_never_reaches_the_helper(env):
+    write_dropin(env, f"{WHEEL}\n")
+    page = build(env)
+    page._add_rule("ops ALL=(ALL:ALL) NOPASSWD: ALL")  # the whole line, not a name
+    page._add_rule("")
+    page._add_rule("alice, bob")
+    assert recorded_argv(env) is None, "a malformed rule reached the helper"
+    assert env["target"].read_text(encoding="utf-8") == f"{WHEEL}\n", \
+        "a malformed rule still wrote the file"
+
+
+def test_the_validator_refuses_a_line_that_is_not_in_the_text_it_installs():
+    """The gap a file carried across a save line for line could open: the page
+    validated one line and installed another. Checked here directly, because
+    stage() is what turns this into the refusal a reader sees."""
+    line = ac.TEMPLATE.format(who="%wheel")
+    ac._validator(line)(line + "\n")  # it is there: no refusal
+    with pytest.raises(ValueError) as caught:
+        ac._validator(line)("ops ALL=(ALL:ALL) NOPASSWD: ALL\n")
+    assert "is not in the text" in str(caught.value), caught.value
+    with pytest.raises(ValueError):
+        ac._validator(line)("")
+    # A blanked line is still a file: removing the LAST rule must be possible,
+    # or revoking passwordless sudo is the one edit the page cannot make.
+    assert ac._validator("")("\n") is None
+    assert ac._validator("")("%wheel ALL=(ALL:ALL) NOPASSWD: ALL\n") is None
+
+
+def test_the_engine_turns_that_refusal_into_a_value_and_still_writes_nothing(env):
+    """stage() wraps a validator's exception, so the page reports it verbatim
+    and the helper is never reached - the whole refusal-as-a-value contract in
+    one save."""
+    write_dropin(env, f"{WHEEL}\n")
+    page = build(env)
+    def mutate(doc):
+        doc.remove_line(0)  # a real change, so stage() reaches the validator
+        return ac.config_io.stage(doc, validator=ac._validator("%never-in-here"),
+                                  privileged=True)
+
+    page._save(mutate)
+    assert recorded_argv(env) is None, "a refused validator still reached the helper"
+    assert "is not in the text" in page._last, page._last
+    assert page._last_state == "error", page._last_state
+
+
+# --- 4. the one privileged path --------------------------------------------
+
+def test_the_exact_argv_is_the_helpers_own_contract(env):
+    write_dropin(env)
+    page = build(env)
+    add_rule(page, "%wheel")
+    assert saved(env, page), "the save never answered"
+    argv = recorded_argv(env)
+    assert argv is not None, "the helper was never reached"
+    assert argv[0].endswith("/pkexec"), \
+        f"the privileged program was not pkexec: {argv[0]!r}"
+    digest = hashlib.sha256(env["stdin"].read_bytes()).hexdigest()
+    assert ["pkexec", *argv[1:]] == \
+        ["pkexec", "/usr/local/bin/shani-cassini-save", "--target", "sudoers",
+         "--expect-sha256", digest], \
+        f"the argv is not the helper's contract: {['pkexec', *argv[1:]]}"
+    assert ["pkexec", *argv[1:]] == ac.save_argv(digest), ["pkexec", *argv[1:]]
+
+
+def test_the_content_reaches_the_helper_on_stdin(env):
+    write_dropin(env, f"# a comment\n{ASKED}\n")
+    page = build(env)
+    add_rule(page, "%wheel")
+    assert saved(env, page), "the save never answered"
+    sent = env["stdin"].read_bytes()
+    assert sent == env["target"].read_bytes(), \
+        "what was installed is not what the helper was sent"
+    assert WHEEL.encode() in sent, f"the rule is not in the payload: {sent!r}"
+    assert sent.endswith(b"\n"), "the payload is not a terminated text file"
+
+
+def test_the_content_is_not_in_the_argv(env):
+    """A rule in argv is a rule in every process listing on the machine."""
+    write_dropin(env)
+    page = build(env)
+    add_rule(page, "%wheel")
+    assert saved(env, page), "the save never answered"
+    argv = "\n".join(recorded_argv(env))
+    assert "%wheel" not in argv, f"the rule travelled in argv: {argv!r}"
+    assert WHEEL not in argv, f"the line travelled in argv: {argv!r}"
+
+
+def test_expect_sha256_is_always_passed_and_always_matches_the_bytes_sent(env):
+    for who in ("%wheel", "alice", "#1000"):
+        write_dropin(env)
+        page = build(env)
+        add_rule(page, who)
+        assert saved(env, page), f"the save of {who} never answered"
+        argv = recorded_argv(env)
+        digest = argv[argv.index("--expect-sha256") + 1]
+        assert re.fullmatch(r"[0-9a-f]{64}", digest), \
+            f"--expect-sha256 is not 64 hex characters for {who}: {digest!r}"
+        assert hashlib.sha256(env["stdin"].read_bytes()).hexdigest() == digest, \
+            f"--expect-sha256 is not the digest of the bytes sent for {who}"
+
+
+def test_a_dropin_this_page_creates_carries_a_header_and_only_once(env):
+    """A file that says who wrote it, and does not grow a second header when a
+    second rule is added."""
+    page = build(env)
+    add_rule(page, "%wheel")
+    assert saved(env, page), "the first save never answered"
+    first = env["target"].read_text(encoding="utf-8")
+    assert first.startswith("# Written by Shani Cassini."), first
+    assert WHEEL in first, first
+    add_rule(page, "alice")
+    assert saved(env, page), "the second save never answered"
+    second = env["target"].read_text(encoding="utf-8")
+    assert second.count("# Written by Shani Cassini.") == 1, \
+        f"a second header was added: {second!r}"
+    assert "alice ALL=(ALL:ALL) NOPASSWD: ALL" in second, second
+    assert first.rstrip("\n") in second, f"the first rule was lost: {second!r}"
+
+
+def test_a_dropin_that_was_already_there_is_never_given_a_header(env):
+    write_dropin(env, f"# put here by hand\n{ASKED}\n")
+    page = build(env)
+    add_rule(page, "%wheel")
+    assert saved(env, page), "the save never answered"
+    left = env["target"].read_text(encoding="utf-8")
+    assert left == f"# put here by hand\n{ASKED}\n%wheel ALL=(ALL:ALL) NOPASSWD: ALL\n", \
+        f"what is on disk is not what was asked for: {left!r}"
+
+
+def test_the_installed_file_is_0440(env):
+    """sudo refuses a group- or world-writable sudoers file, so the mode the
+    helper puts in place is a requirement of sudo, not a convention."""
+    write_dropin(env)
+    page = build(env)
+    add_rule(page, "%wheel")
+    assert saved(env, page), "the save never answered"
+    mode = oct(os.stat(env["target"]).st_mode & 0o777)
+    assert mode == "0o440", f"the installed mode is not 0440: {mode}"
+
+
+def test_a_backup_exists_before_the_helper_is_ever_reached(env):
+    """config_io backs the original up first, so a failed apply needs no second
+    dialog to be undone."""
+    write_dropin(env, f"{WHEEL}\n")
+    page = build(env)
+    remove_rule(page, env, "%wheel")
+    assert saved(env, page), "the save never answered"
+    backups = list(env["backups"].iterdir()) if env["backups"].exists() else []
+    assert backups, f"config_io wrote no backup: {env['backups']}"
+    kept = env["backups"] / backups[0].name
+    assert kept.read_text(encoding="utf-8") == f"{WHEEL}\n", \
+        f"the backup is not the original: {kept.read_text(encoding='utf-8')!r}"
+
+
+# --- 5. the helper's own verdict -------------------------------------------
+
+def test_a_helper_refusal_is_shown_verbatim_and_installs_nothing(env):
+    """The file on disk holds a rule visudo will not accept. Removing a
+    different rule is a perfectly ordinary save; the helper checks the whole
+    fragment, says no, and the page must show exactly what it said."""
+    write_dropin(env, f"{WHEEL}\nops ALL=(ALL:ALL) NOPASSWD: /bin/reject-me\n")
+    page = build(env)
+    remove_rule(page, env, "%wheel")
+    assert saved(env, page), "the save never answered"
+    assert page._last_state == "error", page._last_state
+    assert visudo_says(env) in page._last, \
+        f"the validator's own words were not kept: {page._last!r}"
+    assert HELPER_REFUSED in page._last, \
+        f"the helper's own line was not kept: {page._last!r}"
+    said = subtitles(page)["Last save"]
+    assert "/bin/reject-me" in said, f"the row does not carry the message: {said!r}"
+    assert page.toasted, "a refused save said nothing"
+    # and the rollback: the file still holds the rule that was to be removed.
+    assert WHEEL in env["target"].read_text(encoding="utf-8"), \
+        "a refused save removed the rule anyway"
+
+
+def test_the_helper_message_is_available_in_full(env):
+    """A row subtitle is one line and a visudo refusal is several, so the whole
+    message is one click away - unreworded."""
+    write_dropin(env, f"{WHEEL}\nops ALL=(ALL:ALL) NOPASSWD: /bin/reject-me\n")
+    page = build(env)
+    remove_rule(page, env, "%wheel")
+    assert saved(env, page), "the save never answered"
+    d = page._message_dialog()
+    assert d.get_body() == page._last, \
+        f"the dialog reworded the message: {d.get_body()!r}"
+    assert "/bin/reject-me is not allowed here" in d.get_body(), d.get_body()
+
+
+def test_a_happy_save_re_reads_and_shows_the_new_state(env):
+    """The readback is the verdict: after a save the rows come from the file on
+    disk, not from what the page meant to write."""
+    write_dropin(env, f"{WHEEL}\n")
+    page = build(env)
+    assert "ops" not in subtitles(page), "the rule is on screen before it was saved"
+    add_rule(page, "%ops")
+    assert saved(env, page), "the save never answered"
+    assert page._last_state == "ok", page._last
+    got = dict(texts(group_titled(page, "Passwordless sudo")))
+    assert "%ops" in got, f"the saved rule is not on screen: {got}"
+    assert "no password asked" in got["%ops"], got
+    assert subtitles(page)["Rules"] == "2 grants, 2 of them passwordless", \
+        subtitles(page)["Rules"]
+    assert "Saved" in page.toasted[-1], page.toasted
+
+
+def test_a_save_that_was_never_confirmed_shows_the_old_state(env):
+    """A refused save must not leave the page claiming a rule exists."""
+    write_dropin(env, f"{WHEEL}\nops ALL=(ALL:ALL) NOPASSWD: /bin/reject-me\n")
+    page = build(env)
+    add_rule(page, "alice")
+    assert saved(env, page), "the save never answered"
+    got = dict(texts(group_titled(page, "Passwordless sudo")))
+    assert "ops" in got, "a refused save lost a rule that is still in the file"
+    assert "alice" not in got, "a refused save left a rule on screen that is not in the file"
+
+
+# --- 6. honest empties, and no accumulation --------------------------------
+
+def test_a_dropin_that_is_not_there_is_said_honestly(env):
+    page = build(env)
+    got = subtitles(page)
+    assert "not created yet" in got["Permissions"], got["Permissions"]
+    assert got["Rules"].startswith("None"), got["Rules"]
+    assert "not created yet" in got["No passwordless sudo"], got
+    assert not page.toasted, f"a missing drop-in toasted: {page.toasted}"
+    add_rule(page, "%wheel")
+    assert saved(env, page), "the save never answered"
+    assert env["target"].exists(), "the first rule created no file"
+    assert oct(os.stat(env["target"]).st_mode & 0o777) == "0o440"
+
+
+def test_a_dropin_owned_by_somebody_else_is_refused_not_edited(env, monkeypatch):
+    """read_document's expect_owner is what stops this, and its message is shown
+    as it is. A uid that owns nothing is used so the test means the same thing
+    whether or not it runs as root.
+
+    And it is NOT rendered as an empty one: the count is not known, so no count
+    is given, and nothing is offered that would always be refused.
+    """
+    write_dropin(env, f"{WHEEL}\n")
+    monkeypatch.setattr(ac, "SUDOERS_OWNER", (os.getuid() + 1, 0))
+    page = build(env)
+    said = subtitles(page)
+    assert "Reading it" in said, f"an unowned drop-in was not reported: {said}"
+    assert "refusing" in said["Reading it"], said["Reading it"]
+    assert "Rules" not in said, f"a count was given for a file nobody read: {said}"
+    assert said["No passwordless sudo"] == ac.BLOCKED, said["No passwordless sudo"]
+    assert buttons(group_titled(page, "Passwordless sudo")) == [], \
+        "a file that cannot be read still offered an edit"
+    add_rule(page, "%ops")
+    assert spin(lambda: page._last_state == "error"), "the save never answered"
+    assert recorded_argv(env) is None, "an unowned drop-in was written anyway"
+    assert env["target"].read_text(encoding="utf-8") == f"{WHEEL}\n"
+
+
+def test_a_dropin_this_user_cannot_read_is_reported_not_hidden(env, monkeypatch):
+    """allow_missing means "absent is not a fault"; a file that is there and
+    cannot be read is a different fact and is stated as one - a permission error
+    is not hidden behind an empty-looking page."""
+    write_dropin(env, f"{WHEEL}\n")
+    real = ac.config_io.read_document
+
+    def refusing(path, parser, **kwargs):
+        if path == ac.SUDOERS_DROPIN:
+            raise ac.ConfigRefused(f"{path} cannot be read: Permission denied")
+        return real(path, parser, **kwargs)
+
+    monkeypatch.setattr(ac.config_io, "read_document", refusing)
+    page = build(env)
+    said = subtitles(page)
+    assert "Permission denied" in said.get("Reading it", ""), \
+        f"a file that could not be read was not reported: {said}"
+    assert "Rules" not in said, \
+        f"a file that could not be read was given a rule count: {said}"
+    assert said.get("No passwordless sudo") == ac.BLOCKED, said
+
+
+def test_repeated_refresh_does_not_duplicate_rows(env):
+    """Regression class, measured rather than reasoned about (storage.py):
+    refilling an AdwPreferencesGroup by walking its children accumulated 45 ->
+    181 rows over five refreshes. The rows have to be tracked and removed from
+    the group they went into."""
+    write_dropin(env, f"{WHEEL}\n{ASKED}\nDefaults !authenticate\n")
+    page = build(env)
+    first = len(walk(page))
+    for _ in range(5):
+        page.refresh()
+    assert len(walk(page)) == first, (len(walk(page)), first)
+    g = group_titled(page, "Passwordless sudo")
+    assert buttons(g).count("Remove…") == 2, \
+        f"a refresh duplicated the rule rows: {buttons(g)}"
+    assert len(texts(group_titled(page, "Rules kept as they are"))) == 1, \
+        f"a refresh duplicated the preserved-rule rows: " \
+        f"{texts(group_titled(page, 'Rules kept as they are'))}"
+
+
+def test_repeated_refresh_after_a_save_does_not_duplicate_rows(env):
+    write_dropin(env, f"{WHEEL}\n")
+    page = build(env)
+    add_rule(page, "%ops")
+    assert saved(env, page), "the save never answered"
+    first = len(walk(page))
+    for _ in range(3):
+        page.refresh()
+    assert len(walk(page)) == first, (len(walk(page)), first)
+
+
+# --- the immutable gates ---------------------------------------------------
+
+def _code() -> str:
+    """The module's own code with docstrings stripped.
+
+    The page's docstring explains at length why ``/etc/sudoers`` is never
+    touched and that the helper is the only privileged door; that prose must not
+    satisfy the gates that prove it."""
+    tree = ast.parse(inspect.getsource(ac))
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)):
+            continue
+        body = node.body
+        if (body and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)):
+            node.body = body[1:] or [ast.Pass()]
+    return ast.unparse(tree)
+
+
+def _docstring_constants(tree) -> set:
+    """The constants that are docstrings, so the literal gates can skip the prose
+    that has to name these paths in order to explain them."""
+    marked = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)):
+            continue
+        body = node.body
+        if (body and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)):
+            marked.add(id(body[0].value))
+    return marked
+
+
+def _code_literals() -> list:
+    """Every string literal in the module's CODE - docstrings excluded."""
+    with open(ac.__file__, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    skipped = _docstring_constants(tree)
+    return [node.value for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            and id(node) not in skipped]
+
+
+def _shipped() -> dict:
+    """The module's own module-level constants, read out of its SOURCE.
+
+    The fixture points SUDOERS_DROPIN and SUDOERS_OWNER at a throwaway file and
+    this user's uid, so a gate that asks "what ships" cannot ask the imported
+    module - it would be grading the fixture. Read from the source instead, and
+    the answer is what is in the file whether or not anything was monkeypatched.
+    """
+    with open(ac.__file__, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    out = {}
+    for node in tree.body:
+        if not isinstance(node, ast.AnnAssign) or not isinstance(node.target, ast.Name):
+            continue
+        if node.value is None:
+            continue
+        try:
+            out[node.target.id] = ast.literal_eval(node.value)
+        except ValueError:
+            continue
+    return out
+
+
+def test_the_main_sudoers_file_is_never_named():
+    """/etc/sudoers carries @includedir, and nothing else this page needs. A
+    mistake in it takes sudo away from the machine, and with it the tool needed
+    to fix it - so the page may not even name the path."""
+    dropin = _shipped()["SUDOERS_DROPIN"]
+    assert dropin == "/etc/sudoers.d/50-shani-cassini", dropin
+    for literal in _code_literals():
+        assert "/etc/sudoers" not in literal or literal in (
+            dropin, f"visudo {dropin}"), \
+            f"this page names the main sudoers file: {literal!r}"
+        assert literal != "/etc/sudoers", "this page names the main sudoers file"
+
+
+def test_the_only_privileged_writer_reachable_from_this_page_is_the_helper():
+    """config_io's own privileged writer installs a file the caller named, from
+    a temp in a user-writable directory, which is the window the helper exists
+    to close. It must be unreachable from here, and so must anything else that
+    writes with root behind it."""
+    code = _code()
+    for forbidden in ("write_staged_privileged", "install_argv",
+                      "write_staged_unprivileged", "restore_backup",
+                      "os.system", "os.popen", "subprocess.Popen",
+                      "subprocess.call", "subprocess.check_output",
+                      "Gio.Subprocess", "sudoedit",
+                      ".write_text(", ".write_bytes(",
+                      "os.remove(", "os.unlink(", "os.replace(",
+                      "os.chmod(", "os.chown(", "os.rename(", "shell=True"):
+        assert forbidden not in code, \
+            f"{forbidden!r} must never appear in this page"
+
+
+def test_there_is_exactly_one_subprocess_call_in_this_page():
+    """Not prose and not a name: a call count over the module's own AST, so a
+    second privileged door cannot be added quietly."""
+    tree = ast.parse(inspect.getsource(ac))
+    calls = [node for node in ast.walk(tree)
+             if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Attribute)
+             and node.func.attr == "run"]
+    assert len(calls) == 1, f"the page makes {len(calls)} subprocess.run calls"
+
+
+def test_this_page_runs_exactly_one_program_and_it_is_the_helper(env):
+    write_dropin(env)
+    page = build(env)
+    add_rule(page, "%wheel")
+    assert saved(env, page), "the save never answered"
+    argv = recorded_argv(env)
+    assert ["pkexec", *argv[1:]] == ac.save_argv(argv[-1]), \
+        f"the page ran something other than the one helper it may run: {argv}"
+
+
+def test_no_absolute_path_in_this_page_is_anything_but_the_two_it_names():
+    """A page that could name an arbitrary path could be a generic /etc editor,
+    which is the one thing this page is not."""
+    shipped = _shipped()
+    assert shipped["HELPER"] == "/usr/local/bin/shani-cassini-save", shipped["HELPER"]
+    allowed = {shipped["SUDOERS_DROPIN"], shipped["HELPER"]}
+    for literal in _code_literals():
+        if literal.startswith("/"):
+            assert literal in allowed, f"this page names {literal!r}"
+
+
+def test_the_shipped_owner_is_root():
+    """The fixture points the check at the test's own uid; what ships is root,
+    and the suite must not quietly relax that."""
+    shipped = _shipped()
+    assert shipped["SUDOERS_OWNER"] == (0, 0), shipped["SUDOERS_OWNER"]
+    assert shipped["DROPIN_MODE"] == 0o440, oct(shipped["DROPIN_MODE"])
+    assert (shipped["DROPIN_UID"], shipped["DROPIN_GID"]) == (0, 0), shipped
+    assert shipped["TARGET"] == "sudoers", shipped["TARGET"]
+
+
+def test_no_privileged_flag_is_ever_passed():
+    """Nothing here asks for --root, --privilege or --askpass, checked over the
+    module's own string constants so it cannot be satisfied by a substring of
+    some other word."""
+    with open(ac.__file__, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    literals = [node.value for node in ast.walk(tree)
+                if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+    for flag in ("--root", "--privilege", "--privileges", "--askpass",
+                 "-u", "-g", "--user", "--group"):
+        assert flag not in literals, f"this page passes {flag!r}"
+
+
+def test_the_terminal_group_names_visudo_and_the_page_never_runs_it(env):
+    """visudo is the authority on sudoers syntax, and it is the helper that runs
+    it - before and after the install - never this page."""
+    page = build(env)
+    g = group_titled(page, "From a Terminal")
+    body = " ".join(f"{t} {s}" for t, s in texts(g))
+    assert "visudo -c" in body, f"the live check is not named: {body}"
+    assert ac.HELPER not in body, \
+        f"the page offers to run the helper itself instead of pkexec: {body}"
+    run = ac.subprocess.run
+    seen = []
+
+    def recording(argv, *args, **kwargs):
+        seen.append(list(argv))
+        return run(argv, *args, **kwargs)
+
+    ac.subprocess.run = recording
+    try:
+        add_rule(page, "%wheel")
+        assert saved(env, page), "the save never answered"
+    finally:
+        ac.subprocess.run = run
+    assert seen, "nothing ran, so this proved nothing"
+    for argv in seen:
+        assert "visudo" not in " ".join(argv), f"this page ran visudo itself: {argv}"
+        assert argv[0] == "pkexec", f"an unexpected program was run: {argv}"
