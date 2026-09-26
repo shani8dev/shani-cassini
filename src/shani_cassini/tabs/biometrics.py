@@ -26,6 +26,7 @@ only the last one is "no fingerprints".
 from __future__ import annotations
 
 import logging
+import shutil
 
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
@@ -145,14 +146,57 @@ class BiometricsTab(Gtk.Box):
 
         cli = Adw.PreferencesGroup(
             title="From a Terminal",
-            description="The same fprintd, if you would rather do it by hand (all four are in "
-                        "/usr/sbin):")
+            description="The same tools, if you would rather do it by hand. All of these "
+                        "ship in the image — nothing here needs installing:")
         for cmd, what in (("fprintd-enroll", "enroll a finger"),
                           ("fprintd-list", "list the enrolled ones"),
                           ("fprintd-verify", "test a scan"),
-                          ("fprintd-delete", "delete one")):
-            cli.add(_row(cmd, what))
+                          ("fprintd-delete", "delete one"),
+                          ("ykman", "FIDO2/U2F security key"),
+                          ("pcsc_scan", "list a smartcard or NFC reader"),
+                          ("oathtool", "TOTP/HOTP two-factor codes")):
+            present = shutil.which(cmd) is not None
+            r = _row(cmd, what if present else f"{what} — not installed")
+            if not present:
+                r.set_subtitle_selectable(True)
+                img = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
+                img.add_css_class("warning")
+                r.add_prefix(img)
+            cli.add(r)
         self._page.append(cli)
+
+        # Other hardware-auth paths, reported from the image's own PAM config
+        # rather than assumed. A login method whose module is missing is called
+        # out explicitly instead of being quietly absent from this page.
+        self._auth_group = Adw.PreferencesGroup(title="Other ways to sign in", visible=False)
+        self._page.append(self._auth_group)
+
+    def _on_hardware_auth(self, rows: list) -> None:
+        """Render the non-fingerprint hardware-auth login paths."""
+        g = self._auth_group
+        child = g.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            g.remove(child)
+            child = nxt
+        if not rows:
+            g.set_visible(False)
+            return
+        g.set_description("Reported from this system's own PAM configuration.")
+        for row in rows:
+            state = row.get("state")
+            detail = row.get("detail", "")
+            r = _row(row.get("title", ""), detail)
+            r.set_subtitle_selectable(True)
+            icon, css = {
+                "ok": ("object-select-symbolic", "success"),
+                "inactive": ("dialog-information-symbolic", "dim-label"),
+            }.get(state, ("dialog-warning-symbolic", "warning"))
+            img = Gtk.Image.new_from_icon_name(icon)
+            img.add_css_class(css)
+            r.add_prefix(img)
+            g.add(r)
+        g.set_visible(True)
 
     def _fingers_group_new(self, fingers: list | None) -> Adw.PreferencesGroup:
         g = Adw.PreferencesGroup(title="Enrolled Fingers", visible=bool(fingers),
@@ -168,6 +212,7 @@ class BiometricsTab(Gtk.Box):
 
     # ------------------------------------------------------------------ data
     def refresh(self) -> None:
+        self._on_hardware_auth(ss.hardware_auth_status())
         self._btn_refresh.set_sensitive(False)
         ss.fprintd_status(self._on_status, timeout_s=5.0)
 

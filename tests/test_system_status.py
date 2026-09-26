@@ -1004,3 +1004,114 @@ def test_dbus_call_callback_takes_the_three_args_gobject_passes():
                   lambda res, c: got.append((res, c)))
     assert seen["arity"] == 3, "DBusConnection.call passes (connection, result, user_data)"
     assert got == [("RESULT", conn)]
+
+
+# --- other hardware-auth login methods -----------------------------------
+#
+# The bug this guards is the one that left smartcard login dead on a stock
+# image: a PAM service names a module the image never shipped. PAM says
+# nothing at install time, so the stack only fails when someone tries to log
+# in - and a GUI that reports such a method as "unavailable" is the only place
+# a user would ever find out.
+
+def _fake_pam_tree(tmp_path, modules, services):
+    """Build a fake PAM root; return (sec_dirs, service_map)."""
+    sec = tmp_path / "security"
+    sec.mkdir()
+    for m in modules:
+        (sec / m).write_text("")
+    svc = tmp_path / "pam.d"
+    svc.mkdir()
+    smap = {}
+    for name, mod in services.items():
+        p = svc / name
+        p.write_text(f"auth required {mod}\n")
+        smap[str(p)] = mod
+    return (str(sec),), smap
+
+
+def _rows_by_title(rows):
+    return {r["title"]: r for r in rows}
+
+
+def test_pam_service_whose_module_is_missing_reports_unavailable(tmp_path, monkeypatch):
+    """The real defect: the service exists, so the stack looks wired, but the
+    module is absent and login can never succeed."""
+    import shani_cassini.system_status as ss
+    sec, smap = _fake_pam_tree(tmp_path, modules=[], services={
+        "gdm-smartcard": "pam_pkcs11.so",
+    })
+    monkeypatch.setattr(ss, "_PAM_SEC_DIRS", sec)
+    monkeypatch.setattr(ss, "_PAM_LOGIN_SERVICES",
+                        ((p, "Smartcard (PIV) login", m) for p, m in smap.items()))
+
+    rows = _rows_by_title(ss.hardware_auth_status())
+    card = rows["Smartcard (PIV) login"]
+    assert card["state"] == "unavailable"
+    assert "does not ship" in card["detail"]
+    assert "cannot succeed" in card["detail"]
+
+
+def test_pam_service_with_its_module_installed_reports_ok(tmp_path, monkeypatch):
+    import shani_cassini.system_status as ss
+    sec, smap = _fake_pam_tree(tmp_path, modules=["pam_pkcs11.so"], services={
+        "gdm-smartcard": "pam_pkcs11.so",
+    })
+    monkeypatch.setattr(ss, "_PAM_SEC_DIRS", sec)
+    monkeypatch.setattr(ss, "_PAM_LOGIN_SERVICES",
+                        ((p, "Smartcard (PIV) login", m) for p, m in smap.items()))
+
+    rows = _rows_by_title(ss.hardware_auth_status())
+    assert rows["Smartcard (PIV) login"]["state"] == "ok"
+    assert "pam_pkcs11.so present" in rows["Smartcard (PIV) login"]["detail"]
+
+
+def test_module_installed_but_offered_by_nothing_is_inactive(tmp_path, monkeypatch):
+    """Installed is not the same as usable: with no PAM service referencing it,
+    a user cannot reach it from a login screen."""
+    import shani_cassini.system_status as ss
+    sec, smap = _fake_pam_tree(tmp_path, modules=["pam_u2f.so"], services={})
+    monkeypatch.setattr(ss, "_PAM_SEC_DIRS", sec)
+    monkeypatch.setattr(ss, "_PAM_LOGIN_SERVICES", ())
+
+    rows = _rows_by_title(ss.hardware_auth_status())
+    key = rows["Security key (FIDO2/U2F) login"]
+    assert key["state"] == "inactive"
+    assert "no PAM service" in key["detail"]
+
+
+def test_modalities_with_no_pam_module_are_never_reported_as_working(monkeypatch):
+    """Face, iris and voice have no PAM module on Linux. If one of these ever
+    reports "ok" the table is lying to the user about their hardware."""
+    import shani_cassini.system_status as ss
+    monkeypatch.setattr(ss, "_PAM_SEC_DIRS", ())
+    monkeypatch.setattr(ss, "_PAM_LOGIN_SERVICES", ())
+
+    rows = _rows_by_title(ss.hardware_auth_status())
+    for title in ("Face / webcam recognition", "Iris (eye) recognition",
+                  "Voice / speaker recognition",
+                  "Retinal, palm, vein, gait, keystroke"):
+        assert rows[title]["state"] == "unavailable", title
+        assert rows[title]["module"] is None, title
+
+
+def test_probe_finds_a_module_wherever_the_layout_puts_it(tmp_path, monkeypatch):
+    """Regression: a single hardcoded directory made this report a working
+    method as unavailable on any system with a different PAM layout, which
+    tells the user their hardware is broken when it is not."""
+    import shani_cassini.system_status as ss
+    # Assert on the shipped list, before any patching of it.
+    assert len(ss._PAM_SEC_DIRS) > 1, \
+        "one directory only means a false 'unavailable' off Arch"
+    sec, _ = _fake_pam_tree(tmp_path, modules=["pam_fprintd.so"], services={})
+    monkeypatch.setattr(ss, "_PAM_SEC_DIRS", sec)
+    assert ss._pam_module_installed("pam_fprintd.so") is True
+    assert ss._pam_module_installed("pam_not_a_real_module.so") is False
+
+
+def test_every_reported_state_is_one_the_renderer_knows(monkeypatch):
+    """The page maps these to icons; an unmapped state would render blank."""
+    import shani_cassini.system_status as ss
+    monkeypatch.setattr(ss, "_PAM_SEC_DIRS", ())
+    monkeypatch.setattr(ss, "_PAM_LOGIN_SERVICES", ())
+    assert {r["state"] for r in ss.hardware_auth_status()} <= {"ok", "inactive", "unavailable"}

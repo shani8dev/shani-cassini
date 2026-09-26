@@ -663,3 +663,123 @@ def fprintd_unsubscribe(sub) -> None:
     if sub.conn is not None and sub.id is not None:
         sub.conn.signal_unsubscribe(sub.id)
         sub.id = None
+
+
+# --- other hardware-auth stacks -----------------------------------------
+# The page above reports on fprintd. These are its sibling login methods, and
+# the point of this table is to be honest about which ones can actually work.
+#
+# A PAM service that names a module the image does not ship can never
+# succeed, and PAM is silent about it at install time - the stack only breaks
+# when someone tries to log in. That is exactly the bug that left smartcard
+# login dead on a stock image, so it is worth surfacing rather than hiding.
+#
+# Every row is derived from stat() on this machine. Nothing is assumed from
+# what a desktop might normally provide.
+
+# Arch puts PAM modules in /usr/lib/security. The multiarch and /lib64 paths
+# are here so the probe cannot silently report "unavailable" for a module that
+# is present under a different layout - a false "not available" is worse than
+# a missing row, because it tells the user their hardware cannot work.
+_PAM_SEC_DIRS = (
+    "/usr/lib/security",
+    "/lib/security",
+    "/usr/lib64/security",
+    "/lib64/security",
+    "/usr/lib/x86_64-linux-gnu/security",
+    "/lib/x86_64-linux-gnu/security",
+)
+
+# PAM services that offer a login method, and the module each one loads.
+# GDM ships these in /etc/pam.d, KScreenLocker in /usr/lib/pam.d.
+_PAM_LOGIN_SERVICES = (
+    ("/etc/pam.d/gdm-smartcard", "Smartcard (PIV) login", "pam_pkcs11.so"),
+    ("/usr/lib/pam.d/kde-smartcard", "Smartcard (PIV) unlock", "pam_pkcs11.so"),
+    ("/etc/pam.d/gdm-fingerprint", "Fingerprint login", "pam_fprintd.so"),
+    ("/usr/lib/pam.d/kde-fingerprint", "Fingerprint unlock", "pam_fprintd.so"),
+)
+
+# Login methods that have a PAM module in the official Arch repositories.
+# "extra" is where all of these live; none of them is in [core].
+# Listed without a PAM service are installed but offered nowhere.
+_LOGIN_MODULES = (
+    ("Security key (FIDO2/U2F) login", "pam_u2f.so",
+     "plug in the key and touch it when prompted"),
+    ("Kerberos login", "pam_krb5.so",
+     "needs a working realm and a keytab first"),
+    ("Yubico OTP login", "pam_yubico.so",
+     "legacy one-time-password keys, not FIDO2"),
+)
+
+# Biometric methods with no usable PAM module for Linux at all. These are
+# reported as unavailable on purpose: a silent omission reads as "nobody has
+# ever heard of face login", which is its own kind of wrong.
+_NO_PAM_MODULE = (
+    ("Face / webcam recognition", "howdy",
+     "exists only as an unmaintained AUR package; its last tagged release was "
+     "in 2020, and it is wired into no login screen"),
+    ("Iris (eye) recognition", None,
+     "no maintained Linux implementation with a PAM module exists"),
+    ("Voice / speaker recognition", "pam_voiceprint",
+     "the only implementation was a hackathon project last touched in 2022, "
+     "packaged nowhere"),
+    ("Retinal, palm, vein, gait, keystroke", None,
+     "research-only; no PAM implementation exists for any of these"),
+)
+
+
+def _pam_module_installed(module: str) -> bool:
+    """True if this PAM module is present in any standard module directory."""
+    return any(os.path.exists(os.path.join(d, module)) for d in _PAM_SEC_DIRS)
+
+
+def _pam_service_offers(module: str) -> list:
+    """The PAM service files on this system that load the given module."""
+    return [os.path.basename(p) for p, _title, mod in _PAM_LOGIN_SERVICES
+            if mod == module and os.path.exists(p)]
+
+
+def hardware_auth_status() -> list:
+    """Report every non-fingerprint login method this image can offer.
+
+    Returns a list of {"title", "detail", "state", "module"} rows. "state" is
+    "ok" (offered by a PAM service and its module is present), "inactive"
+    (module present but no PAM service offers it, so it cannot be used until
+    one does), or "unavailable" (no usable PAM module, so it cannot succeed).
+
+    Synchronous by design: this is a handful of stat() calls, and a callback
+    would only make it untestable.
+    """
+    rows: list = []
+
+    for path, title, module in _PAM_LOGIN_SERVICES:
+        if not os.path.exists(path):
+            continue
+        service = os.path.basename(path)
+        if _pam_module_installed(module):
+            rows.append({"title": title, "module": module, "state": "ok",
+                         "detail": f"{service} — {module} present"})
+        else:
+            rows.append({"title": title, "module": module, "state": "unavailable",
+                         "detail": f"{service} needs {module}, which this image "
+                                   f"does not ship — this method cannot succeed"})
+
+    for title, module, note in _LOGIN_MODULES:
+        if not _pam_module_installed(module):
+            rows.append({"title": title, "module": module, "state": "unavailable",
+                         "detail": f"{module} is not installed"})
+            continue
+        services = _pam_service_offers(module)
+        if services:
+            rows.append({"title": title, "module": module, "state": "ok",
+                         "detail": f"{module} — offered by {', '.join(services)}"})
+        else:
+            rows.append({"title": title, "module": module, "state": "inactive",
+                         "detail": f"{module} is installed but no PAM service on "
+                                   f"this system offers it — {note}"})
+
+    for title, pkg, why in _NO_PAM_MODULE:
+        rows.append({"title": title, "module": None, "state": "unavailable",
+                     "detail": f"not available: {why}"})
+
+    return rows
