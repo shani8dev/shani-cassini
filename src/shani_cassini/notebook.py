@@ -8,12 +8,12 @@ startup ran every one of those before the window appeared.
 """
 
 import logging
-import shutil
 
 from gi.repository import Adw, Gio, Gtk  # type: ignore
 
 from shani_cassini.state import AppState
 from shani_cassini.auth import AuthManager
+from shani_cassini import system_status as ss
 from shani_cassini.tabs.overview import OverviewTab
 from shani_cassini.tabs.system import SystemTab
 from shani_cassini.tabs.updates import UpdatesTab
@@ -25,6 +25,7 @@ from shani_cassini.tabs.chronoa import ChronoaTab
 from shani_cassini.tabs.secureboot import SecureBootTab
 from shani_cassini.tabs.drivers import DriversTab
 from shani_cassini.tabs.encryption import EncryptionTab
+from shani_cassini.tabs.biometrics import BiometricsTab
 from shani_cassini.tabs.maintenance import MaintenanceTab
 from shani_cassini.tabs.kernel import KernelTab
 logger = logging.getLogger(__name__)
@@ -52,6 +53,8 @@ SECTIONS = [
     ("Security", [
         (SecureBootTab, "secureboot", "Secure Boot", "security-high-symbolic", "Secure Boot and MOK keys"),
         (EncryptionTab, "encryption", "Encryption", "channel-secure-symbolic", "Disk encryption and TPM unlock"),
+        (BiometricsTab, "biometrics", "Fingerprint", "auth-fingerprint-symbolic",
+         "Fingerprint reader, and the fingers enrolled on it"),
     ]),
     ("Updates", [
         (UpdatesTab, "updates", "Updates & Rollback", "view-refresh-symbolic",
@@ -80,6 +83,10 @@ REQUIRES = {
     "fleet": ("shani-fleet-agent", "This device is not part of a fleet",
               "Fleet management is opt-in: an organisation enrolls its devices with the "
               "shani-fleet agent. Personal devices do not need it."),
+    "biometrics": ("fprintd-enroll", "fprintd is not installed",
+                  "Fingerprints need fprintd, which is in the shani-peripherals package. It "
+                  "is on every Shanios edition; on a machine without it there is nothing to "
+                  "read or enroll."),
 }
 
 
@@ -190,7 +197,10 @@ class ShaniosNotebook(Adw.Bin):
     def _build_page(self, pid: str) -> Gtk.Widget:
         cls, _pid, title, _icon, sub = next(p for p in PAGES if p[1] == pid)
         need = REQUIRES.get(pid)
-        if need and not shutil.which(need[0]):
+        # have_sbin(), not shutil.which(): fprintd's tools are in /usr/sbin,
+        # which is not on the PATH a desktop session or a systemd user unit
+        # gets - a plain which() would report an installed fprintd as missing.
+        if need and not ss.have_sbin(need[0]):
             tab = Adw.StatusPage(icon_name=_icon, title=need[1], description=need[2])
             tab.set_vexpand(True)
             return self._add_page(pid, tab)

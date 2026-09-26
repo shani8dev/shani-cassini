@@ -1,5 +1,7 @@
 """Tests for shani-cassini tab construction."""
 
+import ast
+import inspect
 import subprocess
 import unittest.mock
 
@@ -20,6 +22,7 @@ DIRECT_TABS = [
     ("KernelTab", "shani_cassini.tabs.kernel"),
     ("SecureBootTab", "shani_cassini.tabs.secureboot"),
     ("DriversTab", "shani_cassini.tabs.drivers"),
+    ("BiometricsTab", "shani_cassini.tabs.biometrics"),
 ]
 
 
@@ -92,7 +95,8 @@ class TestNotebook:
     """The sidebar lists every section, in order; pages build on demand."""
 
     EXPECTED = ["Overview", "Health", "System Info", "Drivers", "Secure Boot", "Encryption",
-                "Updates & Rollback", "Services", "Backup", "Maintenance", "Chronoa", "Fleet"]
+                "Fingerprint", "Updates & Rollback", "Services", "Backup", "Maintenance",
+                "Chronoa", "Fleet"]
 
     def test_sections(self):
         from shani_cassini.notebook import ShaniosNotebook
@@ -257,6 +261,73 @@ class TestKernelTab:
         assert isinstance(count, int)
         assert count >= 0
         assert isinstance(sample, str)
+
+
+class TestBiometricsNoPrivilegeEscalation:
+    """The Fingerprint page must drive fprintd over its own D-Bus API.
+
+    99-shani.rules already grants fprintd's enroll/delete actions to
+    AUTH_SELF, so fprintd asks polkit itself and the password dialog appears
+    without help. A pkexec call or a helper binary here would be a privilege
+    escalation the page has no reason to ask for, and a
+    org.freedesktop.policykit.exec.path action would override the system
+    rules for every other caller."""
+
+    def _code(self, module):
+        """The module's code with docstrings and comments stripped.
+
+        The page's docstring explains at length why pkexec is not used, and
+        that sentence must not satisfy the gate that proves it."""
+        tree = ast.parse(inspect.getsource(module))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                     ast.AsyncFunctionDef)):
+                continue
+            body = node.body
+            if (body and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                node.body = body[1:] or [ast.Pass()]
+        return ast.unparse(tree)
+
+    def test_biometrics_never_uses_pkexec_or_a_helper(self):
+        from shani_cassini.tabs import biometrics
+        code = self._code(biometrics)
+        for forbidden in ("pkexec", "subprocess", "os.system", "Gio.Subprocess",
+                          "polkit-1", "99-shani.rules"):
+            assert forbidden not in code, f"{forbidden} must never appear in the tab"
+
+    def test_fprintd_probes_never_use_pkexec(self):
+        from shani_cassini import system_status
+        fprintd = self._code(system_status)
+        fprintd = fprintd[fprintd.index("FPRINTD_CLI"):]
+        for forbidden in ("pkexec", "subprocess", "Gio.Subprocess"):
+            assert forbidden not in fprintd, f"fprintd asks polkit itself; {forbidden} is out"
+
+    def test_biometrics_is_registered_in_the_security_group(self):
+        from shani_cassini.notebook import SECTIONS, REQUIRES
+        security = dict(SECTIONS)["Security"]
+        assert [p[1] for p in security] == ["secureboot", "encryption", "biometrics"]
+        assert security[-1][3] == "auth-fingerprint-symbolic"
+        assert REQUIRES["biometrics"][0] == "fprintd-enroll"
+
+    def test_copy_never_promises_a_fingerprint_for_sudo(self):
+        from shani_cassini import system_status as ss
+        # sudo includes system-auth, which has no pam_fprintd line
+        assert "sudo" in ss.SUDO_NEVER[0].lower()
+        for _head, detail in ss.EDITION_LOGIN.values():
+            assert "sudo" not in detail.lower(), detail
+
+    @pytest.mark.parametrize("profile,expected", [
+        ("gnome", "Works at the login screen"),
+        ("plasma", "Lock screen only, and it must be switched on"),
+        ("cosmic", "Not available on this edition"),
+    ])
+    def test_edition_login_matches_the_shipped_pam_services(self, profile, expected):
+        from shani_cassini import system_status as ss
+        head, detail = ss.edition_login(profile)
+        assert head == expected
+        assert detail, "an edition must say why, not only what"
 
 
 class TestSecureBootGenEfiErrorPaths:

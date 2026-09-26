@@ -3,6 +3,7 @@ shani-health / pkexec on PATH printing what the real ones print."""
 
 import json
 import os
+import shutil
 import stat
 import time
 
@@ -273,3 +274,389 @@ print("ok")
 """
     r = subprocess.run([__import__("sys").executable, "-c", code], capture_output=True, text=True, cwd=os.getcwd())
     assert r.returncode == 0 and "ok" in r.stdout, r.stdout + r.stderr
+
+
+# --- fprintd, over its own D-Bus API --------------------------------------
+#
+# fprintd is not a CLI Cassini runs, so the fake is the D-Bus API: the same
+# calls, on the same names, answered the way the real daemon answers them and
+# delivered through GLib.idle_add - a probe that assumed a synchronous
+# callback would fail here rather than in the field.
+
+DEVICE_PATH = "/net/reactivated/Fprint/device/0"
+FINGER = ("right-index-finger", "Right index", 3, "enroll", "enrolled", "2026-09-26T10:00:00Z")
+NO_REPLY = ("GDBus.Error:org.freedesktop.DBus.Error.NoReply: Did not receive a reply")
+DAEMON_GONE = ("GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: "
+               "The name net.reactivated.fprint was not provided by any .service files")
+
+
+class _Reply:
+    """A D-Bus reply already unpacked: a{sv} and a(ssuss) arrive as plain
+    Python values, which is what GLib.Variant.unpack() gives."""
+
+    def __init__(self, value):
+        self._value = value
+
+    def unpack(self):
+        return self._value
+
+
+class _Message:
+    def __init__(self, value):
+        self._reply = _Reply(value)
+
+    def get_reply(self):
+        return self._reply
+
+
+class _Failed:
+    """What a D-Bus error looks like: get_reply() raises."""
+
+    def get_reply(self):
+        raise GLib.Error(NO_REPLY)
+
+
+class FakeFprintd:
+    def __init__(self, devices=(DEVICE_PATH,), props=None, fingers=(FINGER,)):
+        self.devices = list(devices)
+        self.props = {"DevicePresent": True, "DeviceEnabled": True, "Action": "",
+                      "Name": "Goodix capacitive", "Driver": "goodixmoc"} if props is None else props
+        self.fingers = list(fingers)
+        self.bus_error = ""       # set to fail the bus itself
+        self.call_error = ()      # (path, iface, method) that must fail
+        self.silent = False       # answer nothing at all: a hung daemon
+        self.enroll_reply = (True, "ok")
+        self.calls = []
+
+    def system_bus(self, ready):
+        GLib.idle_add(ready, None, self.bus_error) if self.bus_error \
+            else GLib.idle_add(ready, object(), "")
+
+    def call(self, _conn, path, iface, method, params, got, reply_type="(v)"):
+        self.calls.append((path, iface, method, params, reply_type))
+        if self.silent:
+            return None
+        if (path, iface, method) in self.call_error:
+            GLib.idle_add(got, _Failed(), None)
+            return None
+        if method == "GetDevices":
+            value = self.devices
+        elif method == "GetAll":
+            value = [self.props]
+        elif method == "ListEnrolledFingers":
+            value = self.fingers
+        elif method == "Enroll":
+            value = [self.enroll_reply]   # (bs) is the reply's single argument
+        else:                       # EnrollStart, EnrollStop, Delete: no reply
+            value = []
+        GLib.idle_add(got, _Message(value), None)
+        return None
+
+    def methods(self):
+        return [c[2] for c in self.calls]
+
+
+@pytest.fixture
+def fake_fprintd(monkeypatch):
+    from shani_cassini import system_status as ss
+    fake = FakeFprintd()
+    monkeypatch.setattr(ss, "_system_bus", fake.system_bus)
+    monkeypatch.setattr(ss, "_dbus_call", fake.call)
+    return fake
+
+
+def test_fprintd_status_reads_the_reader_and_its_fingers(fake_fprintd):
+    from shani_cassini import system_status as ss
+    got = []
+    ss.fprintd_status(lambda st, err: got.append((st, err)))
+    assert spin(lambda: got)
+    status, err = got[0]
+    assert err == ""
+    assert status["daemon"] is True and status["device_present"] is True
+    assert status["device_name"] == "Goodix capacitive"
+    assert status["driver"] == "goodixmoc"
+    assert status["path"] == DEVICE_PATH
+    assert status["fingers"] == [{"finger": "right-index-finger", "nickname": "Right index",
+                                  "uid": 3, "state": "enrolled"}]
+    assert fake_fprintd.methods() == ["GetDevices", "GetAll", "ListEnrolledFingers"]
+    assert fake_fprintd.calls[1][0] == DEVICE_PATH
+
+
+def test_fprintd_with_no_reader_attached_is_not_a_failure(fake_fprintd):
+    from shani_cassini import system_status as ss
+    fake_fprintd.devices = []
+    got = []
+    ss.fprintd_status(lambda st, err: got.append((st, err)))
+    assert spin(lambda: got)
+    status, err = got[0]
+    assert err == ""
+    assert status["daemon"] is True and status["device_present"] is False
+    assert status["fingers"] == []
+    assert fake_fprintd.methods() == ["GetDevices"]
+
+
+@pytest.mark.parametrize("broken", ["bus", "call"])
+def test_fprintd_never_guesses_a_state_nobody_reported(fake_fprintd, broken):
+    """A daemon that is absent, or that fails the call, must be an error and
+    not "no fingers": the page has to be able to say "not known"."""
+    from shani_cassini import system_status as ss
+    if broken == "bus":
+        fake_fprintd.bus_error = DAEMON_GONE
+    else:
+        fake_fprintd.call_error = [(ss.FPRINTD_PATH, ss.FPRINTD_MANAGER, "GetDevices")]
+    got = []
+    ss.fprintd_status(lambda st, err: got.append((st, err)))
+    assert spin(lambda: got)
+    status, err = got[0]
+    assert status is None
+    assert "did not answer" in err or "Connection refused" in err or err
+
+
+def test_fprintd_status_times_out_on_a_daemon_that_hangs(fake_fprintd):
+    from shani_cassini import system_status as ss
+    fake_fprintd.silent = True
+    got = []
+    ss.fprintd_status(lambda st, err: got.append((st, err)), timeout_s=1)
+    assert spin(lambda: got, timeout=5.0)
+    status, err = got[0]
+    assert status is None
+    assert "in time" in err
+
+
+def test_fprintd_is_found_in_sbin_without_it_being_on_path(tmp_path, monkeypatch):
+    """Every fprintd tool is in /usr/sbin, which a desktop session's PATH does
+    not have: presence must not depend on PATH."""
+    from shani_cassini import system_status as ss
+    sbin = tmp_path / "sbin"
+    sbin.mkdir()
+    tool = sbin / "fprintd-enroll"
+    tool.write_text("#!/bin/sh\nexit 0\n")
+    tool.chmod(0o755)
+    monkeypatch.setattr(ss, "SBIN_DIRS", (str(sbin),))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    assert shutil.which("fprintd-enroll") is None
+    assert ss.have_sbin("fprintd-enroll") is True
+    assert ss.fprintd_installed() is True
+
+
+def test_fprintd_missing_everywhere_reads_as_not_installed(tmp_path, monkeypatch):
+    from shani_cassini import system_status as ss
+    monkeypatch.setattr(ss, "SBIN_DIRS", (str(tmp_path / "nothing"),))
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert ss.have_sbin("fprintd-enroll") is False
+    assert ss.fprintd_installed() is False
+
+
+def test_biometrics_degrades_to_a_status_page_without_fprintd(monkeypatch):
+    from gi.repository import Adw
+    from shani_cassini import notebook, system_status as ss
+    monkeypatch.setattr(ss, "have_sbin", lambda cmd: False)
+    nb = notebook.ShaniosNotebook()
+    page = nb.select("biometrics")
+    assert isinstance(page, Adw.StatusPage)
+    assert page.get_title() == "fprintd is not installed"
+    assert "shani-peripherals" in page.get_description()
+
+
+def test_finger_labels_are_readable(fake_fprintd):
+    from shani_cassini.tabs.biometrics import _finger_label
+    assert _finger_label("right-index-finger") == "Right Index Finger"
+    assert _finger_label("") == ""
+
+
+def test_biometrics_page_reports_a_reader_and_its_fingers(fake_bin, fake_fprintd):
+    from shani_cassini.tabs.biometrics import BiometricsTab
+    fake_fprintd.fingers = [FINGER, ("left-thumb", "Left thumb", 4, "enroll", "enrolled", "x")]
+    tab = BiometricsTab()
+    assert spin(lambda: tab._row_daemon.get_subtitle() == "Running")
+    assert tab._row_device.get_subtitle() == "Goodix capacitive · goodixmoc"
+    assert tab._row_fingers.get_subtitle() == "2 enrolled"
+    assert tab._btn_enroll.get_sensitive()
+    assert tab._fingers_group.get_visible()
+    titles = _action_row_titles(tab._fingers_group)
+    assert titles == ["Right index", "Left thumb"]
+    # fake_bin's shani-deploy says profile=gnome
+    assert spin(lambda: tab._row_edition.get_title() == "This edition: gnome")
+    assert "Works at the login screen" in tab._row_edition.get_subtitle()
+
+
+def test_biometrics_escapes_every_string_fprintd_hands_over(fake_bin, fake_fprintd):
+    from shani_cassini.tabs.biometrics import BiometricsTab
+    fake_fprintd.props["Name"] = "Sync & <hold> \"reader\""
+    fake_fprintd.fingers = [("right-index-finger", "Tom & \"Jerry\" <thumb>", 7,
+                             "enroll", "enrolled", "x")]
+    tab = BiometricsTab()
+    assert spin(lambda: tab._row_fingers.get_subtitle() == "1 enrolled")
+    # Adw parses the row's markup on set, so get_subtitle() gives back what a
+    # person sees: the exact string fprintd sent, with the entities consumed as
+    # markup. Unescaped input would either be dropped or swallowed as a tag.
+    assert tab._row_device.get_subtitle() == 'Sync & <hold> "reader" \u00b7 goodixmoc'
+    assert "&amp;" not in tab._row_device.get_subtitle()
+    # get_title() hands back the markup as stored, so this is the escaping
+    # itself: the entity form can only be there because _esc() ran.
+    assert _action_row_titles(tab._fingers_group) == ['Tom &amp; &quot;Jerry&quot; &lt;thumb&gt;']
+    # a Gtk.Label on the same row shows the person the original text
+    assert "&amp;" not in " ".join(_finger_row_texts(tab._fingers_group)) 
+
+
+def test_biometrics_says_not_known_when_the_daemon_is_gone(fake_bin, fake_fprintd, monkeypatch):
+    from shani_cassini import system_status as ss
+    from shani_cassini.tabs.biometrics import BiometricsTab
+    monkeypatch.setattr(ss, "fprintd_installed", lambda: True)
+    fake_fprintd.bus_error = DAEMON_GONE
+    tab = BiometricsTab()
+    assert spin(lambda: "did not answer" in tab._row_device.get_subtitle())
+    assert tab._row_fingers.get_subtitle().startswith("Not known")
+    assert "0 enrolled" not in tab._row_fingers.get_subtitle()
+    assert not tab._btn_enroll.get_sensitive()
+    assert not tab._fingers_group.get_visible()
+
+
+def test_biometrics_names_the_package_when_fprintd_is_missing(fake_bin, fake_fprintd, monkeypatch):
+    from shani_cassini import system_status as ss
+    from shani_cassini.tabs.biometrics import BiometricsTab
+    monkeypatch.setattr(ss, "fprintd_installed", lambda: False)
+    fake_fprintd.bus_error = DAEMON_GONE
+    tab = BiometricsTab()
+    assert spin(lambda: "Not installed" in tab._row_daemon.get_subtitle())
+    assert "shani-peripherals" in tab._row_daemon.get_subtitle()
+
+
+def test_biometrics_will_not_enroll_on_a_reader_that_is_not_there(fake_bin, fake_fprintd):
+    from shani_cassini.tabs.biometrics import BiometricsTab
+    fake_fprintd.devices = []
+    tab = BiometricsTab()
+    assert spin(lambda: tab._row_device.get_subtitle().startswith("No reader"))
+    assert "Not known" in tab._row_fingers.get_subtitle()
+    assert not tab._btn_enroll.get_sensitive()
+    tab._start_enroll()
+    assert "EnrollStart" not in fake_fprintd.methods()
+    assert tab._enroll is None
+
+
+def test_enroll_scans_only_while_fprintd_says_enroll(fake_bin, fake_fprintd):
+    from shani_cassini.tabs.biometrics import BiometricsTab
+    tab = BiometricsTab()
+    assert spin(lambda: tab._btn_enroll.get_sensitive())
+    tab._start_enroll()
+    assert spin(lambda: tab._enroll is not None and tab._enroll["timer"])
+    assert "EnrollStart" in fake_fprintd.methods()
+    assert tab._btn_cancel.get_visible()
+    assert not tab._btn_enroll.get_visible()
+
+    fake_fprintd.props["Action"] = "enroll"
+    assert tab._enroll_tick() is True
+    assert spin(lambda: "Enroll" in fake_fprintd.methods())
+    assert spin(lambda: tab._row_enroll.get_subtitle() == "Scan stored (1) - lift your finger "
+                                 "and touch it again")
+
+    fake_fprintd.enroll_reply = (False, "too fast")
+    assert tab._enroll_tick() is True
+    assert spin(lambda: "Scan not accepted: too fast" == tab._row_enroll.get_subtitle())
+    assert tab._enroll["scans"] == 1        # a rejected scan does not count
+
+    fake_fprintd.props["Action"] = ""       # fprintd stored the last scan
+    assert tab._enroll_tick() is True
+    assert spin(lambda: "EnrollStop" in fake_fprintd.methods())
+    assert tab._enroll is None
+    assert not tab._btn_cancel.get_visible()
+
+
+def test_cancelling_enrollment_always_stops_the_reader(fake_bin, fake_fprintd):
+    """A reader left mid-enroll stays claimed and unusable, so EnrollStop runs
+    on the cancel path too."""
+    from shani_cassini.tabs.biometrics import BiometricsTab
+    tab = BiometricsTab()
+    assert spin(lambda: tab._btn_enroll.get_sensitive())
+    tab._start_enroll()
+    assert spin(lambda: tab._enroll is not None and tab._enroll["timer"])
+    tab.cancel_enroll()
+    assert spin(lambda: "EnrollStop" in fake_fprintd.methods())
+    assert tab._enroll is None
+    assert not tab._btn_cancel.get_visible()
+    assert not tab._entry_name.get_sensitive() is False
+    fake_fprintd.props["Action"] = "enroll"
+    assert tab._enroll_tick() is False       # the loop is gone
+
+
+def test_enrollment_gives_up_after_its_timeout(fake_bin, fake_fprintd, monkeypatch):
+    from shani_cassini.tabs import biometrics
+    tab = biometrics.BiometricsTab()
+    assert spin(lambda: tab._btn_enroll.get_sensitive())
+    monkeypatch.setattr(biometrics, "ENROLL_TIMEOUT_S", 0)
+    tab._start_enroll()
+    assert spin(lambda: tab._enroll is not None and tab._enroll["timer"])
+    assert tab._enroll_tick() is False
+    assert spin(lambda: "EnrollStop" in fake_fprintd.methods())
+    assert tab._enroll is None
+
+
+def test_delete_asks_fprintd_for_that_finger_uid(fake_bin, fake_fprintd):
+    from shani_cassini.tabs.biometrics import BiometricsTab
+    tab = BiometricsTab()
+    assert spin(lambda: tab._row_fingers.get_subtitle() == "1 enrolled")
+    tab._delete(3)
+    assert spin(lambda: "Delete" in fake_fprintd.methods())
+    call = next(c for c in fake_fprintd.calls if c[2] == "Delete")
+    assert call[0] == DEVICE_PATH
+    arg = call[3][0]
+    assert arg.get_type_string() == "u", "Delete takes a bare uint32, not a (u) tuple"
+    assert arg.unpack() == 3                 # the uid from ListEnrolledFingers
+
+
+def test_delete_without_a_status_deletes_nothing(fake_bin, fake_fprintd):
+    from shani_cassini.tabs.biometrics import BiometricsTab
+    fake_fprintd.bus_error = DAEMON_GONE
+    tab = BiometricsTab()
+    assert spin(lambda: tab._row_daemon.get_subtitle() != "Asking it…")
+    tab._delete(3)
+    assert "Delete" not in fake_fprintd.methods()
+
+
+def test_enroll_start_failure_still_stops_the_reader(fake_bin, fake_fprintd):
+    """A failed EnrollStart is the one path where no reader was claimed - and
+    EnrollStop is still called, because a half-started enrollment that is not
+    closed leaves the reader unusable by the lock screen."""
+    from shani_cassini import system_status as ss
+    from shani_cassini.tabs.biometrics import BiometricsTab
+    fake_fprintd.call_error = [(DEVICE_PATH, ss.FPRINTD_DEVICE, "EnrollStart")]
+    tab = BiometricsTab()
+    assert spin(lambda: tab._btn_enroll.get_sensitive())
+    tab._start_enroll()
+    assert spin(lambda: "EnrollStart" in fake_fprintd.methods())
+    assert spin(lambda: "EnrollStop" in fake_fprintd.methods())
+    assert tab._enroll is None
+    assert not tab._btn_cancel.get_visible()
+    assert tab._btn_enroll.get_visible()
+
+
+def _action_row_titles(group):
+    """The titles of a PreferencesGroup's ActionRows, as stored (so any
+    escaping of fprintd's strings is still visible)."""
+    out = []
+
+    def walk(w):
+        c = w.get_first_child()
+        while c is not None:
+            if isinstance(c, __import__("gi").repository.Adw.ActionRow):
+                out.append(c.get_title())
+            walk(c)
+            c = c.get_next_sibling()
+    walk(group)
+    return out
+
+
+def _finger_row_texts(group):
+    """The rendered labels of a group's rows: what a person actually reads."""
+    from gi.repository import Gtk
+    out = []
+
+    def walk(w):
+        c = w.get_first_child()
+        while c is not None:
+            if isinstance(c, Gtk.Label):
+                out.append(c.get_text())
+            walk(c)
+            c = c.get_next_sibling()
+    walk(group)
+    return out
