@@ -25,6 +25,7 @@ for an "is not installed" status page when its app is missing.
 |---|---|
 | Overview, Updates & Rollback | `shani-deploy --status [--check] --json` (no root); `pkexec shani-deploy` / `--rollback` / `--set-channel X`, streamed, wrapped in `systemd-inhibit` (sleep, not shutdown) |
 | Health | `pkexec shani-health --verify --json` / `--security --json` (JSON even on exit 1); `journalctl -b -p 3 -o json`; `coredumpctl list --json` |
+| Storage | `shani-health --storage-info --json` (read-only, unprivileged) via `storage_info()`; `--verify --json` uses a *different* builder and is not interchangeable with it |
 | System Info | `hostnamectl --json`, `timedatectl show`, `systemd-analyze time` + the older system/kernel cards |
 | Encryption | `/dev/mapper/shani_root`, `systemd-analyze has-tpm2`; `pkexec gen-efi tpm2-status --json`, `enroll-tpm2 --stdin [--with-pin]` (secrets on stdin only), `remove-tpm2` |
 | Services | `systemctl list-unit-files -o json` + `list-units -o json` (only enabled/disabled units); `systemctl enable --now` etc. — polkit is asked by systemd itself |
