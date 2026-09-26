@@ -114,12 +114,17 @@ If you haven't seen it work (or fail) for real, it isn't verified.
   is unexercised. Closing it needs a real slot with a real disk, like the
   `fprintd` item below. Do not read the passing fake-CLI tests as evidence that
   the privileged read works.
-- **SSH Keys' fingerprint path is unverified.** `ssh-keygen -lf` is invoked
-  through the async layer and the "not installed" branch was seen for real (the
-  Arch container has no `openssh`, and the page said so instead of inventing a
-  fingerprint), but the branch that actually shells out to `ssh-keygen` has
-  never run. The `config_io` write path is covered by fake-CLI tests only; it
-  has not written a real `authorized_keys` on a machine.
+- **SSH Keys' fingerprint path is now verified; its write path is not.** Both
+  branches have been seen for real in Arch under GTK4/libadwaita: with no
+  `openssh` the page said so instead of inventing a fingerprint, and with three
+  real generated keys it printed `ssh-keygen -lf` fingerprints that match that
+  command's own output byte for byte, ignoring a trailing `#` comment and a
+  blank line. What is still unverified is the `config_io` **write** — the
+  fake-CLI tests cover it, but no real `authorized_keys` has been written on a
+  machine, and a bad write here locks you out of remote login.
+  Note `ssh-keygen` resolves from `/usr/bin` on Arch, so plain `shutil.which`
+  is correct for it — unlike `smartctl`, which is `/usr/sbin`-only and needs
+  the sbin fallback `smart.py` uses.
 
 - **The Fingerprint tab's live `fprintd` path is UNVERIFIED against a running
   daemon — proven impossible in a container, so it needs a real slot.** The D-Bus
