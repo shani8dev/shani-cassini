@@ -79,6 +79,34 @@ def _esc(value: object) -> str:
     return GLib.markup_escape_text(str(value))
 
 
+def _clear_group(group: Adw.PreferencesGroup) -> None:
+    """Take every row back out of a group, leaving its header alone.
+
+    An AdwPreferencesGroup does not hold its rows directly. Measured on
+    libadwaita here, the tree is group -> Box -> Box -> ListBox -> ActionRow,
+    so get_first_child() hands back the outer Box, and remove() on that is
+    refused ("tried to remove non-child ... of type 'GtkBox'") and does
+    nothing. The old loop walked siblings of that Box - of which there are
+    none - so it ran once, cleared nothing, and a refresh accumulated rows
+    instead. The rows are the ActionRow leaves, and the group's own remove()
+    does reach them, so those are what get taken back out.
+    """
+    rows: list[Gtk.Widget] = []
+
+    def collect(widget: Gtk.Widget) -> None:
+        child = widget.get_first_child()
+        while child is not None:
+            if isinstance(child, Adw.PreferencesRow):
+                rows.append(child)
+            else:
+                collect(child)
+            child = child.get_next_sibling()
+
+    collect(group)
+    for row in rows:
+        group.remove(row)
+
+
 class BiometricsTab(Gtk.Box):
     def __init__(self, state=None, auth_manager=None) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=24)
@@ -191,11 +219,7 @@ class BiometricsTab(Gtk.Box):
         """
         rows = [r for r in rows if r.get("module") not in PAGE_BACKED_MODULES]
         g = self._auth_group
-        child = g.get_first_child()
-        while child is not None:
-            nxt = child.get_next_sibling()
-            g.remove(child)
-            child = nxt
+        _clear_group(g)
         if not rows:
             g.set_visible(False)
             return

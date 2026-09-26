@@ -91,19 +91,31 @@ def _esc(value: object) -> str:
 
 
 def _empty(group: Adw.PreferencesGroup) -> None:
-    """Take every row back out of a group, by the group's own children.
+    """Take every row back out of a group, leaving its header alone.
 
-    An AdwPreferencesGroup wraps each row it is given, so unparenting a row
-    detaches the row but leaves that wrapper inside the group. Adding into a
-    group that has collected wrappers from an earlier pass is what crashed GTK
-    on the second refresh, so the group is emptied through remove() instead -
-    the only call that reaches what it actually holds.
+    An AdwPreferencesGroup does not hold its rows directly. Measured on
+    libadwaita here, the tree is group -> Box -> Box -> ListBox -> ActionRow,
+    so get_first_child() hands back the outer Box, and remove() on that is
+    refused ("tried to remove non-child ... of type 'GtkBox'") and does
+    nothing. The old loop walked siblings of that Box - of which there are
+    none - so it ran once, cleared nothing, and a refresh accumulated rows
+    instead. The rows are the ActionRow leaves, and the group's own remove()
+    does reach them, so those are what get taken back out.
     """
-    child = group.get_first_child()
-    while child is not None:
-        nxt = child.get_next_sibling()
-        group.remove(child)
-        child = nxt
+    rows: list[Gtk.Widget] = []
+
+    def collect(widget: Gtk.Widget) -> None:
+        child = widget.get_first_child()
+        while child is not None:
+            if isinstance(child, Adw.PreferencesRow):
+                rows.append(child)
+            else:
+                collect(child)
+            child = child.get_next_sibling()
+
+    collect(group)
+    for row in rows:
+        group.remove(row)
 
 
 def _drop(rows: list) -> None:
