@@ -434,9 +434,41 @@ def test_privileged_write_maps_a_cancelled_authorization(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:{os.environ['PATH']}")
     calls: list[tuple[str, str]] = []
     write_staged_privileged(staged, lambda error, note: calls.append((error, note)))
-    assert calls[0][0] == "Authorization was cancelled"
+    # The wording now says the file was not written, because that is the fact
+    # the readback established and the number alone did not.
+    assert calls[0][0] == "Authorization was cancelled, so nothing was written"
     assert path.read_text() == FLAT_SIX          # pkexec never ran install
     assert len(log.read_text().splitlines()) == 1
+
+
+def test_a_127_that_did_write_is_not_reported_as_a_cancellation(tmp_path, monkeypatch):
+    """Regression, measured rather than reasoned about.
+
+    pkexec returns 127 for "not authorized" AND when polkit is unreachable AND
+    when the program does not exist - all three observed in a container with no
+    working polkit. So a 127 on its own cannot support "you cancelled", and
+    treating it as proof meant a dead authorization service was reported as a
+    user changing their mind, and the restore path never ran.
+
+    Here pkexec exits 127 *and* clobbers the file anyway. The target no longer
+    holds the old bytes, so the cancellation wording would be a lie: the write
+    happened, and the original has to be put back.
+    """
+    path, staged = _staged(tmp_path, "krb5.conf", FLAT_SIX, "alwaysok", "on")
+    log = tmp_path / "pkexec.log"
+    _fake_pkexec(tmp_path / "bin" / "pkexec", log,
+                 'if [ ! -e "$dest.clobbered" ]; then\n'
+                 '  : > "$dest.clobbered"\n'
+                 '  printf "garbage\\n" > "$dest"\n'
+                 '  exit 127\n'
+                 'fi\n'
+                 'cp "$src" "$dest"\n')
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:{os.environ['PATH']}")
+    calls: list[tuple[str, str]] = []
+    write_staged_privileged(staged, lambda error, note: calls.append((error, note)))
+    assert "cancelled" not in calls[0][0], calls[0]
+    assert "not saved" in calls[0][0], calls[0]
+    assert path.read_text() == FLAT_SIX, "the original must be put back"
 
 
 def test_restore_backup_puts_the_backup_back(tmp_path, pkexec_silent):

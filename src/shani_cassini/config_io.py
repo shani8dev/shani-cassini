@@ -705,14 +705,20 @@ def write_staged_privileged(staged: Staged, done: Callable[[str, str], None]) ->
         except OSError as exc:
             done(f"could not run {_INSTALL}: {exc}", "")
             return
-        if status in (126, 127):  # pkexec: dialog dismissed, or not authorized
-            done("Authorization was cancelled", "")
+        # The readback decides, not the exit code. 126 and 127 are documented as
+        # "dialog dismissed" and "not authorized", but pkexec returns 127 for
+        # those AND when polkit is unreachable AND when the program does not
+        # exist - measured, all three, in a container with no working polkit.
+        # So the number alone cannot support "you cancelled"; what supports it
+        # is 126/127 together with the target still holding the old bytes.
+        note = f"The copy of the file you had before is in {staged.backup}"
+        if status in (126, 127) and _holds(staged.path, _read_text(staged.backup)):
+            done("Authorization was cancelled, so nothing was written", note)
             return
-        if status == 0 and _holds(staged.path, staged.text):
+        if _holds(staged.path, staged.text):
             done("", f"Saved {staged.path}")
             return
         _restore(staged)
-        note = f"The copy of the file you had before is in {staged.backup}"
         if _holds(staged.path, _read_text(staged.backup)):
             done(f"{_label(staged.path)} was not saved and the original has been "
                  "put back", note)
@@ -735,11 +741,13 @@ def restore_backup(backup: str, path: str, *, done: Callable[[str, str], None]) 
     except OSError as exc:
         done(f"could not run {_INSTALL}: {exc}", "")
         return
-    if installed in (126, 127):
-        done("Authorization was cancelled", "")
-        return
-    if installed == 0 and _holds(path, _read_text(backup)):
+    # Same reasoning as write_staged_privileged: the number is a hint, the
+    # bytes on disk are the verdict.
+    if _holds(path, _read_text(backup)):
         done("", f"{_label(path)} was put back from {backup}")
+        return
+    if installed in (126, 127):
+        done("Authorization was cancelled, so nothing was put back", "")
         return
     done(f"{_label(path)} was not put back from {backup} - check it by hand", "")
 
