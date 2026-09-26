@@ -516,6 +516,24 @@ def test_a_scan_that_could_not_run_says_why(tmp_path, monkeypatch) -> None:
     assert spin(lambda: "scan_smart_devices" in all_text(tab)), rows(tab)
 
 
+def test_the_status_row_settles_when_the_scan_finds_no_disk(tmp_path, monkeypatch) -> None:
+    """A scan with no disks never reaches the code that settles the status row,
+    so it used to keep refresh()'s "Reading..." under a Disks group that had
+    already answered - the page contradicted itself on one screen."""
+    fake_bin(tmp_path, monkeypatch, scan="")
+    tab = sp.SmartTab()
+    assert spin(lambda: find(tab, "no disk") is not None), rows(tab)
+    assert spin(lambda: "Reading" not in all_text(tab)), all_text(tab)
+    assert spin(lambda: "Asking" not in all_text(tab)), all_text(tab)
+
+
+def test_the_status_row_settles_when_the_scan_itself_failed(tmp_path, monkeypatch) -> None:
+    fake_bin(tmp_path, monkeypatch, scan="", scan_rc=1)
+    tab = sp.SmartTab()
+    assert spin(lambda: "exited 1" in all_text(tab)), all_text(tab)
+    assert "Reading" not in all_text(tab), all_text(tab)
+
+
 # --- 5. the self-test log ---------------------------------------------------
 
 def test_a_self_test_log_and_error_log_are_shown_verbatim(tmp_path, monkeypatch) -> None:
