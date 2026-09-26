@@ -84,6 +84,26 @@ If you haven't seen it work (or fail) for real, it isn't verified.
 
 ## Known issues (current state, 2026-09-25)
 
+- **The Fingerprint tab's live `fprintd` path is UNVERIFIED against a running
+  daemon — proven impossible in a container, so it needs a real slot.** The D-Bus
+  contract *is* verified: it was taken from the installed package's own
+  introspection XML (`/usr/share/dbus-1/interfaces/net.reactivated.Fprint.*.xml`,
+  fprintd 1.94.5-2) rather than recalled API knowledge, and that check is what
+  caught the page originally calling a nonexistent `Enroll()`/`Delete()`,
+  `ListEnrolledFingers` with the wrong signature, and skipping the mandatory
+  `Claim()`. What remains unproven at runtime is the `EnrollStatus` signal
+  sequence and the polkit interaction.
+  **Do not try to close this with a container.** `fprintd` installs a sleep-delay
+  inhibitor at startup and **exits immediately** without
+  `org.freedesktop.login1` (logind), which no container here provides. The
+  resulting failure mode is a trap: because the name is then unowned, D-Bus
+  falls through to *activation* and returns
+  `Spawn.ExecFailed ... Permission denied` — **identically for every method**,
+  real or invented. So such a run appears to "verify" `Enroll(0)` and
+  `EnrollStart('right-index-finger')` alike and distinguishes nothing. Treat
+  that error as no signal at all, not as a passing result. Real check:
+  `build.sh test desktop <slot> --local-pkg=<pkg> --exec="(shani-cassini --section=biometrics &); sleep 25"`
+  on a host with a reader.
 - Piper TTS / whisper models are Chronoa's concern; Cassini only reports them.
 - `bootctl list --json` needs ESP read access — not shown to the user yet.
 - System Info's older cards (`tabs/system.py`) still parse `/proc` and
