@@ -51,6 +51,13 @@ FINGERS_HELP = ("Each one is a stored scan of that finger, not an image. Deletin
                 "your password through polkit.")
 
 
+# The modules whose login methods have a page of their own. Kept here rather
+# than in system_status so the list of what this page skips is visible next to
+# the page that skips it.
+PAGE_BACKED_MODULES = frozenset({"pam_pkcs11.so", "pam_u2f.so", "pam_yubico.so",
+                                 "pam_krb5.so"})
+
+
 def _row(title: str, subtitle: str = "", icon: str | None = None,
          cls: str | None = None) -> Adw.ActionRow:
     r = Adw.ActionRow(title=title, subtitle=subtitle)
@@ -172,7 +179,17 @@ class BiometricsTab(Gtk.Box):
         self._page.append(self._auth_group)
 
     def _on_hardware_auth(self, rows: list) -> None:
-        """Render the non-fingerprint hardware-auth login paths."""
+        """The sign-in methods that have no page of their own.
+
+        Smartcard, security keys and Kerberos each got their own page, so they
+        are dropped here rather than shown twice: two lists of the same claim
+        drift apart, and the one on this page would be the stale one. What is
+        left is exactly the set with nowhere else to go - face, iris, voice and
+        the rest - which is why this group still matters and is not simply
+        deleted. A silent omission would read as "nobody has heard of face
+        login", which is its own kind of wrong.
+        """
+        rows = [r for r in rows if r.get("module") not in PAGE_BACKED_MODULES]
         g = self._auth_group
         child = g.get_first_child()
         while child is not None:

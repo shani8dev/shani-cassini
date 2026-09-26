@@ -630,11 +630,15 @@ def test_biometrics_page_without_fprintd_still_reports_the_other_methods(monkeyp
     assert tab._btn_enroll.is_sensitive() is False, \
         "a form that cannot work must not be left enabled"
 
-    # The rest of the page is still there, which is the point of the change.
+    # What is left is exactly the sign-in methods with no page of their own.
+    # Smartcard, security keys and Kerberos each got a page, so they are
+    # filtered out here rather than shown twice and left to drift apart.
     titles = _group_titles(tab._auth_group)
-    assert "Smartcard (PIV) login" in titles, titles
-    assert "Security key (FIDO2/U2F) login" in titles, titles
     assert "Face / webcam recognition" in titles, titles
+    assert "Iris (eye) recognition" in titles, titles
+    for gone in ("Smartcard (PIV) login", "Security key (FIDO2/U2F) login",
+                 "Kerberos login"):
+        assert gone not in titles, f"{gone} has a page of its own: {titles}"
 
 
 def _group_titles(group):

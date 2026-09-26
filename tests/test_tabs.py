@@ -95,7 +95,10 @@ class TestNotebook:
     """The sidebar lists every section, in order; pages build on demand."""
 
     EXPECTED = ["Overview", "Health", "System Info", "Drivers", "Secure Boot", "Encryption",
-                "Fingerprint", "Updates & Rollback", "Services", "Backup", "Maintenance",
+                "Fingerprint",
+        "Smartcard",
+        "Security Keys",
+        "Kerberos", "Updates & Rollback", "Services", "Backup", "Maintenance",
                 "Chronoa", "Fleet"]
 
     def test_sections(self):
@@ -307,8 +310,12 @@ class TestBiometricsNoPrivilegeEscalation:
     def test_biometrics_is_registered_in_the_security_group(self):
         from shani_cassini.notebook import SECTIONS, REQUIRES
         security = dict(SECTIONS)["Security"]
-        assert [p[1] for p in security] == ["secureboot", "encryption", "biometrics"]
-        assert security[-1][3] == "auth-fingerprint-symbolic"
+        assert [p[1] for p in security] == ["secureboot", "encryption", "biometrics",
+                                                    "smartcard", "securitykeys",
+                                                    "kerberos"]
+        # Fingerprint is no longer last: smartcard, security keys and Kerberos
+        # follow it, so its icon is asserted by position rather than by [-1].
+        assert security[2][3] == "auth-fingerprint-symbolic"
 
     def test_biometrics_page_is_not_gated_on_fprintd(self):
         """The page reports the other hardware-auth login methods too, and a

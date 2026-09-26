@@ -32,6 +32,26 @@ for an "is not installed" status page when its app is missing.
 | Chronoa | its GSettings (`org.shani.chronoa`, bound with `Gio.Settings.bind`), Ollama `/api/tags` |
 | Backup | `org.shani.backup` GSettings; opens Shani Backup |
 | Fleet | `pkexec shani-fleet-agent status` |
+| Smartcard | `pcsc_scan -n` (unprivileged); reads and edits `/etc/pam_pkcs11/subject_mapping` via `config_io` — `pam_pkcs11_state()`, `subject_mappings()`, `set_mapping()`, `remove_mapping()` |
+| Security Keys | reads/edits `~/.config/Yubico/pam_u2f.conf` (per-user, **never** privileged) and `/etc/security/pam_yubico.conf`; `u2f_config()`, `pam_yubico_config()`, `set_config_value()` |
+| Kerberos | reads/edits `/etc/krb5.conf`; `krb5_config()`, `krb5_set()`, plus `pam_stacks_loading()` to tell whether any stack actually loads `pam_krb5.so` |
+
+The three sign-in pages share a contract worth knowing before editing them:
+
+- **Refusals are values, not exceptions.** Every writer reports through
+  `done(error, note)`; a `ConfigRefused` must never cross into a GTK callback,
+  where GLib swallows it and the page just looks like it did nothing. Show the
+  data layer's own message verbatim — reworded, it sends the user to fix the
+  wrong thing.
+- **`config_io.py` edits single lines and refuses rather than re-renders.** It
+  is deliberately path-agnostic, so "a login stack can never be rewritten"
+  is enforced by AST gates over the callers, not by the engine.
+- **Device state is not ours.** `ykman` owns PIN, touch requirement and
+  credentials on the token; those pages point at it rather than reimplementing
+  it. `pam_u2f` 1.4.0 has no `touchauth` and no `verbose` key (checked against
+  its own `cfg.c`), so there is no file to write for "require a touch".
+- **An absent config is not an empty one.** No `pam_u2f.conf` means the module
+  is using its built-in defaults; render that, never invented values.
 
 polkit: Cassini ships **no policy of its own** — its `pkexec` calls use the
 system's rules in `shani-settings/.../99-shani.rules` (shani-deploy: any

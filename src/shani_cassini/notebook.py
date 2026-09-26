@@ -26,6 +26,9 @@ from shani_cassini.tabs.secureboot import SecureBootTab
 from shani_cassini.tabs.drivers import DriversTab
 from shani_cassini.tabs.encryption import EncryptionTab
 from shani_cassini.tabs.biometrics import BiometricsTab
+from shani_cassini.tabs.smartcard import SmartcardTab
+from shani_cassini.tabs.security_keys import SecurityKeysTab
+from shani_cassini.tabs.kerberos import KerberosTab
 from shani_cassini.tabs.maintenance import MaintenanceTab
 from shani_cassini.tabs.kernel import KernelTab
 logger = logging.getLogger(__name__)
@@ -55,6 +58,12 @@ SECTIONS = [
         (EncryptionTab, "encryption", "Encryption", "channel-secure-symbolic", "Disk encryption and TPM unlock"),
         (BiometricsTab, "biometrics", "Fingerprint", "auth-fingerprint-symbolic",
          "Fingerprint reader, and the fingers enrolled on it"),
+        (SmartcardTab, "smartcard", "Smartcard", "auth-smartcard-symbolic",
+         "Point a certificate at an account, so a card can sign you in"),
+        (SecurityKeysTab, "securitykeys", "Security Keys", "dialog-password-symbolic",
+         "FIDO2 security keys and Yubico one-time passwords"),
+        (KerberosTab, "kerberos", "Kerberos", "network-vpn-symbolic",
+         "Realm, domain mapping and credential cache"),
     ]),
     ("Updates", [
         (UpdatesTab, "updates", "Updates & Rollback", "view-refresh-symbolic",
