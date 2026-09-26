@@ -218,13 +218,50 @@ def tpm2_status(done) -> None:
 # so on a Shanios image the daemon is there and enabled - but a machine can
 # have it absent or stopped, and both are reported as such, never as "no
 # fingerprints" or "no reader".
+#
+# Everything below is transcribed from the installed daemon's own interface
+# description, /usr/share/dbus-1/interfaces/net.reactivated.Fprint.{Manager,
+# Device}.xml, and the call order from its reference client utils/enroll.c.
+# In particular there is no Enroll() and no Delete(): the Device interface has
+# exactly ten methods, and enrollment progress arrives as EnrollStatus
+# signals, not as a per-scan reply.
 FPRINTD_CLI = "fprintd-enroll"          # ships in /usr/sbin
 FPRINTD_BUS = "net.reactivated.Fprint"
 FPRINTD_PATH = "/net/reactivated/Fprint"
 FPRINTD_MANAGER = "net.reactivated.Fprint.Manager"
 FPRINTD_DEVICE = "net.reactivated.Fprint.Device"
 FPRINTD_PROPERTIES = "org.freedesktop.DBus.Properties"
+FPRINTD_ERROR = "net.reactivated.Fprint.Error."
 SBIN_DIRS = ("/usr/sbin", "/usr/local/sbin")
+
+# The ten names EnrollStart accepts (the XML's "Fingerprint names" list).
+# "any" is valid for VerifyStart but its own doc rejects it for EnrollStart.
+FINGER_NAMES = (
+    "left-thumb", "left-index-finger", "left-middle-finger", "left-ring-finger",
+    "left-little-finger", "right-thumb", "right-index-finger", "right-middle-finger",
+    "right-ring-finger", "right-little-finger",
+)
+
+# The empty username means "the user the client is running as", which is the
+# one form that provably never triggers fprintd's setusername polkit check
+# (utils/enroll.c passes it too, and the XML recommends it).
+FPRINTD_SELF_USER = ""
+
+# EnrollStatus(reason, done) result strings, from the XML. A reason Cassini
+# does not know is shown as fprintd sent it rather than guessed at.
+ENROLL_STATUS_TEXT = {
+    "enroll-completed": "Fingerprint stored",
+    "enroll-stage-passed": "Scan stored - scan the same finger again",
+    "enroll-retry-scan": "Scan not accepted - try again",
+    "enroll-swipe-too-short": "The scan was too short - swipe again",
+    "enroll-finger-not-centered": "The finger was not centered - try again",
+    "enroll-remove-and-retry": "Take the finger off the reader, then touch it again",
+    "enroll-data-full": "The reader has no space left for another finger",
+    "enroll-duplicate": "This finger is already enrolled",
+    "enroll-disconnected": "The reader was disconnected",
+    "enroll-failed": "The scan failed - try again",
+    "enroll-unknown-error": "fprintd reported an error it does not name",
+}
 
 # what an enrolled finger can actually unlock, per edition. Verified against
 # the packages, not guessed: the PAM service that makes a finger usable ships
@@ -237,11 +274,10 @@ EDITION_LOGIN = {
               "gdm ships /etc/pam.d/gdm-fingerprint, so an enrolled finger unlocks this session "
               "at the login screen. Settings - Users - Fingerprint Login lists the same fingers."),
     "plasma": ("Lock screen only, and it must be switched on",
-               "This edition logs in through Plasma's own login manager (plasmalogin), whose PAM "
-               "services never reference pam_fprintd, so the login screen cannot take a "
-               "fingerprint. kscreenlocker ships /usr/lib/pam.d/kde-fingerprint for the lock "
-               "screen, which must be enabled with: kwriteconfig6 --file kscreenlockerrc "
-               "--group Authenticators --key Fingerprint true"),
+               "The KDE login screen (SDDM) has no fingerprint support at all. kscreenlocker "
+               "ships /usr/lib/pam.d/kde-fingerprint for the lock screen, which must be enabled "
+               "with: kwriteconfig6 --file kscreenlockerrc --group Authenticators "
+               "--key Fingerprint true"),
     "cosmic": ("Not available on this edition",
                "cosmic-greeter ships no PAM fingerprint service, so an enrolled finger cannot "
                "unlock this session. The finger stays enrolled for the other things fprintd does."),
@@ -289,6 +325,11 @@ def edition_login(profile: str) -> tuple[str, str]:
     return entry
 
 
+def enroll_status_text(reason: str) -> str:
+    """What an EnrollStatus reason means, or fprintd's own words if unknown."""
+    return ENROLL_STATUS_TEXT.get(str(reason), str(reason))
+
+
 def _system_bus(ready: Callable[[Optional[Gio.DBusConnection], str], None]) -> None:
     """ready(connection_or_None, error_text) on the main loop."""
     def got(_bus, res, _data=None):
@@ -302,23 +343,66 @@ def _system_bus(ready: Callable[[Optional[Gio.DBusConnection], str], None]) -> N
     Gio.bus_get(Gio.BusType.SYSTEM, None, got, None)
 
 
+def _s(value: str) -> GLib.Variant:
+    """A string argument - the shape most of the Device methods take."""
+    return GLib.Variant("s", str(value))
+
+
+def _args(params: list) -> GLib.Variant:
+    """A D-Bus method's arguments as the one tuple a call body is.
+
+    The body is a tuple of the declared parameter types: "(s)" for a single
+    string, "()" for a method that takes none. Wrapping the arguments in a
+    variant instead would be rejected by the daemon as InvalidArgs.
+
+    The signature comes from the variants, but the values handed to the
+    Variant constructor are their unpacked selves: the constructor reads
+    through them, so passing the variants themselves raises
+    "Must be string, not Variant"."""
+    if not params:
+        return GLib.Variant("()", ())
+    return GLib.Variant("(" + "".join(p.get_type_string() for p in params) + ")",
+                        tuple(p.unpack() for p in params))
+
+
+class _FailedCall:
+    """Stands in for a reply that never arrived.
+
+    D-Bus reports a refused or errored call by raising out of call_finish, not
+    by returning a message. _unpack already converts a GLib.Error from
+    get_reply() into the ValueError its callers handle, so re-raising the same
+    error from a stand-in keeps one error path instead of two.
+    """
+
+    def __init__(self, err: GLib.Error) -> None:
+        self._err = err
+
+    def get_reply(self):
+        raise self._err
+
+
+def _reply_or_error(conn, res):
+    try:
+        return conn.call_finish(res)
+    except GLib.Error as e:
+        return _FailedCall(e)
+
+
 def _dbus_call(conn: Gio.DBusConnection, path: str, iface: str, method: str,
                params: list, got: Callable[[Gio.AsyncResult, Gio.DBusConnection], None],
                reply_type: Optional[str] = "(v)") -> Gio.Cancellable:
     """One method call on a bus we already hold; got() runs on the main loop.
 
-    params are single-value Variants; conn.call wants them as the argument
-    tuple, or None for a method that takes none. reply_type=None for the
-    methods that return nothing (EnrollStart, EnrollStop, Delete) - asking for
-    a "(v)" reply there is an error, not an empty one."""
-    if params:
-        sig = "(" + "".join(p.get_type_string() for p in params) + ")"
-        args = GLib.Variant(sig, tuple(params))
-    else:
-        args = GLib.Variant("()", ())
-    return conn.call(FPRINTD_BUS, path, iface, method, args,
+    reply_type=None for the seven methods that return nothing (Claim,
+    Release, EnrollStart, EnrollStop, DeleteEnrolledFinger(s), VerifyStart,
+    VerifyStop) - asking for a "(v)" reply there is an error, not an empty
+    one. ALLOW_INTERACTIVE_AUTHORIZATION is what lets fprintd raise polkit's
+    own dialog instead of failing the call outright.
+    """
+    return conn.call(FPRINTD_BUS, path, iface, method, _args(params),
                      GLib.VariantType(reply_type) if reply_type else None,
-                     Gio.DBusCallFlags.NONE, 25000, None, lambda r, c: got(r, c))
+                     Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION, 25000, None,
+                     lambda _conn, res, _d=None: got(_reply_or_error(_conn, res), _conn))
 
 
 def _unpack(message: Gio.DBusMessage) -> list:
@@ -329,15 +413,6 @@ def _unpack(message: Gio.DBusMessage) -> list:
         return list(reply.unpack())
     except (GLib.Error, TypeError, ValueError) as e:
         raise ValueError(str(e)) from e
-
-
-def _properties(unpacked: list) -> dict:
-    """A GetAll reply: the a{sv} is the single argument of the (v) reply."""
-    values = _plain(unpacked[0]) if unpacked else {}
-    if not isinstance(values, dict):
-        logger.warning("fprintd: GetAll answered %r, not a{sv}", type(values).__name__)
-        return {}
-    return {str(k): _plain(v) for k, v in values.items()}
 
 
 def _plain(value):
@@ -351,17 +426,39 @@ def _plain(value):
     return unpack() if callable(unpack) else value
 
 
+def _properties(unpacked: list) -> dict:
+    """A GetAll reply: the a{sv} is the single argument of the (v) reply."""
+    values = _plain(unpacked[0]) if unpacked else {}
+    if not isinstance(values, dict):
+        logger.warning("fprintd: GetAll answered %r, not a{sv}", type(values).__name__)
+        return {}
+    return {str(k): _plain(v) for k, v in values.items()}
+
+
+def fprintd_error(err: str) -> str:
+    """The net.reactivated.Fprint.Error.* name in a D-Bus error, or "".
+
+    fprintd reports "no fingers enrolled for this user" as
+    NoEnrolledPrints, which is an answer rather than a failure."""
+    found = re.search(r"net\.reactivated\.Fprint\.Error\.\w+", err or "")
+    return found.group(0) if found else ""
+
+
 def fprintd_status(done: Callable[[Optional[dict], str], None], timeout_s: float = 6.0) -> None:
-    """Ask fprintd for the reader and the fingers enrolled on it.
+    """Ask fprintd for the reader and the fingers enrolled on the caller.
 
     done(status_or_None, error_text) on the main loop. status is
-    {"daemon": bool, "device_present": bool, "device_name": str, "driver": str,
-    "enabled": bool|None, "action": str, "path": str, "fingers": [{uid,
-    nickname, finger, state}]}. A daemon that cannot be reached is
-    (None, error) - that is the difference between "no fingerprints are
-    enrolled" and "nobody answered", and the page must not confuse them.
-    timeout_s bounds the whole chain: a reader that stops answering mid-call
-    must not leave the page spinning.
+    {"daemon": bool, "device_present": bool, "path": str, "name": str,
+    "scan_type": str, "num_enroll_stages": int|None, "fingers": [str]}. A
+    reader is present exactly when GetDevices returned at least one path -
+    the Device interface has no DevicePresent property, and its five
+    properties (name, num-enroll-stages, scan-type, finger-present,
+    finger-needed) are all there is to read.
+
+    A daemon that cannot be reached is (None, error): that is the difference
+    between "no fingerprints are enrolled" and "nobody answered", and the
+    page must not confuse them. timeout_s bounds the whole chain, so a reader
+    that stops answering mid-call cannot leave the page spinning.
     """
     state = {"settled": False}
     guard = [0]
@@ -392,115 +489,177 @@ def fprintd_status(done: Callable[[Optional[dict], str], None], timeout_s: float
             except ValueError as e:
                 finish(None, f"fprintd did not answer: {e}")
                 return
-            _fprintd_device(conn, paths, finish)
+            if not paths:
+                finish({"daemon": True, "device_present": False, "path": "", "name": "",
+                        "scan_type": "", "num_enroll_stages": None, "fingers": []})
+                return
+            _fprintd_device(conn, paths[0], finish)
         _dbus_call(conn, FPRINTD_PATH, FPRINTD_MANAGER, "GetDevices", [], devices)
 
     _system_bus(status_step)
 
 
-def _fprintd_device(conn, paths: list[str], finish) -> None:
-    """The first device's properties + its enrolled fingers, or the honest
-    "daemon is up, no reader" answer when GetDevices came back empty."""
-    if not paths:
-        finish({"daemon": True, "device_present": False, "device_name": "", "driver": "",
-                "enabled": None, "action": "", "path": "", "fingers": []})
-        return
-    path = paths[0]
-
+def _fprintd_device(conn, path: str, finish) -> None:
+    """One device's five properties and the fingers enrolled on the caller."""
     def props(res, _c):
         try:
             raw = _unpack(res)
         except ValueError as e:
             finish(None, f"fprintd did not answer: {e}")
             return
-        # GetAll returns a{sv}
-        props_ = _properties(raw)
-        _fprintd_fingers(conn, path, props_, finish)
-    _dbus_call(conn, path, FPRINTD_PROPERTIES, "GetAll", [GLib.Variant("s", FPRINTD_DEVICE)], props)
+        values = _properties(raw)
 
-
-def _fprintd_fingers(conn, path: str, props: dict, finish) -> None:
-    def fingers(res, _c):
-        try:
-            raw = _unpack(res)
-        except ValueError as e:
-            finish(None, f"fprintd did not answer: {e}")
-            return
-        # a(ssuss): finger, nickname, uid, scan type, state, date added
-        parsed = []
-        for entry in raw:
+        def fingers(res2, _c2):
             try:
-                finger, nickname, uid, _scan, state = entry[0], entry[1], int(entry[2]), entry[3], entry[4]
-            except (TypeError, ValueError, IndexError):
-                logger.warning("fprintd: unexpected ListEnrolledFingers entry %r", entry)
-                continue
-            parsed.append({"finger": str(finger), "nickname": str(nickname), "uid": uid,
-                           "state": str(state)})
-        finish({"daemon": True,
-                "device_present": bool(props.get("DevicePresent")),
-                "device_name": str(props.get("Name") or ""),
-                "driver": str(props.get("Driver") or ""),
-                "enabled": props.get("DeviceEnabled"),
-                "action": str(props.get("Action") or ""),
-                "path": path,
-                "fingers": parsed})
-    _dbus_call(conn, path, FPRINTD_DEVICE, "ListEnrolledFingers",
-               [GLib.Variant("u", int(os.getuid()))], fingers)
+                raw2 = _unpack(res2)
+            except ValueError as e:
+                # NoEnrolledPrints is fprintd's way of saying "none yet"
+                if fprintd_error(str(e)).endswith("NoEnrolledPrints"):
+                    finish(_status(path, values, []))
+                    return
+                finish(None, f"fprintd did not answer: {e}")
+                return
+            finish(_status(path, values, [str(x) for x in (raw2[0] if raw2 else [])]))
+        _dbus_call(conn, path, FPRINTD_DEVICE, "ListEnrolledFingers",
+                   [_s(FPRINTD_SELF_USER)], fingers)
+    _dbus_call(conn, path, FPRINTD_PROPERTIES, "GetAll", [_s(FPRINTD_DEVICE)], props)
+
+
+def _status(path: str, values: dict, fingers: list) -> dict:
+    stages = values.get("num-enroll-stages")
+    return {"daemon": True,
+            "device_present": True,
+            "path": path,
+            "name": str(values.get("name") or ""),
+            "scan_type": str(values.get("scan-type") or ""),
+            "num_enroll_stages": int(stages) if isinstance(stages, int) else None,
+            "fingers": fingers}
 
 
 def fprintd_properties(path: str, done: Callable[[Optional[dict], str], None]) -> None:
-    """One device's net.reactivated.fprint.Device properties (Name, Driver,
-    DevicePresent, DeviceEnabled, Action). Enrollment watches Action, which is
-    the only honest way to know a scan is still being asked for."""
+    """One device's properties (name, num-enroll-stages, scan-type,
+    finger-present, finger-needed). finger-present and finger-needed are the
+    only honest way to show whether a finger is actually on the reader."""
     def props(res, _c):
         try:
-            raw = _unpack(res)
+            values = _properties(_unpack(res))
         except ValueError as e:
             done(None, f"fprintd did not answer: {e}")
             return
-        done(_properties(raw), "")
+        done(values, "")
     _system_bus(lambda conn, err: done(None, err) if conn is None
-                else _dbus_call(conn, path, FPRINTD_PROPERTIES, "GetAll", [GLib.Variant("s", FPRINTD_DEVICE)], props))
+                else _dbus_call(conn, path, FPRINTD_PROPERTIES, "GetAll", [_s(FPRINTD_DEVICE)], props))
 
 
-def _fprintd_action(path: str, method: str, params: list,
-                    done: Callable[[Optional[list], str], None], note: str) -> None:
-    """EnrollStart / Enroll / EnrollStop / Delete. `method` names a
-    net.reactivated.Fprint.Device method; done(undpacked_reply_or_None, error)."""
+def fprintd_action(path: str, method: str, params: list,
+                   done: Callable[[Optional[list], str], None], note: str = "") -> None:
+    """Call one of the Device methods that return nothing.
+
+    method must be a real one: Claim, Release, EnrollStart, EnrollStop,
+    DeleteEnrolledFinger, DeleteEnrolledFingers, DeleteEnrolledFingers2,
+    VerifyStart or VerifyStop. done(undpacked_reply_or_None, error)."""
     def got(res, _c):
         try:
             done(_unpack(res), "")
         except ValueError as e:
-            logger.warning("fprintd %s %s: %s", note, method, e)
+            logger.warning("fprintd %s %s: %s", note or method, method, e)
             done(None, f"fprintd did not answer: {e}")
-    # EnrollStart, EnrollStop and Delete return nothing; only Enroll answers.
-    reply_type = "(v)" if method == "Enroll" else None
     _system_bus(lambda conn, err: done(None, err or "the system bus is not available")
                 if conn is None
-                else _dbus_call(conn, path, FPRINTD_DEVICE, method, params, got, reply_type))
+                else _dbus_call(conn, path, FPRINTD_DEVICE, method, params, got, None))
 
 
-def fprintd_enroll_start(path: str, nickname: str,
-                         done: Callable[[Optional[list], str], None]) -> None:
-    """EnrollStart(nickname): fprintd claims the reader and sets Action to
-    "enroll". From here Enroll() is called once per accepted scan."""
-    _fprintd_action(path, "EnrollStart", [GLib.Variant("s", nickname)], done, "enroll-start")
+def fprintd_claim(path: str, done) -> None:
+    """Claim(username): take exclusive use of the reader.
+
+    Required before EnrollStart, whose own doc says so and which fails with
+    ClaimDevice if you skip it. fprintd checks the verify and enroll polkit
+    actions for a Claim, both of which shani-settings' 99-shani.rules grants.
+    An empty username means the calling user and skips the setusername check.
+    """
+    fprintd_action(path, "Claim", [_s(FPRINTD_SELF_USER)], done, "claim")
 
 
-def fprintd_enroll(path: str, uid: int,
-                   done: Callable[[Optional[list], str], None]) -> None:
-    """Enroll(uid) -> (accepted, reason). False is a normal answer (a scan
-    that was too fast, or a finger that is already enrolled), not an error."""
-    _fprintd_action(path, "Enroll", [GLib.Variant("u", int(uid))], done, "enroll")
+def fprintd_release(path: str, done) -> None:
+    """Release(): give the reader back. A claimed reader is unusable by
+    anything else, including the lock screen, so every path out of enrollment
+    must call this."""
+    fprintd_action(path, "Release", [], done, "release")
 
 
-def fprintd_enroll_stop(path: str, done: Callable[[Optional[list], str], None]) -> None:
-    """EnrollStop(): always called, on success, on cancel and on timeout -
-    a reader left mid-enroll stays claimed and unusable."""
-    _fprintd_action(path, "EnrollStop", [], done, "enroll-stop")
+def fprintd_enroll_start(path: str, finger: str, done) -> None:
+    """EnrollStart(finger_name): start enrolling. finger must be one of
+    FINGER_NAMES - the daemon rejects anything else, and "any" among them.
+    Progress arrives as EnrollStatus signals, not as a reply."""
+    fprintd_action(path, "EnrollStart", [_s(finger)], done, "enroll-start")
 
 
-def fprintd_delete(path: str, uid: int,
-                   done: Callable[[Optional[list], str], None]) -> None:
-    """Delete(uid): remove one enrolled finger (polkit asks for the password)."""
-    _fprintd_action(path, "Delete", [GLib.Variant("u", int(uid))], done, "delete")
+def fprintd_enroll_stop(path: str, done) -> None:
+    """EnrollStop(): end an enrollment, however it ends. A reader left
+    mid-enrollment stays claimed and busy."""
+    fprintd_action(path, "EnrollStop", [], done, "enroll-stop")
+
+
+def fprintd_delete_finger(path: str, finger: str, done) -> None:
+    """DeleteEnrolledFinger(finger_name): forget one finger (polkit asks for
+    the password)."""
+    fprintd_action(path, "DeleteEnrolledFinger", [_s(finger)],
+                   done, "delete-enrolled-finger")
+
+
+class EnrollStatusSubscription:
+    """A live EnrollStatus signal subscription that can be dropped at any
+    moment - including before the bus connection has arrived, which is why
+    the id may still be unknown when it is dropped."""
+
+    def __init__(self) -> None:
+        self.conn = None
+        self.id = None
+        self.dropped = False
+
+
+def fprintd_subscribe_enroll_status(path: str, on_status) -> EnrollStatusSubscription:
+    """Watch the device's EnrollStatus(reason, done) signal.
+
+    on_status(reason_text, done) is called on the main loop. The caller must
+    hand the returned subscription to fprintd_unsubscribe: a page that keeps
+    one open keeps calling back after enrollment is over. Subscribe before
+    EnrollStart, as fprintd's own client does - the first signal can arrive
+    as soon as EnrollStart returns.
+    """
+    sub = EnrollStatusSubscription()
+
+    def connect(conn, err):
+        if conn is None:
+            logger.warning("fprintd: no bus to watch EnrollStatus on: %s", err)
+            return
+        sub.conn = conn
+        sub.id = conn.signal_subscribe(
+            FPRINTD_BUS, FPRINTD_DEVICE, "EnrollStatus", path, None,
+            Gio.DBusSignalFlags.NONE, lambda _c, _s, _m, _p, params: _emit(on_status, params))
+        if sub.dropped:
+            # dropped while the bus connection was still on its way
+            sub.conn.signal_unsubscribe(sub.id)
+            sub.id = None
+    _system_bus(connect)
+    return sub
+
+
+def _emit(on_status, params) -> None:
+    """EnrollStatus's (reason, done) body, unpacked, straight onto the loop."""
+    try:
+        reason, done = params.unpack()
+    except (GLib.Error, TypeError, ValueError) as e:
+        logger.warning("fprintd: unreadable EnrollStatus signal: %s", e)
+        return
+    on_status(str(reason), bool(done))
+
+
+def fprintd_unsubscribe(sub) -> None:
+    """Drop an EnrollStatus subscription, now or as soon as it exists."""
+    if sub is None:
+        return
+    sub.dropped = True
+    if sub.conn is not None and sub.id is not None:
+        sub.conn.signal_unsubscribe(sub.id)
+        sub.id = None

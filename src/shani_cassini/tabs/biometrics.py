@@ -3,24 +3,29 @@
 Everything here comes from fprintd over D-Bus
 (``net.reactivated.fprint``), which is the same interface ``pam_fprintd``
 itself talks to, so what the page says is what a login attempt would see.
+The calls are the ten methods the daemon's own interface description lists,
+in the order its reference client uses them: Claim, EnrollStart, wait for
+EnrollStatus, EnrollStop, Release. There is no per-scan Enroll() call and no
+Delete(): the Device interface has neither, and it has no Action or
+DevicePresent property either - a reader is attached exactly when GetDevices
+returns a path.
+
 No pkexec and no helper binary: ``shani-settings``' 99-shani.rules already
 grants ``net.reactivated.fprint.device.enroll`` / ``.delete`` as
-``polkit.Result.AUTH_SELF``, so fprintd asks polkit over D-Bus and the
-desktop password dialog appears on its own - exactly how ``services.py``
-drives systemctl. (Cassini ships no policy of its own on purpose: an
-``org.freedesktop.policykit.exec.path`` action would override the system
-rules for every caller.)
+``polkit.Result.AUTH_SELF`` and ``.verify`` / ``.identify`` as ``YES``, so
+fprintd asks polkit over D-Bus and the desktop password dialog appears on its
+own - exactly how ``services.py`` drives systemctl. (Cassini ships no policy
+of its own on purpose: an ``org.freedesktop.policykit.exec.path`` action
+would override the system rules for every caller.)
 
 The page never guesses. A daemon that does not answer, a reader that is not
-attached and a reader with nothing enrolled are three different answers,
-and only the last one is "no fingerprints".
+attached and a reader with nothing enrolled are three different answers, and
+only the last one is "no fingerprints".
 """
 
 from __future__ import annotations
 
 import logging
-import os
-import time
 
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
@@ -28,12 +33,10 @@ from shani_cassini import system_status as ss
 
 logger = logging.getLogger(__name__)
 
-# How often the enrollment loop looks at fprintd's Action property, and how
-# long it may go on: a person who walks away mid-enrollment must not leave
-# the reader claimed (a claimed reader is unusable by anything else,
-# including the lock screen).
-ENROLL_POLL_MS = 700
-ENROLL_TIMEOUT_S = 90
+# How long one enrollment may run before the page stops it. A person who walks
+# away must not leave the reader claimed: a claimed reader is unusable by
+# anything else, including the lock screen, until Release().
+ENROLL_TIMEOUT_S = 120
 
 # state -> (icon, css class), as in health.py's STATUS
 STATE_ICONS = {
@@ -43,8 +46,8 @@ STATE_ICONS = {
     "unknown": ("dialog-information-symbolic", None),
 }
 
-FINGERS_HELP = ("Each one is a scan template, not an image. Deleting one asks for your "
-                "password through polkit.")
+FINGERS_HELP = ("Each one is a stored scan of that finger, not an image. Deleting one asks for "
+                "your password through polkit.")
 
 
 def _row(title: str, subtitle: str = "", icon: str | None = None,
@@ -81,7 +84,6 @@ class BiometricsTab(Gtk.Box):
 
         self._status: dict | None = None
         self._enroll: dict | None = None
-        self._uid = os.getuid()
         self._icons: dict[Adw.ActionRow, Gtk.Image] = {}
 
         self._build()
@@ -110,11 +112,15 @@ class BiometricsTab(Gtk.Box):
 
         add = Adw.PreferencesGroup(
             title="Add a Fingerprint",
-            description="Scan the same finger several times as asked. fprintd asks polkit for "
-                        "your password once, then the reader belongs to it until you cancel or "
-                        "it finishes.")
-        self._entry_name = Adw.EntryRow(title="Name this finger", text="Right index finger")
-        add.add(self._entry_name)
+            description="fprintd claims the reader for you, so nothing else can use it until "
+                        "this finishes. It asks for your password once, then it waits for the "
+                        "scans.")
+        # EnrollStart takes one of fprintd's ten finger names and rejects
+        # anything else ("any" included), so this offers exactly those.
+        self._picker = Adw.ComboRow(
+            title="Finger", model=Gtk.StringList.new([_finger_label(f) for f in ss.FINGER_NAMES]))
+        self._picker.set_selected(list(ss.FINGER_NAMES).index("right-index-finger"))
+        add.add(self._picker)
         self._row_enroll = _row("Enroll", "Needs a reader")
         self._btn_enroll = Gtk.Button(label="Enroll…", valign=Gtk.Align.CENTER, sensitive=False)
         self._btn_enroll.add_css_class("suggested-action")
@@ -152,11 +158,10 @@ class BiometricsTab(Gtk.Box):
         g = Adw.PreferencesGroup(title="Enrolled Fingers", visible=bool(fingers),
                                  description=FINGERS_HELP)
         for f in fingers or []:
-            r = _row(_esc(f["nickname"]),
-                     f"{_esc(_finger_label(f['finger']))} · {_esc(f['state'])}")
+            r = _row(_esc(_finger_label(f)), "Enrolled on this device")
             b = Gtk.Button(label="Delete…", valign=Gtk.Align.CENTER)
             b.add_css_class("destructive-action")
-            b.connect("clicked", lambda _b, uid=f["uid"]: self._delete(uid))
+            b.connect("clicked", lambda _b, finger=f: self._delete(finger))
             r.add_suffix(b)
             g.add(r)
         return g
@@ -196,10 +201,11 @@ class BiometricsTab(Gtk.Box):
             self._replace_fingers(None)
             return
 
-        name = _esc(status["device_name"] or "Unnamed reader")
-        driver = _esc(status["driver"] or "driver not reported")
-        off = "" if status["enabled"] is not False else " · switched off in fprintd"
-        self._set(self._row_device, "Reader", f"{name} · {driver}{off}", "ok")
+        name = _esc(status["name"] or "Unnamed reader")
+        scan = _esc(status["scan_type"] or "scan type not reported")
+        stages = status["num_enroll_stages"]
+        how = f" · {stages} scans per finger" if isinstance(stages, int) and stages > 0 else ""
+        self._set(self._row_device, "Reader", f"{name} · {scan}{how}", "ok")
 
         fingers = status["fingers"]
         enrolled = len(fingers)
@@ -253,6 +259,12 @@ class BiometricsTab(Gtk.Box):
         ss.deploy_status(got)
 
     # ------------------------------------------------------------ enrolling
+    def _chosen_finger(self) -> str:
+        index = self._picker.get_selected()
+        if not 0 <= index < len(ss.FINGER_NAMES):
+            return ""
+        return ss.FINGER_NAMES[index]
+
     def _start_enroll(self) -> None:
         if self._enroll is not None:
             return
@@ -260,79 +272,86 @@ class BiometricsTab(Gtk.Box):
             self._toast("No reader to enroll on - attach one first")
             return
         path = self._status.get("path") or ""
-        nickname = self._entry_name.get_text().strip()
-        if not path or not nickname:
-            self._toast("The reader or the finger's name is missing")
+        finger = self._chosen_finger()
+        if not path or not finger:
+            self._toast("The reader or the finger is missing")
             return
-        self._enroll = {"path": path, "nickname": nickname, "busy": False, "scans": 0,
-                        "deadline": time.monotonic() + ENROLL_TIMEOUT_S, "timer": 0}
-        self._enrolling(True, "Asking fprintd to start…")
-        ss.fprintd_enroll_start(path, nickname, self._on_enroll_start)
+        self._enroll = {"path": path, "finger": finger, "claimed": False, "started": False,
+                        "stages": 0, "busy": False, "sub": None, "timer": 0}
+        self._enrolling(True, "Asking fprintd for the reader…")
+        ss.fprintd_claim(path, self._on_claimed)
 
-    def _on_enroll_start(self, _res, err: str) -> None:
+    def _on_claimed(self, _res, err: str) -> None:
         if self._enroll is None:
             return
         if err:
-            self._end_enroll(err)
+            self._end_enroll(self._claim_error(err))
             return
-        self._enrolling(True, f"Touch the reader with {_esc(self._enroll['nickname'])}")
-        self._enroll["timer"] = GLib.timeout_add(ENROLL_POLL_MS, self._enroll_tick)
+        e = self._enroll
+        e["claimed"] = True
+        # Subscribe before EnrollStart: the first signal can arrive as soon as
+        # it returns, exactly as fprintd's own client does.
+        e["sub"] = ss.fprintd_subscribe_enroll_status(e["path"], self._on_enroll_status)
+        self._enrolling(True, "Starting…")
+        ss.fprintd_enroll_start(e["path"], e["finger"], self._on_enrolled)
 
-    def _enroll_tick(self) -> bool:
-        """One step of the loop: read fprintd's Action, and scan while it says
-        "enroll". Returns False to drop the timeout - the only ways out are a
-        finished, a cancelled and a timed-out enrollment, so the loop cannot
-        outlive the page."""
+    def _on_enrolled(self, _res, err: str) -> None:
+        """EnrollStart's own answer: no per-scan reply exists, so all progress
+        comes from EnrollStatus from here on."""
+        if self._enroll is None:
+            return
+        if err:
+            self._end_enroll(self._start_error(err))
+            return
+        self._enroll["started"] = True
+        self._enrolling(True, f"Touch the reader with your {_esc(_finger_label(self._enroll['finger']))}")
+        self._enroll["timer"] = GLib.timeout_add_seconds(ENROLL_TIMEOUT_S, self._enroll_deadline)
+
+    def _enroll_deadline(self) -> bool:
+        if self._enroll is not None:
+            self._enroll["timer"] = 0
+            self._end_enroll(f"No completed scan in {ENROLL_TIMEOUT_S} seconds - "
+                             f"enrollment was stopped")
+        return False
+
+    def _on_enroll_status(self, reason: str, done: bool) -> None:
         e = self._enroll
         if e is None:
-            return False
-        if time.monotonic() > e["deadline"]:
-            e["timer"] = 0        # this source dies with this return
-            self._end_enroll(f"No scan for {ENROLL_TIMEOUT_S} seconds - enrollment was stopped")
-            return False
-        if e["busy"]:
-            return True           # a call is in flight; its callback re-arms us
-        e["busy"] = True
-        ss.fprintd_properties(e["path"], self._on_action)
-        return True
+            return
+        if reason in ("enroll-stage-passed", "enroll-completed"):
+            e["stages"] += 1
+        if done:
+            ok = reason == "enroll-completed"
+            self._end_enroll("Fingerprint stored" if ok
+                             else f"Enrollment did not finish: {ss.enroll_status_text(reason)}")
+            return
+        self._show_progress(reason)
 
-    def _on_action(self, props, err: str) -> None:
+    def _show_progress(self, reason: str) -> None:
+        """The signal's own words, plus the two live properties that say whether
+        a finger is on the reader right now."""
+        e = self._enroll
+        text = ss.enroll_status_text(reason)
+        stages = self._status.get("num_enroll_stages") if self._status else None
+        if isinstance(stages, int) and stages > 0 and e["stages"]:
+            text = f"({e['stages']}/{stages}) {text}"
+        self._row_enroll.set_subtitle(_esc(text))
+        if e["busy"]:
+            return
+        e["busy"] = True
+        ss.fprintd_properties(e["path"], self._on_live)
+
+    def _on_live(self, props, err: str) -> None:
         e = self._enroll
         if e is None:
             return
         e["busy"] = False
         if err or props is None:
-            self._end_enroll(err or "fprintd did not answer")
             return
-        action = str(props.get("Action") or "")
-        if action != "enroll":
-            # fprintd clears Action once the last scan is stored (FingerAdded)
-            self._end_enroll("Enrollment finished" if action == "" and e["scans"]
-                             else "fprintd stopped asking for scans")
-            return
-        self._enrolling(True, f"Touch the reader with {_esc(e['nickname'])}")
-        ss.fprintd_enroll(e["path"], self._uid, self._on_enrolled)
-
-    def _on_enrolled(self, res, err: str) -> None:
-        e = self._enroll
-        if e is None:
-            return
-        e["busy"] = False
-        if err:
-            self._end_enroll(err)
-            return
-        # Enroll() -> (bs), one argument of the reply, so the unpacked value is
-        # [(accepted, reason)]. A rejected scan is a normal answer, not a
-        # failure: the loop simply asks again.
-        reply = res[0] if res else None
-        accepted = bool(reply[0]) if reply else False
-        reason = str(reply[1]) if reply and len(reply) > 1 else ""
-        if accepted:
-            e["scans"] += 1
-            self._enrolling(True,
-                            f"Scan stored ({e['scans']}) - lift your finger and touch it again")
-        else:
-            self._enrolling(True, f"Scan not accepted{': ' + _esc(reason) if reason else ''}")
+        if props.get("finger-present"):
+            self._row_enroll.set_subtitle(f"{self._row_enroll.get_subtitle()} · finger detected")
+        elif props.get("finger-needed"):
+            self._row_enroll.set_subtitle(f"{self._row_enroll.get_subtitle()} · waiting for a finger")
 
     def cancel_enroll(self) -> None:
         if self._enroll is None:
@@ -340,15 +359,33 @@ class BiometricsTab(Gtk.Box):
         self._end_enroll("Enrollment cancelled - nothing was changed")
 
     def _end_enroll(self, text: str) -> None:
+        """Every way out of enrollment goes through here: stop the scans, drop
+        the signal subscription and give the reader back, in that order, each
+        step only if the previous one actually ran."""
         e, self._enroll = self._enroll, None
         self._enrolling(False)
         if e is None:
             return
         if e["timer"]:
             GLib.source_remove(e["timer"])
-        # EnrollStop on every path: a reader left mid-enroll stays claimed and
-        # unusable by the lock screen too.
-        ss.fprintd_enroll_stop(e["path"], lambda _r, _err: self._enroll_finished(text))
+        ss.fprintd_unsubscribe(e["sub"])
+        if not e["claimed"]:
+            self._enroll_finished(text)
+            return
+        if not e["started"]:
+            ss.fprintd_release(e["path"], lambda _r, err: self._enroll_finished(
+                self._with_problem(text, err)))
+            return
+        ss.fprintd_enroll_stop(e["path"],
+                               lambda _r, err: self._release(e, self._with_problem(text, err)))
+
+    def _release(self, e: dict, text: str) -> None:
+        ss.fprintd_release(e["path"], lambda _r, err: self._enroll_finished(
+            self._with_problem(text, err)))
+
+    @staticmethod
+    def _with_problem(text: str, err: str) -> str:
+        return f"{text} - fprintd could not close the reader: {err}" if err else text
 
     def _enroll_finished(self, text: str) -> None:
         self._toast(text)
@@ -357,7 +394,7 @@ class BiometricsTab(Gtk.Box):
     def _enrolling(self, on: bool, message: str | None = None) -> None:
         self._btn_enroll.set_visible(not on)
         self._btn_cancel.set_visible(on)
-        self._entry_name.set_sensitive(not on)
+        self._picker.set_sensitive(not on)
         if message is not None:
             self._row_enroll.set_subtitle(message)
             return
@@ -365,11 +402,27 @@ class BiometricsTab(Gtk.Box):
             return
         has_reader = self._status is not None and bool(self._status.get("device_present"))
         self._row_enroll.set_subtitle("Needs a reader" if not has_reader
-                                      else "Scan the same finger several times as asked")
+                                      else "Scan the same finger as often as fprintd asks")
         self._set_enrollable(has_reader)
 
+    def _claim_error(self, err: str) -> str:
+        if "PermissionDenied" in err or "Not Authorized" in err:
+            return "Authorization was cancelled"
+        if "AlreadyInUse" in err:
+            return "Another program is using the reader"
+        return f"Could not take the reader: {err}"
+
+    def _start_error(self, err: str) -> str:
+        if "ClaimDevice" in err:
+            return "fprintd did not hand over the reader"
+        if "InvalidFingername" in err:
+            return "fprintd does not accept that finger"
+        if "AlreadyInUse" in err:
+            return "Another program is using the reader"
+        return f"Could not start enrolling: {err}"
+
     # -------------------------------------------------------------- deleting
-    def _delete(self, uid: int) -> None:
+    def _delete(self, finger: str) -> None:
         status = self._status
         if status is None or not status.get("path"):
             self._toast("fprintd did not answer - nothing was deleted")
@@ -378,9 +431,9 @@ class BiometricsTab(Gtk.Box):
 
         def done(_res, err):
             self._set_enrollable(bool(status.get("device_present")))
-            self._toast(err if err else "The finger was deleted")
+            self._toast(err if err else f"{_finger_label(finger)} was deleted")
             self.refresh()
-        ss.fprintd_delete(status["path"], uid, done)
+        ss.fprintd_delete_finger(status["path"], finger, done)
 
     def _toast(self, text: str) -> None:
         self._toasts.add_toast(Adw.Toast(title=GLib.markup_escape_text(text), timeout=6))
