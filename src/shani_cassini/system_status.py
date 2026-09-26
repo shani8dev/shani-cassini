@@ -228,6 +228,141 @@ def tpm2_status(done) -> None:
     run_json(["pkexec", "gen-efi", "tpm2-status", "--json"], done)
 
 
+# --- running a tool that lives in an sbin directory -----------------------
+#
+# On Arch `btrfs`, `ausearch` and `smartctl` install into /usr/sbin, which a
+# desktop session's PATH leaves out, so have() - and therefore run_json() -
+# calls an installed tool "not installed" on a perfectly working machine.
+# have_sbin() has always known this, and one page solved it with a private
+# helper; this is that helper, shared, so the next page does not grow its own
+# copy. Two things are needed, not one: resolving the name, and then invoking
+# the resolved path, because a bare argv[0] that which() cannot find would
+# also fail to spawn. Presence without the path is the half-fix that still
+# shows an empty page.
+#
+# run_json, run_json_lines, have and have_sbin are left exactly as they are:
+# they are the contract every existing page and its tests already depend on.
+# SBIN_DIRS, the directory list searched here, is defined further down with the
+# fprintd constants - this section is where the missing-sbin-PATH problem was
+# first met. This block also sits above that section on purpose: everything
+# after FPRINTD_CLI is asserted to spawn no process at all.
+
+
+def _tool_path(cmd: str) -> Optional[str]:
+    """The absolute path of cmd, from PATH or the sbin directories, or None.
+
+    shutil.which() first, because PATH is where an override belongs - a user
+    or an image that shadows a tool must keep winning. The sbin fallback
+    mirrors have_sbin()'s search, and reuses SBIN_DIRS so a test can point it
+    at a temp directory.
+    """
+    found = shutil.which(cmd)
+    if found is not None:
+        return found
+    base = os.path.basename(cmd)
+    for directory in SBIN_DIRS:
+        candidate = os.path.join(directory, base)
+        if os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def have_tool(cmd: str) -> bool:
+    """Is cmd runnable at all, counting /usr/sbin and /usr/local/sbin?
+
+    Prefer this over have() for any tool a package may have installed as root.
+    have() answers "is it on this session's PATH", which on a normal desktop
+    session is a fact about PATH, not about the machine - and reporting a
+    working sbin tool as missing is the one failure a system manager must not
+    make, because the page then claims a healthy machine is broken.
+    """
+    return _tool_path(cmd) is not None
+
+
+def _json_failure_reason(argv: list[str], status: int, out: str, err: str) -> str:
+    """What run_json-style callers are told when stdout held no JSON.
+
+    Split out so a second runner can report a failure in exactly run_json's
+    words. run_json keeps its own inline copy of this logic rather than calling
+    in here: it is the function every existing page already runs, and this
+    change is additive on purpose. The two must not drift - if run_json's
+    wording changes, change this with it.
+    """
+    text = _strip_ansi(err or out or f"exit status {status}").strip()
+    logger.warning("%s: rc=%s, no JSON: %.200s", argv, status, text)
+    if "Invalid option" in text or "invalid option" in text:
+        # e.g. shani-deploy older than --status: the image's tools are
+        # behind this app, not a broken system
+        return "This system's tools are older than Shani Cassini - update Shanios to see this"
+    lines = text.splitlines()
+    return re.sub(r"^\S+ \S+ \[\w+\]\s*", "", lines[-1]) if lines else f"exit status {status}"
+
+
+def run_json_tool(argv: list[str], done: Callable[[Optional[dict], str], None]) -> None:
+    """run_json() for a tool that may be sbin-only; see have_tool().
+
+    Behaves as run_json() does in every observable way - same
+    done(payload_or_None, error) shape, same "<name> is not installed" wording,
+    same pkexec 126/127 "Authorization was cancelled", same "JSON on stdout
+    wins over the exit status" - and differs in exactly one respect: the name
+    is resolved through the sbin directories and the binary is spawned by its
+    absolute path. Everything that can go wrong here arrives as a done() value
+    and never as an exception, because a raising callback leaves a GTK page
+    blank and says nothing at all about why.
+    """
+    path = _tool_path(argv[0])
+    if path is None:
+        GLib.idle_add(done, None, f"{argv[0]} is not installed")
+        return
+    try:
+        proc = Gio.Subprocess.new([path, *argv[1:]],
+                                  Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE)
+    except GLib.Error as e:
+        GLib.idle_add(done, None, e.message)
+        return
+
+    def finish(p, res):
+        try:
+            _ok, out, err = p.communicate_utf8_finish(res)
+        except GLib.Error as e:
+            done(None, e.message)
+            return
+        status = p.get_exit_status() if p.get_if_exited() else -1
+        # keyed on the caller's argv, not the resolved path, so a pkexec run
+        # that is missing an sbin tool still reports a cancelled dialog rather
+        # than a raw exit status
+        if argv[0] == "pkexec" and status in (126, 127):
+            done(None, "Authorization was cancelled")
+            return
+        try:
+            done(json.loads(out or ""), "")
+            return
+        except ValueError:
+            pass
+        done(None, _json_failure_reason(argv, status, out or "", err or ""))
+
+    proc.communicate_utf8_async(None, None, finish)
+
+
+def run_stream_tool(argv: list[str], on_line: Callable[[str], None],
+                    on_exit: Callable[[int], None]) -> Optional[Gio.Subprocess]:
+    """run_streaming() for a tool that may be sbin-only; see have_tool().
+
+    Line-by-line output is what a long privileged read wants, so a tool that
+    installs into /usr/sbin has to be runnable through this too. An absent
+    tool is reported the way run_streaming() reports a failed spawn - the
+    message on on_line, then 127 on on_exit - so a page needs no separate
+    "not installed" branch, and None comes back because there is nothing to
+    cancel.
+    """
+    path = _tool_path(argv[0])
+    if path is None:
+        on_line(f"{argv[0]} is not installed")
+        GLib.idle_add(on_exit, 127)
+        return None
+    return run_streaming([path, *argv[1:]], on_line, on_exit)
+
+
 # --- fprintd: the fingerprint reader, over its own D-Bus API ---------------
 #
 # fprintd and libfprint ship in shani-peripherals (not in shani-cassini's
