@@ -26,6 +26,7 @@ for an "is not installed" status page when its app is missing.
 | Overview, Updates & Rollback | `shani-deploy --status [--check] --json` (no root); `pkexec shani-deploy` / `--rollback` / `--set-channel X`, streamed, wrapped in `systemd-inhibit` (sleep, not shutdown) |
 | Health | `pkexec shani-health --verify --json` / `--security --json` (JSON even on exit 1); `journalctl -b -p 3 -o json`; `coredumpctl list --json` |
 | Storage | `shani-health --storage-info --json` (read-only, unprivileged) via `storage_info()`; `--verify --json` uses a *different* builder and is not interchangeable with it |
+| Disk Health | `smartctl --scan` (unprivileged) to enumerate disks, then `pkexec smartctl -j -H` and `-j -a` per disk. SMART READ DATA is privileged, so the per-disk reads are. **Reads only — it cannot start a self-test, which writes to the disk.** `smartctl` lives in `/usr/sbin`, so it is resolved like `fprintd`'s tools, not with a bare `which()` |
 | System Info | `hostnamectl --json`, `timedatectl show`, `systemd-analyze time` + the older system/kernel cards |
 | Encryption | `/dev/mapper/shani_root`, `systemd-analyze has-tpm2`; `pkexec gen-efi tpm2-status --json`, `enroll-tpm2 --stdin [--with-pin]` (secrets on stdin only), `remove-tpm2` |
 | Services | `systemctl list-unit-files -o json` + `list-units -o json` (only enabled/disabled units); `systemctl enable --now` etc. — polkit is asked by systemd itself |
@@ -36,6 +37,7 @@ for an "is not installed" status page when its app is missing.
 | Smartcard | `pcsc_scan -n` (unprivileged); reads and edits `/etc/pam_pkcs11/subject_mapping` via `config_io` — `pam_pkcs11_state()`, `subject_mappings()`, `set_mapping()`, `remove_mapping()` |
 | Security Keys | reads/edits `~/.config/Yubico/pam_u2f.conf` (per-user, **never** privileged) and `/etc/security/pam_yubico.conf`; `u2f_config()`, `pam_yubico_config()`, `set_config_value()` |
 | Kerberos | reads/edits `/etc/krb5.conf`; `krb5_config()`, `krb5_set()`, plus `pam_stacks_loading()` to tell whether any stack actually loads `pam_krb5.so` |
+| SSH Keys | `~/.ssh/authorized_keys` via `config_io`, and `ssh-keygen -lf` for fingerprints. The file is the user's own, so this path takes **no privilege at all** — no `pkexec`, no polkit action, no helper, and an AST gate in `tests/test_ssh_keys_page.py` fails if any appear. It leads with the file's and its directory's mode, because sshd refusing a group/world-writable file is the most useful thing it can say |
 
 The three sign-in pages share a contract worth knowing before editing them:
 
@@ -103,7 +105,21 @@ If you haven't seen it work (or fail) for real, it isn't verified.
    compatibility shim for the old `update` test-command name: it is
    read-only and does not install, switch slots, or run the agent.
 
-## Known issues (current state, 2026-09-25)
+## Known issues (current state, 2026-09-26)
+
+- **Disk Health's per-disk read has never actually run.** The page and its
+  no-disk state were rendered in Arch under GTK4/libadwaita and screenshotted,
+  but a container has no disk and no polkit agent, so `pkexec smartctl -j -H/-a`
+  — the path that produces every verdict and attribute the page exists to show —
+  is unexercised. Closing it needs a real slot with a real disk, like the
+  `fprintd` item below. Do not read the passing fake-CLI tests as evidence that
+  the privileged read works.
+- **SSH Keys' fingerprint path is unverified.** `ssh-keygen -lf` is invoked
+  through the async layer and the "not installed" branch was seen for real (the
+  Arch container has no `openssh`, and the page said so instead of inventing a
+  fingerprint), but the branch that actually shells out to `ssh-keygen` has
+  never run. The `config_io` write path is covered by fake-CLI tests only; it
+  has not written a real `authorized_keys` on a machine.
 
 - **The Fingerprint tab's live `fprintd` path is UNVERIFIED against a running
   daemon — proven impossible in a container, so it needs a real slot.** The D-Bus
