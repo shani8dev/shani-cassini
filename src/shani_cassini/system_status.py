@@ -681,6 +681,15 @@ def fprintd_unsubscribe(sub) -> None:
 # are here so the probe cannot silently report "unavailable" for a module that
 # is present under a different layout - a false "not available" is worse than
 # a missing row, because it tells the user their hardware cannot work.
+# Where PAM service files live: GDM's in /etc/pam.d, KScreenLocker's in
+# /usr/lib/pam.d. Both must be scanned, because a module wired into a
+# distribution-owned chokepoint like system-auth is offered by no gdm-* or
+# kde-* file at all.
+PAM_SERVICE_DIRS = ("/etc/pam.d", "/usr/lib/pam.d")
+
+# A bracketed PAM control field, which may contain spaces: [success=2 default=ignore]
+_PAM_CONTROL_RE = re.compile(r"\[[^\]]*\]")
+
 _PAM_SEC_DIRS = (
     "/usr/lib/security",
     "/lib/security",
@@ -733,10 +742,103 @@ def _pam_module_installed(module: str) -> bool:
     return any(os.path.exists(os.path.join(d, module)) for d in _PAM_SEC_DIRS)
 
 
+def _pam_service_loading(text: str, module: str, depth: int = 0,
+                         seen: set | None = None) -> bool:
+    """Does this PAM service text load `module`?
+
+    Honours the control prefixes PAM understands: a leading '-' means the line
+    is present but disabled, a leading '@' means it is only evaluated when the
+    module is *required* by the caller. Neither counts as "offered", so a
+    commented or disabled reference cannot make a method look wired.
+    """
+    if depth > 3:
+        return False
+    seen = set() if seen is None else seen
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("@"):
+            if line.startswith("@include"):
+                target = line[len("@include"):].strip()
+                if target and target not in seen:
+                    seen.add(target)
+                    for d in PAM_SERVICE_DIRS:
+                        path = os.path.join(d, os.path.basename(target))
+                        if os.path.exists(path) and _pam_service_loading(
+                                _read_text(path), module, depth + 1, seen):
+                            return True
+            continue
+        if line.startswith("-"):
+            # Present but disabled. PAM will not use it, so it must not make a
+            # method look wired - that would tell a user their security key
+            # works when the line that would accept it is switched off.
+            continue
+        # PAM puts optional control fields between the type and the module:
+        #   auth  [success=2 default=ignore]  pam_unix.so nullok
+        # The bracket may contain spaces, so it has to be removed as a unit
+        # before splitting - splitting first leaves "[success=2" and
+        # "default=ignore]" as separate tokens and the module is never reached.
+        rest = _PAM_CONTROL_RE.sub(" ", line)
+        # The module is the first argument that looks like one - an absolute
+        # path, or a name ending in .so. Indexing a fixed position does not
+        # work: the line is "<type> <control> <module> [args]", so the module
+        # is at index 2 normally but at index 1 when the control field was a
+        # bracketed one and removing it collapsed the line.
+        for field in rest.split()[1:]:
+            if field.startswith("/") or field.endswith(".so"):
+                if field == module:
+                    return True
+                # This line loads a different module. Move to the next line
+                # rather than giving up on the whole file - returning here
+                # missed every module that appears after an unrelated one.
+                break
+    return False
+
+
+def _read_text(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def pam_stacks_loading(module: str) -> list:
+    """Names of the PAM service files on this system that load `module`.
+
+    Scans the real files rather than trusting a hardcoded list, because Shanios
+    wires pam_u2f into its own system-auth override, which no gdm-* or kde-*
+    file mentions. A hardcoded list reported that as "installed but not
+    offered" on every machine we ship.
+    """
+    found: list = []
+    for d in PAM_SERVICE_DIRS:
+        try:
+            names = sorted(os.listdir(d))
+        except OSError:
+            continue
+        for name in names:
+            if name == "other":
+                continue
+            if any(n == name for n in found):
+                continue
+            if _pam_service_loading(_read_text(os.path.join(d, name)), module):
+                found.append(name)
+    return found
+
+
 def _pam_service_offers(module: str) -> list:
-    """The PAM service files on this system that load the given module."""
-    return [os.path.basename(p) for p, _title, mod in _PAM_LOGIN_SERVICES
-            if mod == module and os.path.exists(p)]
+    """Every PAM service that offers `module`: the real scan, unioned with the
+    known gdm-*/kde-* files so a service outside the scanned directories is
+    still reported."""
+    offers = pam_stacks_loading(module)
+    for path, _title, mod in _PAM_LOGIN_SERVICES:
+        if mod == module and os.path.exists(path):
+            name = os.path.basename(path)
+            if name not in offers:
+                offers.append(name)
+    return offers
 
 
 def hardware_auth_status() -> list:

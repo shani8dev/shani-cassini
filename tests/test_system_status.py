@@ -604,15 +604,54 @@ def test_fprintd_missing_everywhere_reads_as_not_installed(tmp_path, monkeypatch
     assert ss.fprintd_installed() is False
 
 
-def test_biometrics_degrades_to_a_status_page_without_fprintd(monkeypatch):
-    from gi.repository import Adw
-    from shani_cassini import notebook, system_status as ss
+def test_biometrics_page_without_fprintd_still_reports_the_other_methods(monkeypatch):
+    """Regression, found by screenshotting the page in a container.
+
+    This page used to be gated on fprintd and replaced wholesale by a
+    "fprintd is not installed" StatusPage. That was right while the page only
+    reported fingerprints, but it now also reports the other sign-in methods,
+    and the gate hid exactly those from the users who need them: someone with
+    no fprintd and a dead smartcard login saw a notice about fprintd and
+    nothing about the smartcard.
+
+    So the page must build, say honestly on its own rows that fprintd is
+    missing, and still list what else can and cannot sign you in. The original
+    intent - never show a form that cannot work - is kept by the reader rows
+    and by _set_enumerable(False), not by replacing the page.
+    """
+    from shani_cassini import system_status as ss
+    from shani_cassini.tabs.biometrics import BiometricsTab
     monkeypatch.setattr(ss, "have_sbin", lambda cmd: False)
-    nb = notebook.ShaniosNotebook()
-    page = nb.select("biometrics")
-    assert isinstance(page, Adw.StatusPage)
-    assert page.get_title() == "fprintd is not installed"
-    assert "shani-peripherals" in page.get_description()
+    monkeypatch.setattr(ss, "fprintd_installed", lambda: False)
+
+    tab = BiometricsTab()
+    assert spin(lambda: "Not installed" in tab._row_daemon.get_subtitle()), \
+        tab._row_daemon.get_subtitle()
+    assert tab._btn_enroll.is_sensitive() is False, \
+        "a form that cannot work must not be left enabled"
+
+    # The rest of the page is still there, which is the point of the change.
+    titles = _group_titles(tab._auth_group)
+    assert "Smartcard (PIV) login" in titles, titles
+    assert "Security key (FIDO2/U2F) login" in titles, titles
+    assert "Face / webcam recognition" in titles, titles
+
+
+def _group_titles(group):
+    """Every ActionRow title under a PreferencesGroup, at any depth."""
+    from gi.repository import Adw
+    out = []
+
+    def walk(widget):
+        if isinstance(widget, Adw.ActionRow):
+            out.append(widget.get_title())
+        child = widget.get_first_child()
+        while child is not None:
+            walk(child)
+            child = child.get_next_sibling()
+
+    walk(group)
+    return out
 
 
 def test_finger_labels_are_readable():
@@ -1115,3 +1154,103 @@ def test_every_reported_state_is_one_the_renderer_knows(monkeypatch):
     monkeypatch.setattr(ss, "_PAM_SEC_DIRS", ())
     monkeypatch.setattr(ss, "_PAM_LOGIN_SERVICES", ())
     assert {r["state"] for r in ss.hardware_auth_status()} <= {"ok", "inactive", "unavailable"}
+
+
+# --- finding the stacks that really load a module ------------------------
+#
+# These three cases were each found by running the scanner against a real
+# /etc/pam.d and disagreeing with grep, not by reading the code. A fixture
+# written from imagination passes all three wrong versions.
+
+def test_control_field_containing_spaces_does_not_hide_the_module():
+    """Real line from a stock /etc/pam.d:
+        session required        pam_env.so readenv=1
+    and with a bracketed control that itself contains spaces:
+        auth\t[success=2 default=ignore]\tpam_unix.so nullok
+    Splitting on whitespace first leaves "[success=2" and "default=ignore]"
+    as separate tokens, so a fixed field index never reaches the module."""
+    from shani_cassini import system_status as ss
+    assert ss._pam_service_loading("session required        pam_env.so readenv=1",
+                                   "pam_env.so")
+    assert ss._pam_service_loading("auth\t[success=2 default=ignore]\tpam_unix.so nullok",
+                                   "pam_unix.so")
+    assert ss._pam_service_loading("session\toptional\tpam_systemd.so ",
+                                   "pam_systemd.so")
+
+
+def test_the_module_is_found_even_when_an_earlier_line_loads_another():
+    """Regression: the scan returned on the first module-looking field of each
+    line, so a file whose first auth line loads a different module never
+    reached the line that matched. gdm-autologin hit this."""
+    from shani_cassini import system_status as ss
+    text = ("auth required pam_deny.so\n"
+            "session required pam_env.so readenv=1\n")
+    assert ss._pam_service_loading(text, "pam_env.so"), \
+        "a later line must still be reached"
+    assert not ss._pam_service_loading(text, "pam_pkcs11.so")
+
+
+def test_a_commented_or_disabled_reference_does_not_count_as_offered():
+    """A '-' prefix means present but disabled, '#' means a comment. Neither
+    makes a login method usable, so neither may turn an 'inactive' row into
+    'ok' - that would tell a user their key works when it cannot."""
+    from shani_cassini import system_status as ss
+    assert not ss._pam_service_loading("# auth sufficient pam_u2f.so\n", "pam_u2f.so")
+    assert not ss._pam_service_loading("-auth\toptional\tpam_u2f.so\n", "pam_u2f.so")
+    assert ss._pam_service_loading("auth sufficient pam_u2f.so\n", "pam_u2f.so")
+
+
+def test_pam_stacks_loading_scans_both_service_directories(tmp_path, monkeypatch):
+    """GDM's services live in /etc/pam.d, KScreenLocker's in /usr/lib/pam.d.
+    Shanios also wires pam_u2f into its own system-auth override, which no
+    gdm-* or kde-* file mentions - a hardcoded list called that 'not offered'
+    on every machine we ship."""
+    from shani_cassini import system_status as ss
+    etc, lib = tmp_path / "etc", tmp_path / "lib"
+    etc.mkdir(); lib.mkdir()
+    (etc / "system-auth").write_text("auth sufficient pam_u2f.so\n")
+    (lib / "kde-smartcard").write_text("auth required pam_pkcs11.so\n")
+    monkeypatch.setattr(ss, "PAM_SERVICE_DIRS", (str(etc), str(lib)))
+    assert ss.pam_stacks_loading("pam_u2f.so") == ["system-auth"]
+    assert ss.pam_stacks_loading("pam_pkcs11.so") == ["kde-smartcard"]
+
+
+def test_pam_stacks_loading_follows_an_include(tmp_path, monkeypatch):
+    from shani_cassini import system_status as ss
+    d = tmp_path / "d"; d.mkdir()
+    (d / "gdm-password").write_text("auth include system-auth\n")
+    (d / "system-auth").write_text("auth sufficient pam_u2f.so\n")
+    monkeypatch.setattr(ss, "PAM_SERVICE_DIRS", (str(d),))
+    assert "pam_u2f.so" in [m for m in ("pam_u2f.so",) if ss.pam_stacks_loading(m)]
+
+
+def test_pam_stacks_loading_survives_an_include_cycle(tmp_path, monkeypatch):
+    """A cycle must not hang the page build."""
+    from shani_cassini import system_status as ss
+    d = tmp_path / "d"; d.mkdir()
+    (d / "a").write_text("auth include b\n")
+    (d / "b").write_text("auth include a\n")
+    monkeypatch.setattr(ss, "PAM_SERVICE_DIRS", (str(d),))
+    assert ss.pam_stacks_loading("pam_u2f.so") == []
+
+
+def test_shanios_system_auth_makes_fido2_ok_not_inactive(tmp_path, monkeypatch):
+    """The wording regression this scanner exists to fix. shani-settings ships
+    etc/pam.d/system-auth with `auth sufficient pam_u2f.so`, so on every Shanios
+    image a security key IS offered. The old hardcoded gdm/kde-only lookup
+    reported 'installed but no PAM service on this system offers it'."""
+    from shani_cassini import system_status as ss
+    d = tmp_path / "pam.d"; d.mkdir()
+    (d / "system-auth").write_text(
+        "auth sufficient pam_u2f.so\n"
+        "auth required   pam_unix.so try_first_pass nullok\n")
+    # "ok" needs both halves: the module installed AND a stack that loads it.
+    sec = tmp_path / "security"; sec.mkdir()
+    (sec / "pam_u2f.so").write_text("")
+    monkeypatch.setattr(ss, "PAM_SERVICE_DIRS", (str(d),))
+    monkeypatch.setattr(ss, "_PAM_SEC_DIRS", (str(sec),))
+    monkeypatch.setattr(ss, "_PAM_LOGIN_SERVICES", ())
+    rows = _rows_by_title(ss.hardware_auth_status())
+    key = rows["Security key (FIDO2/U2F) login"]
+    assert key["state"] == "ok", key
+    assert "system-auth" in key["detail"]

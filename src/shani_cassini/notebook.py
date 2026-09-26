@@ -83,10 +83,12 @@ REQUIRES = {
     "fleet": ("shani-fleet-agent", "This device is not part of a fleet",
               "Fleet management is opt-in: an organisation enrolls its devices with the "
               "shani-fleet agent. Personal devices do not need it."),
-    "biometrics": ("fprintd-enroll", "fprintd is not installed",
-                  "Fingerprints need fprintd, which is in the shani-peripherals package. It "
-                  "is on every Shanios edition; on a machine without it there is nothing to "
-                  "read or enroll."),
+    # Deliberately NOT gated on fprintd. This page also reports the other
+    # hardware-auth login methods, and a whole-page gate hid exactly that when it
+    # mattered most: on a machine with no fprintd the page was replaced by a
+    # "fprintd is not installed" notice, so a user whose smartcard login was also
+    # dead never saw it. The tab already reports missing fprintd honestly on its
+    # own reader rows, which is the right place for it.
 }
 
 

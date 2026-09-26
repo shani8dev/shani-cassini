@@ -309,7 +309,15 @@ class TestBiometricsNoPrivilegeEscalation:
         security = dict(SECTIONS)["Security"]
         assert [p[1] for p in security] == ["secureboot", "encryption", "biometrics"]
         assert security[-1][3] == "auth-fingerprint-symbolic"
-        assert REQUIRES["biometrics"][0] == "fprintd-enroll"
+
+    def test_biometrics_page_is_not_gated_on_fprintd(self):
+        """The page reports the other hardware-auth login methods too, and a
+        whole-page gate hid exactly those when they mattered most: with no
+        fprintd the page became a "not installed" notice, so a user whose
+        smartcard login was also dead never found out."""
+        from shani_cassini.notebook import REQUIRES
+        assert "biometrics" not in REQUIRES, \
+            "gating this page hides the other sign-in methods from the users who need them"
 
     def test_copy_never_promises_a_fingerprint_for_sudo(self):
         from shani_cassini import system_status as ss
