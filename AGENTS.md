@@ -49,6 +49,17 @@ The three sign-in pages share a contract worth knowing before editing them:
 - **`config_io.py` edits single lines and refuses rather than re-renders.** It
   is deliberately path-agnostic, so "a login stack can never be rewritten"
   is enforced by AST gates over the callers, not by the engine.
+- **`config_io` cannot add a line, by design.** `assert_only_touched_changed()`
+  refuses any change in the *number* of lines, so `Document.add()` is an
+  in-memory helper that can never be staged — it fails with "lines were added or
+  removed outside the API". Adding a line means a document whose base is the
+  file plus one line that is not on disk yet, whose last line is then
+  `replace_line`d; `tabs/ssh_keys.py` does exactly that. Read that docstring
+  before reaching for `add()`. The guard is not a bug to work around: it is
+  what caught a caller doing this.
+- **`expect_owner` defaults to `(0, 0)`.** That is right for `/etc`, and wrong
+  for a file the user owns. A per-user path must pass `expect_owner=None`
+  explicitly or the engine refuses to touch it.
 - **Device state is not ours.** `ykman` owns PIN, touch requirement and
   credentials on the token; those pages point at it rather than reimplementing
   it. `pam_u2f` 1.4.0 has no `touchauth` and no `verbose` key (checked against
