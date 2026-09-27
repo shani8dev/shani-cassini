@@ -98,6 +98,82 @@ def run_json(argv: list[str], done: Callable[[Optional[dict], str], None]) -> No
     proc.communicate_utf8_async(None, None, finish)
 
 
+def run_text(argv: list[str], done: Callable[[Optional[str], str], None]) -> None:
+    """Run argv; call done(stdout_text_or_None, error_text) on the main loop.
+
+    The plain-text twin of run_json(), for tools that answer in text or
+    Key=Value lines. stdout and stderr stay separate here as they do there, so
+    a tool's diagnostics on stderr can never be read as its data -- which is
+    why this is not run_streaming(), whose merged stream is right for showing a
+    long read's progress and wrong for collecting a value.
+
+    A non-zero exit is not an error here. `systemd-analyze time` can exit
+    non-zero and still print the figure, and callers used to get whatever
+    stdout said regardless of status.
+    """
+    if not have(argv[0]):
+        GLib.idle_add(done, None, f"{argv[0]} is not installed")
+        return
+    try:
+        proc = Gio.Subprocess.new(argv, Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE)
+    except GLib.Error as e:
+        GLib.idle_add(done, None, e.message)
+        return
+
+    def finish(p, res):
+        try:
+            _ok, out, err = p.communicate_utf8_finish(res)
+        except GLib.Error as e:
+            done(None, e.message)
+            return
+        if not out or not out.strip():
+            done(None, _strip_ansi(err or "").strip() or f"{argv[0]} said nothing")
+            return
+        done(out, "")
+
+    proc.communicate_utf8_async(None, None, finish)
+
+
+def clock_summary(done) -> None:
+    """The Device card's clock row: timezone and whether time is synced.
+
+    Was read with a synchronous subprocess.run inside DeviceGroup.__init__,
+    which put a 10s-timeout call on the GTK main thread while the page was
+    being built. The rest of this page already runs through Gio.Subprocess.
+    """
+    def on_text(text, err):
+        if not text:
+            done("", err)
+            return
+        td = {}
+        for line in text.splitlines():
+            if "=" in line:
+                key, _, value = line.partition("=")
+                td[key.strip()] = value.strip()
+        if not td:
+            done("", err)
+            return
+        synced = "synchronized with network time" if td.get("NTPSynchronized") == "yes" else "not synchronized"
+        done(f"{td.get('Timezone', '')} · {synced}", "")
+    run_text(["timedatectl", "show"], on_text)
+
+
+def boot_time_summary(done) -> None:
+    """The Device card's 'Last boot took' row, from systemd-analyze time.
+
+    Same synchronous-main-thread defect as clock_summary(); `systemd-analyze
+    time` parses the whole boot journal, so on a large journal or a slow disk
+    it is the more likely of the two to sit on that timeout.
+    """
+    def on_text(text, err):
+        lines = text.splitlines() if text else []
+        if not lines:
+            done("", err)
+            return
+        done(lines[0].replace("Startup finished in ", "").split(" = ")[-1], "")
+    run_text(["systemd-analyze", "time"], on_text)
+
+
 def deploy_status(done, check: bool = False) -> None:
     argv = [DEPLOY, "--status", "--json"]
     if check:

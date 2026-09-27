@@ -405,6 +405,100 @@ print("ok")
     assert r.returncode == 0 and "ok" in r.stdout, r.stdout + r.stderr
 
 
+# --- the Device card: clock and boot time, off the main thread ---------------
+# These two used to be read with subprocess.run inside DeviceGroup.__init__,
+# which is the GTK main thread while the page is being built. That put a
+# 10s-timeout call there, twice, and the comment claimed they were "small,
+# local, fast" -- true for a healthy boot and not true for a stalled
+# systemd-timedated or a large boot journal. hostnamectl() on the adjacent line
+# was already asynchronous, so the module was mixing both patterns.
+#
+# The regression this guards is the *shape* of the fix, not the strings: a
+# synchronous subprocess.run in a widget's __init__ is the defect, so these
+# assert the page renders real values, and the AST gate below is what stops the
+# synchronous read coming back.
+
+TIMEDATECTL_SHOW = """         LocalRTC=no
+             Timezone=Europe/London
+     NTPSynchronized=yes
+"""
+
+SYSTEMD_ANALYZE_TIME = """Startup finished in 4.281s (firmware) + 12.5M (loader) + 1.204s (kernel) + 2.113s (initrd) = 4.5s
+"""
+
+
+def _device_fakes(tmp_path, *, timedate=TIMEDATECTL_SHOW, analyze=SYSTEMD_ANALYZE_TIME,
+                  analyze_rc=0):
+    def write(name, body):
+        f = tmp_path / name
+        f.write_text("#!/bin/sh\ncat <<'EOF'\n" + body + "\nEOF\n")
+        f.chmod(0o755)
+    write("hostnamectl", '{"HardwareVendor":"","HardwareModel":"","Chassis":"",'
+                         '"FirmwareVendor":"","FirmwareVersion":"","FirmwareDate":"0",'
+                         '"OperatingSystemPrettyName":"Shanios","KernelRelease":"7.2.6"}\n')
+    if timedate is not None:
+        write("timedatectl", timedate)
+    if analyze is not None:
+        write("systemd-analyze", f"{analyze}\nexit {analyze_rc}\n")
+    return tmp_path
+
+
+def test_device_card_renders_clock_and_boot_time(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", f"{_device_fakes(tmp_path)}:{os.environ['PATH']}")
+    from shani_cassini.tabs.device import DeviceGroup
+    g = DeviceGroup()
+    assert spin(lambda: g._rows["clock"].get_subtitle() != "…")
+    assert spin(lambda: g._rows["boot"].get_subtitle() != "…")
+    assert g._rows["clock"].get_subtitle() == "Europe/London · synchronized with network time"
+    assert g._rows["boot"].get_subtitle() == "4.5s"
+
+
+def test_device_card_says_unsynced_rather_than_nothing(tmp_path, monkeypatch):
+    unsynced = TIMEDATECTL_SHOW.replace("NTPSynchronized=yes", "NTPSynchronized=no")
+    monkeypatch.setenv("PATH", f"{_device_fakes(tmp_path, timedate=unsynced)}:{os.environ['PATH']}")
+    from shani_cassini.tabs.device import DeviceGroup
+    g = DeviceGroup()
+    assert spin(lambda: "·" in g._rows["clock"].get_subtitle())
+    assert g._rows["clock"].get_subtitle() == "Europe/London · not synchronized"
+
+
+def test_device_card_boot_time_survives_a_non_zero_exit(tmp_path, monkeypatch):
+    """systemd-analyze time can exit non-zero and still print the figure. A
+    caller that treated the status as the answer would report Unknown for a
+    number the tool had already given us."""
+    monkeypatch.setenv("PATH", f"{_device_fakes(tmp_path, analyze_rc=1)}:{os.environ['PATH']}")
+    from shani_cassini.tabs.device import DeviceGroup
+    g = DeviceGroup()
+    assert spin(lambda: g._rows["boot"].get_subtitle() != "…")
+    assert g._rows["boot"].get_subtitle() == "4.5s"
+
+
+def test_device_card_says_unknown_when_the_tool_is_absent(tmp_path, monkeypatch):
+    # PATH is tmp_path ALONE, not prepended: prepending would still find the
+    # host's real timedatectl and prove nothing about the absent case.
+    _device_fakes(tmp_path, timedate=None, analyze=None)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    from shani_cassini.tabs.device import DeviceGroup
+    g = DeviceGroup()
+    assert spin(lambda: g._rows["clock"].get_subtitle() == "Unknown")
+    assert g._rows["boot"].get_subtitle() == "Unknown"
+
+
+def test_device_card_never_shells_out_synchronously():
+    """The defect, pinned structurally. A grep for subprocess would miss a
+    regression reintroduced as any other blocking reader, so this reads the AST
+    and fails on a synchronous subprocess use anywhere in the module."""
+    import ast
+    from pathlib import Path as _P
+    src = (_P(__file__).resolve().parents[1] / "src/shani_cassini/tabs/device.py").read_text()
+    calls = [n for n in ast.walk(ast.parse(src))
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+             and n.func.attr in ("run", "Popen", "check_output", "call", "check_call")
+             and isinstance(n.func.value, ast.Name) and n.func.value.id == "subprocess"]
+    assert not calls, f"device.py blocks the GTK main thread again: {calls}"
+    assert "subprocess" not in src, "device.py imports subprocess again"
+
+
 # --- fprintd, over its own D-Bus API --------------------------------------
 #
 # fprintd is not a CLI Cassini runs and it is not activatable in CI, so the

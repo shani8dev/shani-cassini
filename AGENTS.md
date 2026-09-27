@@ -346,6 +346,46 @@ If you haven't seen it work (or fail) for real, it isn't verified.
   the parsing is reachable by the fake-CLI fixtures; the `/proc` and `/sys`
   paths are module constants for that reason. The `AGENTS.md` note that
   prompted this is now history.
+- **`tabs/device.py` was the straggler that migration missed, and it blocked
+  the GTK main thread — fixed 2026-09-27.** `DeviceGroup.__init__` is called
+  from `notebook.py:59` while the page is built, i.e. on the main thread, and
+  it still ran two `subprocess.run` calls there — `timedatectl show` and
+  `systemd-analyze time`, 10s apiece, behind a comment claiming they were
+  "small, local, fast". The same `__init__` already called `hostnamectl()`
+  asynchronously on the line above, so the module was mixing both patterns.
+  Worst case was a **20s freeze of the whole window** opening System Info:
+  `systemd-analyze time` parses the entire boot journal, so a large journal or
+  a slow disk is exactly the case that hits the timeout, and `timedatectl`
+  blocks on a stalled `systemd-timedated`. Found by sweeping the ecosystem for
+  the same class as the `shani-backup` btrfs hang, not by reading this file.
+  Now `ss.clock_summary()` / `ss.boot_time_summary()` collect through
+  `run_text()` — a plain-text twin of `run_json()` added for the purpose, which
+  keeps stdout and stderr separate so a tool's diagnostics can never be parsed
+  as its data. `run_streaming()` would have been the wrong tool: its merged
+  stream is right for showing a long read's progress and wrong for collecting a
+  value. The module's `subprocess` import and its private `_cmd()` are gone.
+  **A non-zero exit is deliberately not an error** in `run_text()`:
+  `systemd-analyze time` can exit non-zero and still print the figure, and the
+  old code took stdout regardless of status.
+  The rows now show `…` and fill in from the callback, like every other row on
+  this page. Five tests, none of which existed before — the page, both tools
+  and this module had no coverage at all. The fixtures are verbatim real output
+  format (right-aligned `timedatectl` keys; the `systemd-analyze time`
+  headline), because this repo has already shipped a test that passed against a
+  format the tool never emits. `test_device_card_never_shells_out_synchronously`
+  is an **AST** gate over the module, not a grep: it fails on any
+  `subprocess.run`/`Popen`/`check_output`/`call`, so the read cannot come back
+  as some *other* blocking reader. Its negative control was run — the
+  `subprocess.run` line was re-injected and the gate failed with "device.py
+  blocks the GTK main thread again". Suite **972 passed** (967 + 5).
+  Verified in **Arch under GTK4/libadwaita** per the required-verification
+  list, because Arch's PyGObject is newer than the dev host's and a GTK startup
+  crash shipped here once: renders and exits clean with no traceback, and with
+  fake CLIs on `PATH` the populated branch renders `Europe/London ·
+  synchronized with network time` and `4.5s`. Without those fakes every row
+  reads `Unknown` — correct, since the builder container has no systemd for
+  either tool to answer from, and a reminder that an all-`Unknown` render says
+  nothing about the populated one.
 - Fixed in the 2026-09-25 rebuild (for context, not to redo): widget
   lookups used a GTK3-only call on `get_root()` (None while building) so
   pages stayed blank; Kernel/Drivers/Secure Boot never loaded when

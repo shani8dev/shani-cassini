@@ -3,19 +3,11 @@
 
 from __future__ import annotations
 
-import subprocess
 import time
 
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
-
-
-def _cmd(argv: list[str]) -> str:
-    try:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=10).stdout.strip()
-    except (OSError, subprocess.TimeoutExpired):
-        return ""
 
 
 class DeviceGroup(Adw.PreferencesGroup):
@@ -29,14 +21,14 @@ class DeviceGroup(Adw.PreferencesGroup):
             self.add(r)
             self._rows[key] = r
         ss.hostnamectl(self._on_host)
-        # small, local, fast: read synchronously once
-        td = dict(l.split("=", 1) for l in _cmd(["timedatectl", "show"]).splitlines() if "=" in l)
-        tz = td.get("Timezone", "")
-        synced = td.get("NTPSynchronized") == "yes"
-        self._rows["clock"].set_subtitle(f"{tz} · " + ("synchronized with network time" if synced
-                                                         else "not synchronized") if td else "Unknown")
-        t = _cmd(["systemd-analyze", "time"]).splitlines()
-        self._rows["boot"].set_subtitle(t[0].replace("Startup finished in ", "").split(" = ")[-1] if t else "Unknown")
+        ss.clock_summary(self._on_clock)
+        ss.boot_time_summary(self._on_boot)
+
+    def _on_clock(self, text, err) -> None:
+        self._rows["clock"].set_subtitle(text or "Unknown")
+
+    def _on_boot(self, text, err) -> None:
+        self._rows["boot"].set_subtitle(text or "Unknown")
 
     def _on_host(self, d, err) -> None:
         if d is None:
