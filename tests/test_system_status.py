@@ -6,6 +6,7 @@ import os
 import shutil
 import stat
 import time
+from pathlib import Path
 
 import pytest
 from gi.repository import GLib
@@ -143,7 +144,7 @@ def test_changing_the_channel_runs_set_channel(pkexec_log):
     tab = UpdatesTab()
     assert spin(lambda: tab._btn_update.get_visible())
     tab._channel.set_selected(1)  # Latest
-    assert spin(lambda: pkexec_log.exists())
+    assert spin(lambda: pkexec_log.exists() and pkexec_log.stat().st_size > 0)
     assert pkexec_log.read_text().strip() == "shani-deploy --set-channel latest"
 
 
@@ -179,7 +180,15 @@ def test_enroll_passes_secrets_on_stdin_only(fake_genefi, monkeypatch):
     tab = encryption.EncryptionTab()
     tab._run_with_stdin(["pkexec", "gen-efi", "enroll-tpm2", "--stdin", "--with-pin"],
                         "my secret phrase\n1234\n", "ok", "fail")
-    assert spin(lambda: (fake_genefi / "genefi.stdin").exists() and (fake_genefi / "genefi.args").exists())
+    # Wait for the CONTENT, not the file: the fake runs `cat > genefi.stdin`, so
+    # the shell creates that file empty and only fills it once stdin reaches EOF.
+    # Waiting on exists() alone returned while the file was still empty, and this
+    # failed roughly two runs in three with `assert '' == 'my secret phrase...'`.
+    def _stdin_landed():
+        f = fake_genefi / "genefi.stdin"
+        return f.exists() and f.stat().st_size > 0
+
+    assert spin(lambda: _stdin_landed() and (fake_genefi / "genefi.args").exists())
     args = (fake_genefi / "genefi.args").read_text()
     assert args.strip() == "enroll-tpm2 --stdin --with-pin"
     assert "secret" not in args and "1234" not in args
@@ -214,7 +223,7 @@ def test_services_lists_only_toggleable_and_toggles(tmp_path, monkeypatch):
     sshd_row = next(r for r, h in tab._rows if h.startswith("sshd"))
     sw = next(w for w in _descendants(sshd_row) if isinstance(w, __import__("gi").repository.Gtk.Switch))
     sw.set_active(True)
-    assert spin(lambda: log.exists())
+    assert spin(lambda: log.exists() and log.stat().st_size > 0)
     assert log.read_text().strip() == "enable --now sshd.service"
 
 
@@ -1990,3 +1999,167 @@ def test_storage_size_returns_nothing_rather_than_guessing():
     assert ss._storage_size("not a size at all") == {"used": "not a size at all"}
     # A shape we do not recognise must not produce a fabricated number.
     assert "uncompressed" not in ss._storage_size("12.00GiB")
+
+
+def test_a_bounded_tool_is_stopped_instead_of_waiting_for_ever(tmp_path, monkeypatch):
+    """`lxc` is the LXD client: it answers over lxd.socket, and when that socket
+    is silent the command does not fail, it waits. Measured in a real ShaniOS
+    slot - unbounded it ran past seven minutes, under `timeout 20` it exits 124.
+    Gio.Subprocess reports nothing until the child exits, so a page waiting on
+    it with no bound is pending for ever with no way back, and Refresh cannot
+    help because the refresh is what is stuck. The bound lives in the runner so
+    no page can forget it and no page needs a GLib timer it is not allowed."""
+    from shani_cassini import system_status as ss
+
+    fake = tmp_path / "lxc"
+    # Builtins only: PATH is this tmp_path alone, so a `sleep` would be
+    # "not found" and the fake would exit at once - the test would then pass
+    # without the bound ever firing.
+    fake.write_text("#!/bin/sh\nwhile :; do :; done\n")
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(ss, "STREAM_BOUNDS", {"lxc": 1})
+
+    lines: list = []
+    exits: list = []
+    ctx = GLib.MainContext.default()
+    started = time.monotonic()
+    ss.run_stream_tool(["lxc", "list"], lines.append, exits.append)
+    while not exits and time.monotonic() - started < 15:
+        ctx.iteration(True)
+
+    assert exits, "the read never settled - this is the hang the bound exists for"
+    assert time.monotonic() - started < 20, "the bound did not stop the child"
+    assert any("stopped" in line for line in lines), \
+        f"a stopped read must say so rather than look like an empty result: {lines}"
+
+
+def test_an_unbounded_tool_is_left_alone(tmp_path, monkeypatch):
+    """Only a tool measured to hang gets a bound, so the negative case has to be
+    able to fail: the fake here blocks on `read` from a stdin that never closes,
+    which is shell-builtins-only and cannot exit early. With an empty table the
+    read must still be running after several bound-lengths - if a bound were
+    wrongly applied to every tool it would have been stopped and settled. The
+    earlier version of this test used a fake that exited in milliseconds, so
+    bounding everything would still have passed it."""
+    from shani_cassini import system_status as ss
+
+    fake = tmp_path / "virsh"
+    fake.write_text("#!/bin/sh\nwhile :; do :; done\n")
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(ss, "STREAM_BOUNDS", {})
+
+    lines: list = []
+    exits: list = []
+    ctx = GLib.MainContext.default()
+    started = time.monotonic()
+    ss.run_stream_tool(["virsh", "list"], lines.append, exits.append)
+    while not exits and time.monotonic() - started < 4:
+        ctx.iteration(True)
+
+    assert exits == [], "an unbounded tool was stopped; only measured tools get a bound"
+    assert not any("stopped" in line for line in lines), lines
+
+
+# --- B2: the LUKS header fields gen-efi started reporting --------------------
+#
+# gen-efi grew luks_version, luks_cipher, luks_kdf and luks_keyslots_in_use so
+# this page would stop asserting "LUKS2" from what LUKS2 usually is. They were
+# backend-only until these tests: a field nothing renders is a field nobody has.
+
+def _luks_tab(monkeypatch):
+    from shani_cassini.tabs import encryption
+    monkeypatch.setattr(encryption, "_encrypted", lambda: True)
+    monkeypatch.setattr(encryption.ss, "has_tpm2", lambda: True)
+    return encryption, encryption.EncryptionTab()
+
+
+def test_the_luks_fields_the_tool_reported_are_shown(monkeypatch):
+    encryption, tab = _luks_tab(monkeypatch)
+    tab._on_status({"tpm2_enrolled": True, "secure_boot": True,
+                    "luks_version": "2", "luks_cipher": "aes-xts-plain64",
+                    "luks_kdf": "argon2id", "luks_keyslots_in_use": [0, 1]}, None)
+    assert tab._luks_rows["luks_version"].get_subtitle() == "2"
+    assert tab._luks_rows["luks_cipher"].get_subtitle() == "aes-xts-plain64"
+    assert tab._luks_rows["luks_kdf"].get_subtitle() == "argon2id"
+    assert tab._luks_rows["luks_keyslots_in_use"].get_subtitle() == "0, 1"
+
+
+def test_a_luks_field_the_tool_did_not_report_is_not_available(monkeypatch):
+    """The page's whole job on this row group is to not guess. An older gen-efi
+    reports none of these, and a missing key has to read as unknown rather than
+    as an empty cipher or a version of 0."""
+    encryption, tab = _luks_tab(monkeypatch)
+    tab._on_status({"tpm2_enrolled": True, "secure_boot": True}, None)
+    for key, _title in encryption.LUKS_DETAILS:
+        assert tab._luks_rows[key].get_subtitle() == encryption.NOT_AVAILABLE, key
+
+
+def test_an_empty_keyslot_list_is_not_zero_keyslots_in_use(monkeypatch):
+    """[] is what a tool says when it reported nothing, not a measurement of
+    zero. Rendering it as "0" would be a claim about the keyslots protecting
+    the disk, from an empty field."""
+    encryption, tab = _luks_tab(monkeypatch)
+    tab._on_status({"tpm2_enrolled": True, "secure_boot": True,
+                    "luks_version": "", "luks_cipher": None,
+                    "luks_kdf": "argon2id", "luks_keyslots_in_use": []}, None)
+    assert tab._luks_rows["luks_version"].get_subtitle() == encryption.NOT_AVAILABLE
+    assert tab._luks_rows["luks_cipher"].get_subtitle() == encryption.NOT_AVAILABLE
+    assert tab._luks_rows["luks_kdf"].get_subtitle() == "argon2id"
+    assert tab._luks_rows["luks_keyslots_in_use"].get_subtitle() == \
+        encryption.NOT_AVAILABLE
+
+
+def test_the_luks_rows_are_not_built_on_an_unencrypted_disk(monkeypatch):
+    """No encrypted disk, no LUKS header to report, so the group must not be
+    there implying one exists."""
+    from shani_cassini.tabs import encryption
+    monkeypatch.setattr(encryption, "_encrypted", lambda: False)
+    tab = encryption.EncryptionTab()
+    assert tab._luks_rows == {}
+
+
+# --- the REAL backend contract, captured from a genuinely encrypted slot -----
+#
+# Every LUKS test above feeds a hand-written dict. This one feeds the verbatim
+# output of `gen-efi tpm2-status --json` from a real booted slot whose root was
+# a real LUKS2 volume, captured 2026-09-27. A hand-written dict can agree with
+# the page and still disagree with the tool; this cannot, because it IS the
+# tool's output. It is the join the other tests could not make: real backend
+# bytes in, real widget text out.
+#
+# The values are also load-bearing as a class of value, not just these strings:
+# luks_keyslots_in_use is the JSON number 1 here, where every "not reported"
+# case is null. If the page ever rendered 1 as anything but "1", this fails.
+
+ENCRYPTED_SLOT_STATUS = json.loads(
+    (Path(__file__).parent / "fixtures" / "tpm2-status-encrypted-slot.json")
+    .read_text())
+
+
+def test_a_real_encrypted_slot_populates_every_luks_row(monkeypatch):
+    encryption, tab = _luks_tab(monkeypatch)
+    tab._on_status(ENCRYPTED_SLOT_STATUS, None)
+    assert tab._luks_rows["luks_version"].get_subtitle() == "2"
+    assert tab._luks_rows["luks_cipher"].get_subtitle() == "aes-xts-plain64"
+    assert tab._luks_rows["luks_kdf"].get_subtitle() == "argon2id"
+    assert tab._luks_rows["luks_keyslots_in_use"].get_subtitle() == "1"
+
+
+def test_the_real_slot_status_is_actually_encrypted(monkeypatch):
+    """Guards the fixture itself. If this ever stops being an encrypted report,
+    every test above it is quietly testing the wrong branch - which is exactly
+    what happened to the LUKS1 dump fixture that was LUKS2-shaped fiction."""
+    assert ENCRYPTED_SLOT_STATUS["encrypted"] is True
+    assert ENCRYPTED_SLOT_STATUS["luks_device"]
+    assert ENCRYPTED_SLOT_STATUS["luks_keyslots_in_use"] == 1
+
+
+def test_the_real_slot_cipher_is_not_replaced_by_a_default(monkeypatch):
+    """aes-xts-plain64 is what this image's header actually says. A page that
+    answered "aes-xts-plain64" because it is the usual answer would also pass
+    the string test above, so the fixture is checked against the device's own
+    reported value rather than against a constant chosen by the test."""
+    assert ENCRYPTED_SLOT_STATUS["luks_cipher"] in ENCRYPTED_SLOT_STATUS.values()
+    assert ENCRYPTED_SLOT_STATUS["luks_cipher"] != "aes"

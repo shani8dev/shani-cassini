@@ -25,6 +25,32 @@ def _encrypted() -> bool:
     return os.path.exists(MAPPER)
 
 
+# gen-efi's status reports the LUKS header fields, so this page no longer has to
+# assert "LUKS2" from what LUKS2 usually is. A field the tool did not report is
+# drawn as not available: the alternative is a detail invented from a default,
+# which is the one thing a disk-encryption page must not do.
+LUKS_DETAILS = (
+    ("luks_version", "LUKS version"),
+    ("luks_cipher", "Cipher"),
+    ("luks_kdf", "Key derivation"),
+    ("luks_keyslots_in_use", "Keyslots in use"),
+)
+NOT_AVAILABLE = "Not available"
+
+
+def _luks_value(value) -> str:
+    """One reported LUKS field as a sentence-ready string.
+
+    Keyslots arrive as a list, because how many are in use is a count of
+    distinct things; everything else is already a string. An empty list is not
+    zero keyslots in use, it is nothing reported, so it reads as not available.
+    """
+    if isinstance(value, (list, tuple)):
+        value = ", ".join(str(v) for v in value)
+    text = str(value).strip() if value is not None else ""
+    return text or NOT_AVAILABLE
+
+
 def _row(title, subtitle="", icon=None, cls=None):
     r = Adw.ActionRow(title=title, subtitle=subtitle)
     if icon:
@@ -53,6 +79,7 @@ class EncryptionTab(Gtk.Box):
             self._page.remove(child)
             child = nxt
 
+        self._luks_rows = {}
         encrypted = _encrypted()
         tpm = ss.has_tpm2()
         g = Adw.PreferencesGroup(title="Disk Encryption")
@@ -95,6 +122,16 @@ class EncryptionTab(Gtk.Box):
         self._unlock.add(self._remove_row)
         self._page.append(self._unlock)
 
+        self._luks_rows = {}
+        details = Adw.PreferencesGroup(
+            title="Encryption details",
+            description="As the encryption tool reports them, read with the button above.")
+        for key, title in LUKS_DETAILS:
+            row = _row(title, NOT_AVAILABLE)
+            self._luks_rows[key] = row
+            details.add(row)
+        self._page.append(details)
+
     # ------------------------------------------------------------ status
     def _load_status(self) -> None:
         self._btn_details.set_sensitive(False)
@@ -119,6 +156,8 @@ class EncryptionTab(Gtk.Box):
         if (st.get("tpm2_slots") or 0) > 1:
             self._status_row.set_subtitle(self._status_row.get_subtitle()
                                           + f" · {st['tpm2_slots']} TPM keys (older ones are unused)")
+        for key, _title in LUKS_DETAILS:
+            self._luks_rows[key].set_subtitle(_luks_value(st.get(key)))
 
     # ------------------------------------------------------------ enroll
     def _enroll_dialog(self) -> None:

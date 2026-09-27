@@ -1,0 +1,13 @@
+{
+  "encrypted": true,
+  "tpm2_present": true,
+  "tpm2_enrolled": false,
+  "tpm2_slots": 0,
+  "tpm2_pin": false,
+  "secure_boot": false,
+  "luks_device": "/dev/shani-luksblk",
+  "luks_version": "2",
+  "luks_cipher": "aes-xts-plain64",
+  "luks_kdf": "argon2id",
+  "luks_keyslots_in_use": 1
+}

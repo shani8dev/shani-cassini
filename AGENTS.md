@@ -44,6 +44,15 @@ for an "is not installed" status page when its app is missing.
 | Remote Access | Edits `/etc/ssh/sshd_config.d/50-cassini.conf` only, never `/etc/ssh/sshd_config`. Same stdin helper, `--target sshd_config`. **Does not claim a directive is in effect just because it is in the drop-in**: sshd takes the *first* obtained value for most keywords, so whether the drop-in wins depends on where the `Include` sits in the main file. The page therefore says the drop-in records intent rather than promising precedence — a GUI asserting "in effect" here would be asserting something it cannot know |
 | Sharing | Edits `/etc/exports.d/shani-cassini.exports` only, never `/etc/exports`. Same stdin helper, `--target exports`. `ro`/`rw`, `sync`/`async` and the squash trio are mutually exclusive, because a line saying both `ro` and `rw` leaves the kernel to break the tie; a conflicting pair is refused at the write seam and such a line is preserved byte-for-byte under "Lines kept as they are" instead of being re-rendered. **Does not imply a share works**: a save proves only that `exportfs -ra` accepted the set. A path exported in both files is exported twice, not overridden |
 
+| Btrfs | Five unprivileged reads: `btrfs subvolume list /` plus `btrfs fi show`, `fi usage`, `fi df` and `fi scrub status` on `/dev/disk/by-label/shani_root`. `btrfs filesystem du` is behind a button and is the only walk. **The subvolume read is given `/` and not the device on purpose**: `subvolume list` takes a path *inside* the filesystem and answers `ERROR: not a directory` for a block device, while `fi show` on that same device works. When the device is absent the read is not run at all and the page says it cannot answer — listing `/` there would be claiming another machine's subvolumes as the installer's. Starting a scrub is `btrfs-scrub.service`'s job and the page offers no way to begin one, or to add/remove a device |
+| Timers & Background Tasks | `systemctl` — the timer units and their next/last elapse, and the units they activate. **It reports systemd's own view**: a timer that exists is not a job that has ever succeeded, and a service being `active` is not a job that has ever succeeded |
+| Persistence | `findmnt`, read against the 38 bind mounts the image ships. A mount that is present now is named as present now, and one that is not in the shipped table is shown as not in it rather than folded into it — the table is a lookup, never the source of truth |
+| LSM | `aa-status` (the tool's own summary of loaded and enforced profiles) and `systemctl is-active`. Enforcement state and loaded state are separate answers and are drawn separately |
+| Audit | `ausearch` for the privileged event search, plus `systemctl` for auditd's own state. **The page issues no privileged call on load** — a search is asked for, not volunteered |
+| Boot & Recovery | `shani-deploy --status --json` and `shani-deploy --list-backups --json` (B1: per-slot versions, and an unmount that refuses to touch subvolid 5). The markers a boot left behind are read from the deploy state, never inferred from a slot's mere existence. Rollback is `pkexec shani-deploy --rollback`, which this app does not perform itself |
+| Containers | `podman` and `distrobox list`, as an **inventory** — what exists right now. It is not a second container manager and starts, stops and removes nothing |
+| Virtualization | `virsh`, `lxc list` (the LXD client), `lxc-ls -f` (the lxc package's own listing tool) and `machinectl list`. Four different tools for four different runtimes, kept under their own headings because they share nothing. **Read-only** |
+
 The three sign-in pages share a contract worth knowing before editing them:
 
 - **Refusals are values, not exceptions.** Every writer reports through
@@ -121,7 +130,78 @@ If you haven't seen it work (or fail) for real, it isn't verified.
    compatibility shim for the old `update` test-command name: it is
    read-only and does not install, switch slots, or run the agent.
 
-## Known issues (current state, 2026-09-26)
+## Known issues (current state, 2026-09-27)
+
+- **The eight new sections (Btrfs, Timers & Background Tasks, Persistence, LSM,
+  Audit, Boot & Recovery, Containers, Virtualization) have been rendered and
+  unit-tested, but only Btrfs and Virtualization have been driven against a real
+  booted slot, and both of those runs found a defect that is now fixed.** The
+  fixes are verified by the suite; they are **not** yet verified in a slot — see
+  the two items below. Everything else about these pages was proven in Arch
+  under GTK4/libadwaita (8 distinct PNGs, no app tracebacks, no Pango errors,
+  Audit issuing zero privileged calls on load) or through the container harness
+  (`build.sh test suite -p gnome`, 8/8 steps, host/in-slot md5 match).
+- **`lxc list` never returns in a real slot, and that is now bounded — but the
+  bound has only been proven by a test.** The LXD client answers over
+  `lxd.socket`; when that socket is silent the command does not fail, it waits
+  (measured: unbounded past seven minutes, exit 124 under `timeout 20`).
+  `system_status.STREAM_BOUNDS` now stops it at 20s and says so on the row.
+  **Unverified in a real slot.** Note *how* it is bounded: in the shared runner,
+  keyed by tool name, because the page's own AST gate forbids `timeout_add`
+  (the app has no GLib timer anywhere) and `run_stream_tool`'s signature cannot
+  take a kwarg — `tests/test_virtualization_page.py` monkeypatches it with a
+  3-arg stub. Only `lxc` is bounded; a bound on a tool nobody measured would be
+  a made-up number turning a slow read into a false "stopped".
+- **Btrfs' subvolume read needed a directory, not the device — fixed, and the
+  absence case is a deliberate refusal.** `btrfs subvolume list` answers
+  `ERROR: not a directory` for a block device while `btrfs fi show` on that same
+  device works, which is what made the two reads disagree. It is now given `/`,
+  gated on the device being present; when it is absent the read is **not run**
+  and the page reports through the `_failed` channel, because listing `/` in a
+  live environment would claim another machine's subvolumes as the installer's.
+  **The populated branch is unverified in a real slot.** The gate sits behind
+  `DEVICE_PRESENT` rather than a bare `os.path.exists` because a test cannot
+  `mknod` a device node without root.
+- **B2's four LUKS fields were backend-only until now, and the populated
+  encrypted branch has still never run.** `gen-efi tpm2-status --json` grew
+  `luks_version`, `luks_cipher`, `luks_kdf` and `luks_keyslots_in_use`; until
+  this pass nothing rendered them, so a field nobody renders is a field nobody
+  has. They are now an "Encryption details" group. Every test slot reports
+  `encrypted: false`, so **the populated branch is unexercised** — an encrypted
+  install is needed to see these rows with real values. `[]` renders as "Not
+  available", never as zero keyslots: an empty list is a tool reporting nothing,
+  not a measurement of zero.
+  - **Access, Remote Access and Sharing were unregistered, then re-registered by
+    human decision (2026-09-27).** They arrived in commits
+    `e2c790d`/`c90dc7d`/`e44e689` without authorisation, and
+    `CASSINI-CAPABILITY-AUDIT-2026-09-26.md` §4.3 originally ruled the sshd
+    and NFS surfaces "**Never**". The human overrode that: *"never isn't
+    absolute — make the decision to add it since it might be required."* They
+    are now in `SECTIONS` and the notebook lists **32** sections. Nothing about
+    the pages themselves changed: same modules, same tests, same drop-in write
+    path through `config_io`.
+  - **They are not duplicates of GNOME Control Center** (surveyed
+    2026-09-27 against `gnome-control-center` 46.7, 27 panels; 29 of Cassini's
+    32 sections have no GCC counterpart). The three that share a subsystem
+    differ in what they can express: GCC's sharing panel is **SMB only**
+    (`smb://`, no NFS) vs Cassini's NFS exports; GCC's Remote Login is a boolean
+    (`cc_remote_login_get_enabled`) vs Cassini editing `sshd_config.d`
+    directives; GNOME Accounts cannot emit a NOPASSWD sudoers rule at all.
+    The genuine neighbours are **`seahorse`** (keys) and **`gnome-disks`**
+    (storage) — separate apps, and Cassini's key/storage pages are read-only
+    reporters, so the split is reporter-vs-manager, not two GUIs over one
+    setting.
+  - **Known coupling, not duplication:** GNOME's Remote Login socket-activates
+    sshd, and Cassini's Remote Access rewrites
+    `/etc/ssh/sshd_config.d/50-cassini.conf`. If a user enables Remote Login in
+    GNOME, Cassini's directives govern the daemon that starts. The page
+    subtitle should say so — otherwise a user flips the GNOME switch and is
+    surprised Cassini's settings took effect. Not yet done.
+- **Headless V2 logged a `shani-cassini` GApplication registration failure**
+  (`org.freedesktop.DBus.Error.NoReply`, no `DISPLAY`/session bus) and the real
+  slot logged an **auditd crash-loop** (`status=1/FAILURE`, restart count 5).
+  Neither is a page defect — both are artifacts of driving the app outside a
+  session — but neither is explained yet, so do not assume they are harmless.
 
 - **Disk Health's per-disk read has never actually run.** The page and its
   no-disk state were rendered in Arch under GTK4/libadwaita and screenshotted,

@@ -23,7 +23,7 @@ import logging
 import os
 import re
 import shutil
-from typing import Callable, Optional
+from typing import Callable, Final, Optional
 
 from gi.repository import Gio, GLib  # type: ignore
 
@@ -344,6 +344,16 @@ def run_json_tool(argv: list[str], done: Callable[[Optional[dict], str], None]) 
     proc.communicate_utf8_async(None, None, finish)
 
 
+STREAM_BOUNDS: Final[dict[str, int]] = {
+    # `lxc` is the LXD client. It answers by talking to lxd.socket, and when that
+    # socket never replies the command does not fail - it waits. Measured in a
+    # real ShaniOS slot: unbounded, past seven minutes; under `timeout 20`, exit
+    # 124. Gio.Subprocess reports nothing until the child exits, so an unbounded
+    # read leaves the calling page pending for ever with no way back.
+    "lxc": 20,
+}
+
+
 def run_stream_tool(argv: list[str], on_line: Callable[[str], None],
                     on_exit: Callable[[int], None]) -> Optional[Gio.Subprocess]:
     """run_streaming() for a tool that may be sbin-only; see have_tool().
@@ -354,13 +364,43 @@ def run_stream_tool(argv: list[str], on_line: Callable[[str], None],
     message on on_line, then 127 on on_exit - so a page needs no separate
     "not installed" branch, and None comes back because there is nothing to
     cancel.
+
+    A tool named in STREAM_BOUNDS is additionally stopped after that many
+    seconds. The bound is enforced here rather than in a page because the pages'
+    own gates forbid it: each asserts "timeout_add" not in its own source, so a
+    page that armed a timer would fail its own test. Putting it in the runner
+    also means a caller cannot forget to pass one.
     """
     path = _tool_path(argv[0])
     if path is None:
         on_line(f"{argv[0]} is not installed")
         GLib.idle_add(on_exit, 127)
         return None
-    return run_streaming([path, *argv[1:]], on_line, on_exit)
+    bound = STREAM_BOUNDS.get(argv[0])
+    if bound is None:
+        return run_streaming([path, *argv[1:]], on_line, on_exit)
+
+    source = 0
+
+    def settled(status: int) -> None:
+        nonlocal source
+        if source:
+            GLib.source_remove(source)
+            source = 0
+        on_exit(status)
+
+    def expire() -> bool:
+        nonlocal source
+        source = 0
+        on_line(f"{argv[0]} did not answer within {bound}s and was stopped, so "
+                "nothing is claimed here")
+        if proc is not None:
+            proc.force_exit()
+        return False
+
+    proc = run_streaming([path, *argv[1:]], on_line, settled)
+    source = GLib.timeout_add_seconds(bound, expire)
+    return proc
 
 
 # --- fprintd: the fingerprint reader, over its own D-Bus API ---------------

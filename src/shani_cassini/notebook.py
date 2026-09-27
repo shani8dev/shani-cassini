@@ -113,7 +113,8 @@ SECTIONS = [
          "visudo checks before it is installed"),
         (RemoteAccessTab, "remoteaccess", "Remote Access", "network-server-symbolic",
          "The sshd settings Cassini keeps in its own drop-in, and the ones "
-         "sshd's main file decides"),
+         "sshd's main file decides. These govern the daemon GNOME's Remote "
+         "Login starts"),
     ]),
     ("Updates", [
         (BootRecoveryTab, "boot", "Boot & Recovery", "media-removable-symbolic",
