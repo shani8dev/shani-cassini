@@ -60,9 +60,7 @@ Two more measured shapes the parsers here are written against:
 from __future__ import annotations
 
 import logging
-import os
 import re
-import shutil
 
 from gi.repository import Adw, Gio, GLib, Gtk  # type: ignore
 
@@ -180,24 +178,6 @@ def _selectable(row: Adw.ActionRow) -> Adw.ActionRow:
     address list are exactly the strings somebody comes here to copy."""
     row.set_subtitle_selectable(True)
     return row
-
-
-def _tool_path(name: str) -> str:
-    """The tool to run: PATH first, then the sbin directories.
-
-    firewalld and fail2ban install firewall-cmd and fail2ban-client in
-    /usr/sbin, and a desktop session's PATH often stops before it, so a plain
-    which() would call an installed tool missing. have_sbin() carries the same
-    list, but this needs the path to run it with, not only the answer.
-    """
-    found = shutil.which(name)
-    if found:
-        return found
-    for directory in ss.SBIN_DIRS:
-        candidate = os.path.join(directory, name)
-        if os.access(candidate, os.X_OK):
-            return candidate
-    return name
 
 
 def _refusal(lines: list[str], status: int) -> str:
@@ -410,12 +390,12 @@ class FirewallTab(Gtk.Box):
         self._render()
         for key, flag in FIREWALL_QUERIES:
             if FIREWALL_CMD not in self._missing:
-                self._ask(key, [_tool_path(FIREWALL_CMD), flag])
+                self._ask(key, [ss.tool_path_or_self(FIREWALL_CMD), flag])
         if FAIL2BAN_CLIENT not in self._missing:
             # The jails are not known until the server has named them, so this is
             # the one read that is a step rather than a leaf.
             self._ask(FAIL2BAN_SUBCOMMAND,
-                      [_tool_path(FAIL2BAN_CLIENT), FAIL2BAN_SUBCOMMAND])
+                      [ss.tool_path_or_self(FAIL2BAN_CLIENT), FAIL2BAN_SUBCOMMAND])
 
     def _ask(self, key: str, argv: list[str]) -> None:
         """One read, answered on the main loop into a list nobody else touches.
@@ -466,7 +446,7 @@ class FirewallTab(Gtk.Box):
         self._jails_read = True
         self._jail_names = _jails(entry["lines"])
         for jail in self._jail_names:
-            self._ask(jail, [_tool_path(FAIL2BAN_CLIENT), FAIL2BAN_SUBCOMMAND, jail])
+            self._ask(jail, [ss.tool_path_or_self(FAIL2BAN_CLIENT), FAIL2BAN_SUBCOMMAND, jail])
 
     def _reading(self, key: str) -> bool:
         """True while a read has been started and has not answered. That is not

@@ -416,12 +416,44 @@ def test_both_tools_are_asked_for_with_the_sbin_fallback(tmp_path, monkeypatch) 
 
 def test_the_tool_paths_resolve_where_the_tools_live(tmp_path, monkeypatch) -> None:
     """The path that actually gets run, not only the yes/no, so a tool in
-    /usr/sbin is runnable rather than merely detected."""
+    /usr/sbin is runnable rather than merely detected.
+
+    This used to assert that the PAGE's own source contained "SBIN_DIRS", which
+    pinned the copy to a file rather than the behaviour and so forbade sharing
+    the resolver. It now asks the shared resolver directly, and checks the case
+    the old version never did: a tool that PATH cannot see at all.
+    """
     fake_tools(tmp_path, monkeypatch)
     for tool in (fw.FIREWALL_CMD, fw.FAIL2BAN_CLIENT):
-        assert fw._tool_path(tool).endswith(tool), fw._tool_path(tool)
-    assert "SBIN_DIRS" in Path(fw.__file__).read_text(encoding="utf-8"), \
-        "the page must resolve a path to run, as smart.py does for smartctl"
+        assert ss.tool_path_or_self(tool).endswith(tool), ss.tool_path_or_self(tool)
+
+    # The whole reason this resolver exists: PATH stops before /usr/sbin on a
+    # desktop session, so a tool only SBIN_DIRS can see must still be runnable.
+    sbin = tmp_path / "sbin-only"
+    sbin.mkdir()
+    for tool in (fw.FIREWALL_CMD, fw.FAIL2BAN_CLIENT):
+        f = sbin / tool
+        f.write_text("#!/bin/sh\nexit 0\n")
+        f.chmod(0o755)
+    monkeypatch.setattr(ss, "SBIN_DIRS", (str(sbin),))
+    monkeypatch.setenv("PATH", str(tmp_path / "no-such-path"))
+    for tool in (fw.FIREWALL_CMD, fw.FAIL2BAN_CLIENT):
+        assert ss.tool_path_or_self(tool) == str(sbin / tool), tool
+        assert ss.have_tool(tool), tool
+
+
+def test_an_absent_tool_is_still_run_so_its_own_error_is_what_reports(tmp_path, monkeypatch) -> None:
+    """A tool that is nowhere must be executed anyway, not skipped.
+
+    This is the one behaviour that separates tool_path_or_self() from
+    _tool_path(), and it is why the page uses the former: a page that decided
+    in advance that a tool was missing would report its own guess, where
+    running it yields the tool's real error.
+    """
+    monkeypatch.setattr(ss, "SBIN_DIRS", (str(tmp_path / "no-such-sbin"),))
+    monkeypatch.setenv("PATH", str(tmp_path / "no-such-path"))
+    assert ss.tool_path_or_self("definitely-not-installed-xyz") == "definitely-not-installed-xyz"
+    assert ss._tool_path("definitely-not-installed-xyz") is None
 
 
 # --- 2. firewalld, running and readable --------------------------------------

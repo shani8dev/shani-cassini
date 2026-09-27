@@ -256,13 +256,39 @@ If you haven't seen it work (or fail) for real, it isn't verified.
   Do not read the passing fake-CLI tests as evidence that a populated row
   renders correctly.
 
-- **`tabs/firewall.py` still carries a private `_tool_path()` and should use
-  `system_status.have_tool()` / `run_json_tool()` instead.** `ba3321b` added the
-  shared sbin-aware runner precisely so the next page would not grow its own
-  copy, and Firewall — added in the same batch — is that copy. It works and is
-  tested, so this is duplication rather than a bug; folding it in is a
-  behaviour-preserving cleanup that wants its own re-verification (the page's
-  fake-CLI tests plus a fresh render), not a drive-by edit inside a page commit.
+- **`tabs/firewall.py`'s private `_tool_path()` is gone — FOLDED IN (2026-09-27),
+  and the suggested remedy in the old note was slightly wrong.** `ba3321b` added
+  the shared sbin-aware resolver precisely so the next page would not grow its
+  own copy, and Firewall was that copy. It now calls a new
+  `system_status.tool_path_or_self()`; the page's private function and its
+  `os`/`shutil` imports are deleted, and its three call sites are unchanged in
+  behaviour. **Neither of the two functions the old note suggested would have
+  worked.** `have_tool()` answers a yes/no and the page needs a path to put in
+  argv; `run_json_tool()` owns its own argv, but Firewall batches several
+  queries into one read and builds each argv itself, so handing it a runner
+  would have meant re-plumbing the page. What was actually missing was a third
+  thing — a resolver that returns a *runnable* path, and returns the bare name
+  when the tool is absent so the exec still happens and the tool's own error is
+  what reports. That is `tool_path_or_self()`, and the difference from
+  `_tool_path()` is now tested rather than assumed.
+
+  **A test was pinning the file's source text, which is what made this look
+  un-doable.** `test_the_tool_paths_resolve_where_the_tools_live` asserted
+  `"SBIN_DIRS" in Path(fw.__file__).read_text()` — i.e. that the *page* contained
+  a copy of the search. Deleting the copy therefore failed the test by
+  construction, and the honest reading is that the test had pinned an
+  implementation shape rather than the behaviour it describes. It now asks the
+  shared resolver directly, and additionally covers the case it never did: a
+  tool that `PATH` cannot see at all (an sbin-only tool with an emptied PATH),
+  which is the entire reason the resolver exists. A second test covers the
+  absent-tool contract. Suite **973 passed**.
+
+  **Do not reintroduce a source-text assertion of this kind.** Asserting on
+  `some_module.__file__`'s contents passes while proving nothing about
+  behaviour, and it silently forbids the next person from sharing the code.
+  This is the same trap as the `sed`-based dispatcher extraction in
+  `shani-deploy`'s `test-tpm2-status-json.sh` — a test that locates code by
+  text retargets the moment the code moves.
 
 - **The Fingerprint tab's live `fprintd` path is UNVERIFIED against a running
   daemon — proven impossible in a container, so it needs a real slot.** The D-Bus

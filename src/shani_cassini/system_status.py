@@ -485,6 +485,19 @@ def _tool_path(cmd: str) -> Optional[str]:
     return None
 
 
+def tool_path_or_self(cmd: str) -> str:
+    """The path to run cmd with, or cmd itself when it is nowhere to be found.
+
+    _tool_path() answers "where is it, if anywhere", which is the right
+    question for have_tool() and wrong for a caller that is about to build
+    argv: an absent tool must still be executed, so the failure is the tool's
+    own real error rather than the page deciding in advance that the tool is
+    missing. Firewall needed exactly that and grew a private copy of the
+    search to get it; this is that copy, shared.
+    """
+    return _tool_path(cmd) or cmd
+
+
 def have_tool(cmd: str) -> bool:
     """Is cmd runnable at all, counting /usr/sbin and /usr/local/sbin?
 
