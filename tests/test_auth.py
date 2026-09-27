@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from shani_cassini.auth import AuthManager
+from shani_cassini.auth import AuthManager, _keyring_call
 
 
 class MockKeyring:
@@ -378,3 +378,47 @@ class TestKeyringStorage:
             am.logout()
             cred = mock_kr.get_credential("shani-cassini", "credentials")
             assert cred is None
+
+
+class TestKeyringCallDeadline:
+    """The bounded keyring call, which is the fix for a locked keyring hanging.
+
+    keyring's SecretService backend asks the session keyring to unlock and then
+    blocks in a D-Bus read waiting for a prompt nothing will ever answer, and it
+    raises nothing while doing so — so the `except Exception` around every keyring
+    call could not catch it and `AuthManager.__init__` never returned. These pin
+    the deadline so a refactor cannot quietly restore the hang; the mock keyring
+    used elsewhere in this file returns instantly and so never reaches it.
+    """
+
+    @staticmethod
+    def _never_answers(*_args, **_kwargs):
+        time.sleep(30)
+
+    def test_a_blocking_call_raises_rather_than_hanging(self):
+        with patch("shani_cassini.auth._KEYRING_TIMEOUT", 0.05):
+            started = time.monotonic()
+            with pytest.raises(TimeoutError):
+                _keyring_call(self._never_answers)
+            assert time.monotonic() - started < 5
+
+    def test_an_ordinary_call_still_returns_its_value(self):
+        assert _keyring_call(lambda a, b: a + b, 2, 3) == 5
+
+    def test_a_failing_call_propagates_its_own_exception(self):
+        def _boom():
+            raise ValueError("backend refused")
+
+        with pytest.raises(ValueError, match="backend refused"):
+            _keyring_call(_boom)
+
+    def test_auth_manager_initialises_against_a_keyring_that_never_answers(self):
+        """The reported symptom: constructing AuthManager did not return."""
+        kr = MagicMock()
+        kr.get_password.side_effect = self._never_answers
+        kr.get_credential.side_effect = self._never_answers
+        with patch("shani_cassini.auth.keyring", kr):
+            with patch("shani_cassini.auth._KEYRING_TIMEOUT", 0.05):
+                am = AuthManager(base_url="http://localhost:9999")
+        assert am._keyring_available is False
+        assert am._is_authenticated is False
