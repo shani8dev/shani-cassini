@@ -163,6 +163,26 @@ If you haven't seen it work (or fail) for real, it isn't verified.
   **The populated branch is unverified in a real slot.** The gate sits behind
   `DEVICE_PRESENT` rather than a bare `os.path.exists` because a test cannot
   `mknod` a device node without root.
+- **The scrub/balance units Cassini would drive come from `btrfsmaintenance`,
+  not `btrfs-progs` — checked against the cached packages, because the obvious
+  assumption is wrong.** `btrfs-progs 7.1` ships **only** the *template* units
+  `btrfs-scrub@.service` / `btrfs-scrub@.timer` (path-parameterized, with `-`
+  standing in for `/`, so the root fs is `btrfs-scrub@-.service`). It ships no
+  `balance`, `defrag` or `trim` unit at all. The plain names —
+  `btrfs-{balance,defrag,scrub,trim}.{service,timer}` — are shipped by
+  **`btrfsmaintenance` 0.5.2**. Shanios gets them because `shani-settings`
+  declares `btrfsmaintenance` (`shani-pkgbuilds/shani-settings/PKGBUILD:16`)
+  and enables the four non-template timers
+  (`shani-settings.install:35-38`). So `systemctl start btrfs-scrub.service`
+  is the correct command *on Shanios* and the **wrong** one on a
+  btrfs-progs-only system, which is the whole reason this is worth writing
+  down: the two schemes use **coincidentally identical names**, so a reviewer
+  reading either one gets no signal that they are different units. The trap is
+  silent — drop `btrfsmaintenance` from `depends` and install-time
+  `systemctl enable` fails, and `btrfs-progs`' template unit does **not** take
+  over, so monthly scrubs simply stop. Whoever implements the scrub/balance
+  actions must confirm the unit exists (`systemctl cat btrfs-scrub.service`)
+  rather than trust the name.
 - **B2's four LUKS fields were backend-only until now, and the populated
   encrypted branch has still never run.** `gen-efi tpm2-status --json` grew
   `luks_version`, `luks_cipher`, `luks_kdf` and `luks_keyslots_in_use`; until
