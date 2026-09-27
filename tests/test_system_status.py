@@ -122,6 +122,39 @@ def test_system_boot_card_uses_only_real_deploy_fields(fake_bin, monkeypatch):
     assert find_named(tab, "services-flow-box") is None
 
 
+def test_one_unreadable_source_does_not_blank_the_whole_hardware_card(
+        monkeypatch):
+    """Each hardware reading is independent, so one that cannot be taken is
+    reported on its own row and leaves the rest alone.
+
+    They were one try block: a /proc/meminfo without a MemTotal line raised
+    IndexError at the RAM row, and the handler around the whole card then
+    skipped battery, virtualisation and bluetooth, which were left showing
+    the "" they are created with. A missing thermal zone is normal on a
+    desktop; it must not cost the reader the battery.
+    """
+    from shani_cassini.tabs.system import SystemTab
+    from shani_cassini.widgets import find_named
+
+    def no_meminfo(*_a, **_k):
+        raise FileNotFoundError("/proc/meminfo")
+
+    monkeypatch.setattr("builtins.open", no_meminfo)
+    tab = SystemTab()
+    tab._fetch_hardware_info()
+
+    def label(name):
+        w = find_named(tab, name)
+        return w.get_label() if w is not None else None
+
+    # the one that failed says so, rather than aborting the card
+    assert label("hw-ram") == "N/A"
+    # and the ones after it in the same try block were still taken
+    assert label("hw-battery") not in (None, ""), "battery was skipped by the RAM failure"
+    assert label("hw-virt") not in (None, ""), "virtualisation was skipped by the RAM failure"
+    assert label("hw-bluetooth") not in (None, ""), "bluetooth was skipped by the RAM failure"
+
+
 @pytest.fixture
 def pkexec_log(fake_bin):
     log = fake_bin / "pkexec.log"

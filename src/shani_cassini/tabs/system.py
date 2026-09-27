@@ -86,92 +86,80 @@ class SystemTab(Gtk.Box):
         
         self._fetch_boot_slots_info()
 
+    def _read(self, read, fallback: str = "N/A") -> str:
+        """One reading, or the fallback, and never an exception.
+
+        The hardware rows are independent on purpose. They used to share one
+        try block, so a /proc/meminfo with no MemTotal line raised at the RAM
+        row and the handler around the whole card then skipped battery,
+        virtualisation and bluetooth - all three left showing the empty string
+        they are created with. A missing thermal zone is ordinary on a desktop
+        and must not cost the reader the battery.
+        """
+        try:
+            return read()
+        except Exception:  # noqa: BLE001 - one source is not the card's failure
+            return fallback
+
+    @staticmethod
+    def _read_text(path: str) -> str:
+        with open(path, "r") as fh:
+            return fh.read()
+
+    def _cpu_text(self) -> str:
+        cpuinfo = self._read_text("/proc/cpuinfo")
+        model = next((ln.split(":", 1)[1].strip() for ln in cpuinfo.split("\n")
+                      if "model name" in ln), "Unknown")
+        threads = len([ln for ln in cpuinfo.split("\n") if ln.startswith("processor")])
+        return f"{model} ({threads} threads)"
+
+    def _cpu_temp_text(self) -> str:
+        raw = self._read_text("/sys/class/thermal/thermal_zone0/temp").strip()
+        return f"{int(raw) / 1000:.0f}\u00b0C"
+
+    def _gpu_text(self) -> str:
+        out = subprocess.run(["lspci"], capture_output=True, text=True,
+                             timeout=10).stdout
+        lines = [ln for ln in out.split("\n") if "VGA" in ln or "3D" in ln]
+        return lines[0].split(":")[2].strip() if lines else "Unknown"
+
+    def _ram_text(self) -> str:
+        meminfo = self._read_text("/proc/meminfo")
+        kb = {}
+        for line in meminfo.split("\n"):
+            if ":" in line:
+                key, _, rest = line.partition(":")
+                kb[key.strip()] = int(rest.split()[0])
+        total = kb["MemTotal"] // 1024
+        used = total - kb.get("MemAvailable", kb["MemTotal"]) // 1024
+        return f"{total} MB ({used} MB used)"
+
+    def _battery_text(self) -> str:
+        base = "/sys/class/power_supply/BAT0"
+        return f"{self._read_text(base + '/capacity').strip()}% ({self._read_text(base + '/status').strip()})"
+
+    def _virt_text(self) -> str:
+        cpuinfo = self._read_text("/proc/cpuinfo")
+        return ("VT-x/AMD-V available" if ("vmx" in cpuinfo or "svm" in cpuinfo)
+                else "VT-x/AMD-V not available")
+
+    def _bluetooth_text(self) -> str:
+        out = subprocess.run(["bluetoothctl", "show"], capture_output=True,
+                             text=True, timeout=5).stdout
+        return "\u25cf Active" if "Powered: yes" in out else "\u25cb Inactive"
+
     def _fetch_hardware_info(self) -> None:
         """Fetch hardware information and update the UI."""
-        try:
-            # Get CPU information
-            with open('/proc/cpuinfo', 'r') as f:
-                cpu_info = f.read()
-                # Extract model name
-                model_line = [line for line in cpu_info.split('\n') if 'model name' in line]
-                if model_line:
-                    cpu_model = model_line[0].split(':')[1].strip()
-                else:
-                    cpu_model = "Unknown"
-                
-                # Count processors
-                processor_lines = [line for line in cpu_info.split('\n') if line.startswith('processor')]
-                cpu_count = len(processor_lines)
-                
-                cpu_text = f"{cpu_model} ({cpu_count} threads)"
-                self._update_label("hw-cpu", cpu_text)
-            
-            # Get CPU temperature
-            try:
-                with open('/sys/class/thermal/thermal_zone0/temp', 'r') as f:
-                    temp_temp = int(f.read().strip()) / 1000
-                    cpu_temp_text = f"{temp_temp:.0f}°C"
-                    self._update_label("hw-cpu-temp", cpu_temp_text)
-            except:
-                self._update_label("hw-cpu-temp", "N/A")
-            
-            # Get GPU information
-            try:
-                gpu_output = subprocess.check_output(['lspci'], text=True)
-                gpu_lines = [line for line in gpu_output.split('\n') if 'VGA' in line or '3D' in line]
-                if gpu_lines:
-                    gpu_info = gpu_lines[0].split(':')[2].strip()
-                else:
-                    gpu_info = "Unknown"
-                self._update_label("hw-gpu", gpu_info)
-            except:
-                self._update_label("hw-gpu", "Unknown")
-            
-            # Get RAM information
-            with open('/proc/meminfo', 'r') as f:
-                mem_info = f.read()
-                mem_lines = mem_info.split('\n')
-                mem_total = int([line for line in mem_lines if 'MemTotal' in line][0].split()[1]) // 1024  # MB
-                mem_available = int([line for line in mem_lines if 'MemAvailable' in line][0].split()[1]) // 1024  # MB
-                mem_used = mem_total - mem_available
-                ram_text = f"{mem_total} MB ({mem_used} MB used)"
-                self._update_label("hw-ram", ram_text)
-            
-            # Get battery information (if available)
-            try:
-                with open('/sys/class/power_supply/BAT0/capacity', 'r') as f:
-                    battery_percent = f.read().strip()
-                with open('/sys/class/power_supply/BAT0/status', 'r') as f:
-                    battery_status = f.read().strip()
-                battery_text = f"{battery_percent}% ({battery_status})"
-                self._update_label("hw-battery", battery_text)
-            except:
-                self._update_label("hw-battery", "N/A")
-            
-            # Get virtualization information
-            try:
-                with open('/proc/cpuinfo', 'r') as f:
-                    cpuinfo = f.read()
-                    if 'vmx' in cpuinfo or 'svm' in cpuinfo:
-                        virt_text = "VT-x/AMD-V available"
-                    else:
-                        virt_text = "VT-x/AMD-V not available"
-                self._update_label("hw-virt", virt_text)
-            except:
-                self._update_label("hw-virt", "Unknown")
-            
-            # Get Bluetooth status
-            try:
-                result = subprocess.run(['bluetoothctl', 'show'], capture_output=True, text=True, timeout=5)
-                if 'Powered: yes' in result.stdout:
-                    self._update_label("hw-bluetooth", "● Active")
-                else:
-                    self._update_label("hw-bluetooth", "○ Inactive")
-            except:
-                self._update_label("hw-bluetooth", "○ Inactive")
-                
-        except Exception as e:
-            logger.error(f"Failed to fetch hardware information: {e}")
+        for name, read, fallback in (
+            ("hw-cpu", self._cpu_text, "Unknown"),
+            ("hw-cpu-temp", self._cpu_temp_text, "N/A"),
+            ("hw-gpu", self._gpu_text, "Unknown"),
+            ("hw-ram", self._ram_text, "N/A"),
+            ("hw-battery", self._battery_text, "N/A"),
+            ("hw-virt", self._virt_text, "Unknown"),
+            ("hw-bluetooth", self._bluetooth_text, "\u25cb Inactive"),
+        ):
+            self._update_label(name, self._read(read, fallback))
 
     def _fetch_storage_info(self) -> None:
         """Fetch storage information and update the UI."""
