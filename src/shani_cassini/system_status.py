@@ -683,15 +683,16 @@ def fprintd_status(done: Callable[[Optional[dict], str], None], timeout_s: float
                 return
             if not paths:
                 finish({"daemon": True, "device_present": False, "path": "", "name": "",
-                        "scan_type": "", "num_enroll_stages": None, "fingers": []})
+                        "scan_type": "", "num_enroll_stages": None, "fingers": [],
+                        "device_count": 0})
                 return
-            _fprintd_device(conn, paths[0], finish)
+            _fprintd_device(conn, paths[0], finish, len(paths))
         _dbus_call(conn, FPRINTD_PATH, FPRINTD_MANAGER, "GetDevices", [], devices)
 
     _system_bus(status_step)
 
 
-def _fprintd_device(conn, path: str, finish) -> None:
+def _fprintd_device(conn, path: str, finish, count: int = 1) -> None:
     """One device's five properties and the fingers enrolled on the caller."""
     def props(res, _c):
         try:
@@ -707,17 +708,17 @@ def _fprintd_device(conn, path: str, finish) -> None:
             except ValueError as e:
                 # NoEnrolledPrints is fprintd's way of saying "none yet"
                 if fprintd_error(str(e)).endswith("NoEnrolledPrints"):
-                    finish(_status(path, values, []))
+                    finish(_status(path, values, [], count))
                     return
                 finish(None, f"fprintd did not answer: {e}")
                 return
-            finish(_status(path, values, [str(x) for x in (raw2[0] if raw2 else [])]))
+            finish(_status(path, values, [str(x) for x in (raw2[0] if raw2 else [])], count))
         _dbus_call(conn, path, FPRINTD_DEVICE, "ListEnrolledFingers",
                    [_s(FPRINTD_SELF_USER)], fingers)
     _dbus_call(conn, path, FPRINTD_PROPERTIES, "GetAll", [_s(FPRINTD_DEVICE)], props)
 
 
-def _status(path: str, values: dict, fingers: list) -> dict:
+def _status(path: str, values: dict, fingers: list, count: int = 1) -> dict:
     stages = values.get("num-enroll-stages")
     return {"daemon": True,
             "device_present": True,
@@ -725,7 +726,8 @@ def _status(path: str, values: dict, fingers: list) -> dict:
             "name": str(values.get("name") or ""),
             "scan_type": str(values.get("scan-type") or ""),
             "num_enroll_stages": int(stages) if isinstance(stages, int) else None,
-            "fingers": fingers}
+            "fingers": fingers,
+            "device_count": count}
 
 
 def fprintd_properties(path: str, done: Callable[[Optional[dict], str], None]) -> None:

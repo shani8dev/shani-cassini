@@ -176,6 +176,9 @@ class BiometricsTab(Gtk.Box):
         self._row_enroll.add_suffix(self._btn_cancel)
         self._row_enroll.add_suffix(self._btn_enroll)
         add.add(self._row_enroll)
+        self._progress = Gtk.ProgressBar(valign=Gtk.Align.CENTER, visible=False,
+                                         show_text=True)
+        add.add(self._progress)
         self._page.append(add)
 
         where = Adw.PreferencesGroup(
@@ -320,7 +323,9 @@ class BiometricsTab(Gtk.Box):
         scan = _esc(status["scan_type"] or "scan type not reported")
         stages = status["num_enroll_stages"]
         how = f" · {stages} scans per finger" if isinstance(stages, int) and stages > 0 else ""
-        self._set(self._row_device, "Reader", f"{name} · {scan}{how}", "ok")
+        count = status.get("device_count", 1)
+        many = f" · {count} readers attached" if isinstance(count, int) and count > 1 else ""
+        self._set(self._row_device, "Reader", f"{name} · {scan}{how}{many}", "ok")
 
         fingers = status["fingers"]
         enrolled = len(fingers)
@@ -434,6 +439,7 @@ class BiometricsTab(Gtk.Box):
             return
         self._enroll["started"] = True
         self._enrolling(True, f"Touch the reader with your {_esc(_finger_label(self._enroll['finger']))}")
+        self._paint_progress()
         self._enroll["timer"] = GLib.timeout_add_seconds(ENROLL_TIMEOUT_S, self._enroll_deadline)
 
     def _enroll_deadline(self) -> bool:
@@ -465,10 +471,30 @@ class BiometricsTab(Gtk.Box):
         if isinstance(stages, int) and stages > 0 and e["stages"]:
             text = f"({e['stages']}/{stages}) {text}"
         self._row_enroll.set_subtitle(_esc(text))
+        self._paint_progress()
         if e["busy"]:
             return
         e["busy"] = True
         ss.fprintd_properties(e["path"], self._on_live)
+
+    def _paint_progress(self) -> None:
+        """The bar, only while there is a total to be a fraction of.
+
+        A device that reports no num-enroll-stages gets no bar: a progress
+        indicator with an invented total is worse than the count in the
+        subtitle.
+        """
+        e = self._enroll
+        if e is None:
+            self._progress.set_visible(False)
+            return
+        stages = self._status.get("num_enroll_stages") if self._status else None
+        if not isinstance(stages, int) or stages <= 0:
+            self._progress.set_visible(False)
+            return
+        self._progress.set_text(f"{e['stages']}/{stages}")
+        self._progress.set_fraction(min(1.0, e["stages"] / stages))
+        self._progress.set_visible(True)
 
     def _on_live(self, props, err: str) -> None:
         e = self._enroll
@@ -492,6 +518,7 @@ class BiometricsTab(Gtk.Box):
         the signal subscription and give the reader back, in that order, each
         step only if the previous one actually ran."""
         e, self._enroll = self._enroll, None
+        self._progress.set_visible(False)
         self._enrolling(False)
         if e is None:
             return

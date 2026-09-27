@@ -802,6 +802,66 @@ def test_enrolling_every_finger_is_reported_rather_than_left_with_an_empty_picke
     assert "every finger" in tab._row_enroll.get_subtitle().lower()
 
 
+def test_a_second_reader_is_counted_rather_than_silently_dropped(fake_bin, fake_fprintd):
+    """GetDevices can return more than one path and the page was taking
+    paths[0] with no word about the rest.
+
+    Two readers is a real configuration - a built-in sensor plus a USB one -
+    and reporting one of them is a wrong answer, not a partial one. The count
+    is what makes it honest; the page still drives the first, which is the one
+    a scan would land on.
+    """
+    from shani_cassini.tabs.biometrics import BiometricsTab
+    fake_fprintd.daemon.devices = (DEVICE_PATH, "/net/reactivated/Fprint/Device/second")
+    tab = BiometricsTab()
+    assert spin(lambda: "2 readers" in tab._row_device.get_subtitle())
+
+
+def test_one_reader_is_not_announced_as_a_count(fake_bin, fake_fprintd):
+    """The count is only interesting when it is surprising."""
+    from shani_cassini.tabs.biometrics import BiometricsTab
+    tab = BiometricsTab()
+    assert spin(lambda: tab._row_fingers.get_subtitle() == "1 enrolled")
+    assert "readers" not in tab._row_device.get_subtitle()
+
+
+def test_enrollment_shows_a_progress_bar_that_tracks_the_stages(fake_fprintd, fake_bin):
+    """fprintd reports how many scans a finger needs and signals each one.
+
+    We rendered that as "(2/5)" inside a subtitle, which is a number
+    pretending to be a progress indicator. Plasma computes a fraction
+    (`enrollProgress()`) and drives a real bar, and the fraction is the part
+    a glance actually uses. Both stay: the count is worth reading, the bar is
+    worth seeing.
+    """
+    from gi.repository import Gtk
+    from shani_cassini.tabs.biometrics import BiometricsTab
+    tab, _mark = _enrolling_tab(fake_bin, fake_fprintd)
+    bar = tab._progress
+    assert isinstance(bar, Gtk.ProgressBar)
+    assert bar.get_visible()
+    assert bar.get_fraction() == 0.0
+    assert bar.get_text() == "0/5"
+
+    tab._on_enroll_status("enroll-stage-passed", False)
+    tab._on_enroll_status("enroll-stage-passed", False)
+    assert bar.get_fraction() == pytest.approx(2 / 5)
+    assert bar.get_text() == "2/5"
+
+    tab._on_enroll_status("enroll-completed", True)
+    assert not bar.get_visible()
+
+
+def test_no_progress_bar_when_the_reader_does_not_say_how_many_stages(fake_fprintd, fake_bin):
+    """A device that reports no num-enroll-stages must not be given a bar
+    that would have to invent a total."""
+    from shani_cassini.tabs.biometrics import BiometricsTab
+    fake_fprintd.daemon.props["num-enroll-stages"] = None
+    tab = BiometricsTab()
+    assert spin(lambda: tab._btn_enroll.get_sensitive())
+    assert not tab._progress.get_visible()
+
+
 def test_biometrics_names_the_package_when_fprintd_is_missing(fake_bin, fake_fprintd, monkeypatch):
     from shani_cassini import system_status as ss
     from shani_cassini.tabs.biometrics import BiometricsTab
