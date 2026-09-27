@@ -309,9 +309,12 @@ If you haven't seen it work (or fail) for real, it isn't verified.
   subclass, so the existing `except Exception` treats it as "keyring
   unavailable" and the app continues memory-only. `conftest.py` has its own
   bounded copy with a **one-shot latch** (`_KEYRING_UNREACHABLE`), because a
-  deadline paid before all 963 tests would cost 4s each and be worse than the
-  hang; after the first stall it stops trying. Verified: **963 passed** in
-  378s, versus an unbounded stall before.
+  deadline paid before all 967 tests would cost 4s each and be worse than the
+  hang; after the first stall it stops trying. Verified: **967 passed** in
+  370s, versus an unbounded stall before. The four deadline tests are counted,
+  not estimated — see `TestKeyringCallDeadline` in `tests/test_auth.py`, which
+  exists because the suite going green after the fix did **not** mean the fix
+  was covered: every keyring test here used a mock that returns instantly.
   **The rest of the class was swept, so this need not be re-audited.** Every
   other blocking-I/O candidate was checked and is either bounded or *correctly*
   blocking: `system_status._run` defaults to `timeout=10`; there is no
