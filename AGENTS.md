@@ -312,6 +312,18 @@ If you haven't seen it work (or fail) for real, it isn't verified.
   deadline paid before all 963 tests would cost 4s each and be worse than the
   hang; after the first stall it stops trying. Verified: **963 passed** in
   378s, versus an unbounded stall before.
+  **The rest of the class was swept, so this need not be re-audited.** Every
+  other blocking-I/O candidate was checked and is either bounded or *correctly*
+  blocking: `system_status._run` defaults to `timeout=10`; there is no
+  `call_sync` anywhere (the single `call_finish` in `system_status.py:720` is
+  an async completion, the right pattern); and `config_io._run_install` is
+  genuinely unbounded but runs `pkexec`, which **must** be allowed to wait for
+  a human to type a password — giving it a deadline would break real use, so
+  leave it alone. That function is the one AGENTS.md already flags for a TOCTOU
+  and a missing polkit rule, which is why Access/Remote Access/Sharing use
+  `shani-cassini-save` instead and AST-gates forbid the engine's version. It is
+  still reachable from `system_status.py:1593` on the pages that legitimately
+  edit `/etc` through `config_io`.
 - System Info's card readings moved out of the widget module and into
   `system_status.py` as `hardware_card()` / `storage_card()` (done 2026-09-27).
   `tabs/system.py` no longer shells out or reads `/proc` and `/sys` itself, so
