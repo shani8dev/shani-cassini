@@ -4,7 +4,6 @@ import logging
 import json
 import os
 import platform
-import subprocess
 from typing import override
 
 from gi.repository import Gtk, Pango  # type: ignore
@@ -86,151 +85,24 @@ class SystemTab(Gtk.Box):
         
         self._fetch_boot_slots_info()
 
-    def _read(self, read, fallback: str = "N/A") -> str:
-        """One reading, or the fallback, and never an exception.
-
-        The hardware rows are independent on purpose. They used to share one
-        try block, so a /proc/meminfo with no MemTotal line raised at the RAM
-        row and the handler around the whole card then skipped battery,
-        virtualisation and bluetooth - all three left showing the empty string
-        they are created with. A missing thermal zone is ordinary on a desktop
-        and must not cost the reader the battery.
-        """
-        try:
-            return read()
-        except Exception:  # noqa: BLE001 - one source is not the card's failure
-            return fallback
-
-    @staticmethod
-    def _read_text(path: str) -> str:
-        with open(path, "r") as fh:
-            return fh.read()
-
-    def _cpu_text(self) -> str:
-        cpuinfo = self._read_text("/proc/cpuinfo")
-        model = next((ln.split(":", 1)[1].strip() for ln in cpuinfo.split("\n")
-                      if "model name" in ln), "Unknown")
-        threads = len([ln for ln in cpuinfo.split("\n") if ln.startswith("processor")])
-        return f"{model} ({threads} threads)"
-
-    def _cpu_temp_text(self) -> str:
-        raw = self._read_text("/sys/class/thermal/thermal_zone0/temp").strip()
-        return f"{int(raw) / 1000:.0f}\u00b0C"
-
-    def _gpu_text(self) -> str:
-        out = subprocess.run(["lspci"], capture_output=True, text=True,
-                             timeout=10).stdout
-        lines = [ln for ln in out.split("\n") if "VGA" in ln or "3D" in ln]
-        return lines[0].split(":")[2].strip() if lines else "Unknown"
-
-    def _ram_text(self) -> str:
-        meminfo = self._read_text("/proc/meminfo")
-        kb = {}
-        for line in meminfo.split("\n"):
-            if ":" in line:
-                key, _, rest = line.partition(":")
-                kb[key.strip()] = int(rest.split()[0])
-        total = kb["MemTotal"] // 1024
-        used = total - kb.get("MemAvailable", kb["MemTotal"]) // 1024
-        return f"{total} MB ({used} MB used)"
-
-    def _battery_text(self) -> str:
-        base = "/sys/class/power_supply/BAT0"
-        return f"{self._read_text(base + '/capacity').strip()}% ({self._read_text(base + '/status').strip()})"
-
-    def _virt_text(self) -> str:
-        cpuinfo = self._read_text("/proc/cpuinfo")
-        return ("VT-x/AMD-V available" if ("vmx" in cpuinfo or "svm" in cpuinfo)
-                else "VT-x/AMD-V not available")
-
-    def _bluetooth_text(self) -> str:
-        out = subprocess.run(["bluetoothctl", "show"], capture_output=True,
-                             text=True, timeout=5).stdout
-        return "\u25cf Active" if "Powered: yes" in out else "\u25cb Inactive"
-
     def _fetch_hardware_info(self) -> None:
-        """Fetch hardware information and update the UI."""
-        for name, read, fallback in (
-            ("hw-cpu", self._cpu_text, "Unknown"),
-            ("hw-cpu-temp", self._cpu_temp_text, "N/A"),
-            ("hw-gpu", self._gpu_text, "Unknown"),
-            ("hw-ram", self._ram_text, "N/A"),
-            ("hw-battery", self._battery_text, "N/A"),
-            ("hw-virt", self._virt_text, "Unknown"),
-            ("hw-bluetooth", self._bluetooth_text, "\u25cb Inactive"),
-        ):
-            self._update_label(name, self._read(read, fallback))
+        """Fill the hardware card from system_status, which owns the reads.
+
+        The parsing used to live here, which meant none of it could be tested
+        without a real /proc and the real tools on PATH.
+        """
+        def done(readings: dict) -> None:
+            for name, text in readings.items():
+                self._update_label(name, text)
+
+        ss.hardware_card(done)
 
     def _fetch_storage_info(self) -> None:
-        """Fetch storage information and update the UI."""
-        try:
-            # Get root filesystem information
-            result = subprocess.run(['df', '-h', '/'], capture_output=True, text=True)
-            if result.returncode == 0:
-                lines = result.stdout.strip().split('\n')
-                if len(lines) >= 2:
-                    parts = lines[1].split()
-                    if len(parts) >= 6:
-                        size = parts[1]
-                        used = parts[2]
-                        avail = parts[3]
-                        self._update_label("storage-root-usage", f"{used}/{size}")
-            
-            # Get /home filesystem information (if separate)
-            try:
-                result = subprocess.run(['df', '-h', '/home'], capture_output=True, text=True)
-                if result.returncode == 0:
-                    lines = result.stdout.strip().split('\n')
-                    if len(lines) >= 2:
-                        parts = lines[1].split()
-                        if len(parts) >= 6:
-                            size = parts[1]
-                            used = parts[2]
-                            avail = parts[3]
-                            self._update_label("storage-home-usage", f"{used}/{size}")
-            except:
-                self._update_label("storage-home-usage", "N/A")
-            
-            # Get /var filesystem information (if separate)
-            try:
-                result = subprocess.run(['df', '-h', '/var'], capture_output=True, text=True)
-                if result.returncode == 0:
-                    lines = result.stdout.strip().split('\n')
-                    if len(lines) >= 2:
-                        parts = lines[1].split()
-                        if len(parts) >= 6:
-                            size = parts[1]
-                            used = parts[2]
-                            avail = parts[3]
-                            self._update_label("storage-var-usage", f"{used}/{size}")
-            except:
-                self._update_label("storage-var-usage", "N/A")
-            
-            # Get /var/log size
-            try:
-                result = subprocess.run(['du', '-sh', '/var/log'], capture_output=True, text=True)
-                if result.returncode == 0:
-                    size = result.stdout.split()[0]
-                    self._update_label("storage-varlog", size)
-            except:
-                self._update_label("storage-varlog", "N/A")
-            
-            # Get swap information
-            try:
-                result = subprocess.run(['free', '-h'], capture_output=True, text=True)
-                if result.returncode == 0:
-                    lines = result.stdout.strip().split('\n')
-                    for line in lines:
-                        if line.startswith('Swap'):
-                            parts = line.split()
-                            if len(parts) >= 4:
-                                self._update_label("storage-swap", f"{parts[2]} used / {parts[1]} total")
-                                break
-            except:
-                self._update_label("storage-swap", "N/A")
-                
-        except Exception as e:
-            logger.error(f"Failed to fetch storage information: {e}")
+        def done(readings: dict) -> None:
+            for name, text in readings.items():
+                self._update_label(name, text)
+
+        ss.storage_card(done)
 
     def _fetch_boot_slots_info(self) -> None:
         """Fetch the boot fields exposed by shani-deploy."""

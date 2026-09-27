@@ -23,6 +23,7 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 from typing import Callable, Final, Optional
 
 from gi.repository import Gio, GLib  # type: ignore
@@ -187,6 +188,147 @@ def run_json_lines(argv: list[str], done: Callable[[Optional[list], str], None])
 
 def hostnamectl(done) -> None:
     run_json(["hostnamectl", "--json=short"], done)
+
+
+# --- the System Info hardware and storage cards -------------------------------
+#
+# These used to be read inside tabs/system.py, which meant the parsing could
+# not be tested without a real /proc and real tools on PATH. They live here so
+# a fake-CLI test can drive them, like every other page's data source.
+#
+# One rule throughout, and it is the whole point: a reading that cannot be
+# taken reports its own fallback and never raises into the caller. They were one
+# try block, so a /proc/meminfo with no MemTotal line raised at the RAM row and
+# the handler around the whole card then skipped battery, virtualisation and
+# bluetooth, leaving three rows blank. A missing thermal zone is ordinary on a
+# desktop and must not cost the reader the battery.
+
+PROC_CPUINFO = "/proc/cpuinfo"
+PROC_MEMINFO = "/proc/meminfo"
+THERMAL_ZONE = "/sys/class/thermal/thermal_zone0/temp"
+POWER_SUPPLY = "/sys/class/power_supply/BAT0"
+
+
+def _run(argv: list[str], timeout: int = 10) -> str:
+    return subprocess.run(argv, capture_output=True, text=True,
+                          timeout=timeout).stdout
+
+
+def _cpu_readings() -> tuple[str, str]:
+    """Model and thread count, and whether the CPU says it can virtualise."""
+    cpuinfo = _read_text(PROC_CPUINFO)
+    model = next((ln.split(":", 1)[1].strip() for ln in cpuinfo.split("\n")
+                  if "model name" in ln), "Unknown")
+    threads = len([ln for ln in cpuinfo.split("\n") if ln.startswith("processor")])
+    virt = ("VT-x/AMD-V available" if ("vmx" in cpuinfo or "svm" in cpuinfo)
+            else "VT-x/AMD-V not available")
+    return f"{model} ({threads} threads)", virt
+
+
+def _cpu_temp() -> str:
+    return f"{int(_read_text(THERMAL_ZONE).strip()) / 1000:.0f}°C"
+
+
+def _gpu() -> str:
+    out = _run(["lspci"])
+    lines = [ln for ln in out.split("\n") if "VGA" in ln or "3D" in ln]
+    return lines[0].split(":")[2].strip() if lines else "Unknown"
+
+
+def _ram() -> str:
+    kb: dict[str, int] = {}
+    for line in _read_text(PROC_MEMINFO).split("\n"):
+        if ":" in line:
+            key, _, rest = line.partition(":")
+            kb[key.strip()] = int(rest.split()[0])
+    total = kb["MemTotal"] // 1024
+    return f"{total} MB ({total - kb.get('MemAvailable', kb['MemTotal']) // 1024} MB used)"
+
+
+def _battery() -> str:
+    # _read_text answers "" for a file it could not open, so an absent BAT0
+    # would otherwise render as "% ()" - a battery row that looks answered.
+    # Raising is what lets the caller's fallback say N/A instead.
+    capacity = _read_text(POWER_SUPPLY + "/capacity").strip()
+    status = _read_text(POWER_SUPPLY + "/status").strip()
+    if not capacity:
+        raise OSError(f"no battery at {POWER_SUPPLY}")
+    return f"{capacity}% ({status})" if status else f"{capacity}%"
+
+
+def _bluetooth() -> str:
+    return "● Active" if "Powered: yes" in _run(["bluetoothctl", "show"], 5) \
+        else "○ Inactive"
+
+
+def _df_row(path: str) -> Optional[str]:
+    """`used/size` for one mount point, or None when df says nothing usable."""
+    out = _run(["df", "-h", path])
+    lines = out.strip().split("\n")
+    if len(lines) < 2:
+        return None
+    parts = lines[1].split()
+    if len(parts) < 6:
+        return None
+    return f"{parts[2]}/{parts[1]}"
+
+
+def _varlog() -> str:
+    return _run(["du", "-sh", "/var/log"], 30).split()[0]
+
+
+def _swap() -> str:
+    for line in _run(["free", "-h"]).strip().split("\n"):
+        if line.startswith("Swap"):
+            parts = line.split()
+            if len(parts) >= 4:
+                return f"{parts[2]} used / {parts[1]} total"
+    return ""
+
+
+def hardware_card(done: Callable[[dict], None]) -> None:
+    """Every hardware reading, each with its own fallback.
+
+    done receives {row_name: text}; a source that could not be read is already
+    carrying that row's fallback, so a caller never has to catch anything and a
+    failure can never take out a row it did not belong to.
+    """
+    readings = (
+        ("hw-cpu", lambda: _cpu_readings()[0], "Unknown"),
+        ("hw-cpu-temp", _cpu_temp, "N/A"),
+        ("hw-gpu", _gpu, "Unknown"),
+        ("hw-ram", _ram, "N/A"),
+        ("hw-battery", _battery, "N/A"),
+        ("hw-virt", lambda: _cpu_readings()[1], "Unknown"),
+        ("hw-bluetooth", _bluetooth, "○ Inactive"),
+    )
+    out: dict = {}
+    for name, read, fallback in readings:
+        try:
+            out[name] = read()
+        except Exception:  # noqa: BLE001 - one source is not the card's failure
+            out[name] = fallback
+    done(out)
+
+
+def storage_card(done: Callable[[dict], None]) -> None:
+    """The storage card's five rows, same contract as hardware_card()."""
+    readings = (
+        ("storage-root-usage", lambda: _df_row("/"), "N/A"),
+        ("storage-root", lambda: _df_row("/"), "N/A"),
+        ("storage-home-usage", lambda: _df_row("/home"), "N/A"),
+        ("storage-var-usage", lambda: _df_row("/var"), "N/A"),
+        ("storage-varlog", _varlog, "N/A"),
+        ("storage-swap", _swap, "N/A"),
+    )
+    out: dict = {}
+    for name, read, fallback in readings:
+        try:
+            value = read()
+            out[name] = value if value else fallback
+        except Exception:  # noqa: BLE001 - one source is not the card's failure
+            out[name] = fallback
+    done(out)
 
 
 def boot_entries(done) -> None:

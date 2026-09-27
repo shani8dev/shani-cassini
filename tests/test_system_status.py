@@ -122,6 +122,93 @@ def test_system_boot_card_uses_only_real_deploy_fields(fake_bin, monkeypatch):
     assert find_named(tab, "services-flow-box") is None
 
 
+def _fake_sys(tmp_path, monkeypatch, *, cpuinfo=None, meminfo=None, thermal=None,
+              battery=None, lspci="", bluetooth=""):
+    """Point the hardware collectors at files a test controls.
+
+    The paths are module constants for exactly this reason: before the
+    extraction the page hardcoded /proc and /sys inline, so none of this
+    parsing could be exercised without a real machine.
+    """
+    from shani_cassini import system_status as ss
+    root = tmp_path / "sys"
+    root.mkdir(exist_ok=True)
+    wanted = {
+        "PROC_CPUINFO": cpuinfo,
+        "PROC_MEMINFO": meminfo,
+        "THERMAL_ZONE": thermal,
+    }
+    for const, body in wanted.items():
+        path = root / const
+        if body is not None:
+            path.write_text(body)
+        monkeypatch.setattr(ss, const, str(path))
+    base = root / "BAT0"
+    if battery is not None:
+        base.mkdir()
+        (base / "capacity").write_text(battery["capacity"])
+        (base / "status").write_text(battery["status"])
+    # Always repointed, even when there is no battery to write: this host has a
+    # real one, and a fake that falls through to /sys answers with this
+    # machine's 98% rather than the fixture's, which is worse than no fake.
+    monkeypatch.setattr(ss, "POWER_SUPPLY", str(base))
+    for name, body in (("lspci", lspci), ("bluetoothctl", bluetooth)):
+        tool = tmp_path / name
+        tool.write_text("#!/bin/sh\ncat <<'EOF'\n" + body + "\nEOF\n")
+        tool.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+
+
+def test_the_hardware_card_is_drivable_from_fakes(tmp_path, monkeypatch):
+    """Each reading is answered by the fixture, not by this machine."""
+    from shani_cassini import system_status as ss
+    _fake_sys(
+        tmp_path, monkeypatch,
+        cpuinfo="processor\t: 0\nmodel name\t: Fake CPU 9000\nprocessor\t: 1\n"
+                "processor\t: 2\nflags\t: fpu vme svm\n",
+        meminfo="MemTotal:       16384000 kB\nMemAvailable:    8192000 kB\n",
+        thermal="45000\n",
+        battery={"capacity": "77\n", "status": "Discharging\n"},
+        lspci="00:02.0 VGA compatible controller: Fake GPU 7",
+        bluetooth="Powered: yes\n",
+    )
+    out = {}
+    ss.hardware_card(lambda r: out.update(r))
+    assert out["hw-cpu"] == "Fake CPU 9000 (3 threads)"
+    assert out["hw-cpu-temp"] == "45°C"
+    assert out["hw-gpu"] == "Fake GPU 7"
+    assert out["hw-ram"] == "16000 MB (8000 MB used)"
+    assert out["hw-battery"] == "77% (Discharging)"
+    assert out["hw-virt"] == "VT-x/AMD-V available"
+    assert out["hw-bluetooth"] == "● Active"
+
+
+def test_a_hardware_source_that_is_absent_falls_back_on_its_own_row_only(
+        tmp_path, monkeypatch):
+    """The battery is missing; the other six readings are still taken.
+
+    This is the behaviour that used to be impossible to state, because the
+    page owned the parsing and had no seam to fake a /sys that is not there.
+    """
+    from shani_cassini import system_status as ss
+    _fake_sys(
+        tmp_path, monkeypatch,
+        cpuinfo="model name\t: Fake CPU\nprocessor\t: 0\n",
+        meminfo="MemTotal: 1048576 kB\nMemAvailable: 524288 kB\n",
+        thermal="40000\n",
+        battery=None,
+        lspci="",
+        bluetooth="Powered: no\n",
+    )
+    out = {}
+    ss.hardware_card(lambda r: out.update(r))
+    assert out["hw-battery"] == "N/A"
+    assert out["hw-cpu"] == "Fake CPU (1 threads)"
+    assert out["hw-ram"] == "1024 MB (512 MB used)"
+    assert out["hw-gpu"] == "Unknown"
+    assert out["hw-bluetooth"] == "○ Inactive"
+
+
 def test_one_unreadable_source_does_not_blank_the_whole_hardware_card(
         monkeypatch):
     """Each hardware reading is independent, so one that cannot be taken is
