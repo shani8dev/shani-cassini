@@ -4,6 +4,7 @@ import shani_cassini._httpx_compat  # noqa: F401  — must precede `import httpx
 
 import logging
 import json
+import threading
 import time
 from typing import Optional
 import httpx  # type: ignore
@@ -15,6 +16,37 @@ except ImportError:  # pragma: no cover - keyring is a declared dependency
 
 
 logger = logging.getLogger(__name__)
+
+_KEYRING_TIMEOUT = 2.0
+
+
+def _keyring_call(fn, *args):
+    """Call a keyring function on a deadline; raise TimeoutError if it stalls.
+
+    keyring's SecretService backend asks the session keyring to unlock, then
+    blocks in a D-Bus read waiting for a prompt that nobody answers while the
+    app is starting up. No exception is raised in that state, so the surrounding
+    `except Exception` cannot catch it and `AuthManager.__init__` never returns.
+    Callers already treat any failure as "keyring unavailable" and fall back to
+    memory-only storage, so a timeout is handled by the same path.
+    """
+    box: list = []
+
+    def _run() -> None:
+        try:
+            box.append(fn(*args))
+        except BaseException as exc:  # re-raised on the calling thread
+            box.append(exc)
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    thread.join(_KEYRING_TIMEOUT)
+    if not box:
+        raise TimeoutError(f"keyring call exceeded {_KEYRING_TIMEOUT}s")
+    result = box[0]
+    if isinstance(result, BaseException):
+        raise result
+    return result
 
 
 class AuthManager:
@@ -52,7 +84,7 @@ class AuthManager:
         if keyring is None:
             return False
         try:
-            keyring.get_password(self._KEYRING_SERVICE, "__keyring_probe__")
+            _keyring_call(keyring.get_password, self._KEYRING_SERVICE, "__keyring_probe__")
             return True
         except Exception:
             return False
@@ -63,8 +95,10 @@ class AuthManager:
             logger.info("keyring not available; using memory-only storage")
             return
         try:
-            cred = keyring.get_credential(
-                self._KEYRING_SERVICE, self._KEYRING_ACCOUNT
+            cred = _keyring_call(
+                keyring.get_credential,
+                self._KEYRING_SERVICE,
+                self._KEYRING_ACCOUNT,
             )
             if cred is not None and cred.password:
                 data = json.loads(cred.password)
@@ -96,8 +130,11 @@ class AuthManager:
                     "username": self._username,
                 }
             )
-            keyring.set_password(
-                self._KEYRING_SERVICE, self._KEYRING_ACCOUNT, blob
+            _keyring_call(
+                keyring.set_password,
+                self._KEYRING_SERVICE,
+                self._KEYRING_ACCOUNT,
+                blob,
             )
             logger.info(
                 f"Saved credentials to keyring for user: {self._username}"
@@ -116,9 +153,11 @@ class AuthManager:
 
         if self._keyring_available:
             try:
-                keyring.delete_password(
-                    self._KEYRING_SERVICE, self._KEYRING_ACCOUNT
-                )
+                  _keyring_call(
+                      keyring.delete_password,
+                      self._KEYRING_SERVICE,
+                      self._KEYRING_ACCOUNT,
+                  )
             except Exception:
                 pass
 

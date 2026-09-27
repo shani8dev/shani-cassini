@@ -286,6 +286,32 @@ If you haven't seen it work (or fail) for real, it isn't verified.
   on a host with a reader.
 - Piper TTS / whisper models are Chronoa's concern; Cassini only reports them.
 - `bootctl list --json` needs ESP read access — not shown to the user yet.
+- **A locked session keyring hung the app on startup, and hung the whole test
+  suite — found 2026-09-27, fixed and verified.** `keyring`'s SecretService
+  backend asks the session keyring to unlock and then blocks in a D-Bus read
+  waiting for a prompt that nobody answers while the app is starting. **No
+  exception is raised in that state**, so the `except Exception` wrapped around
+  every keyring call could not catch it and `AuthManager.__init__` simply never
+  returned. On this host — a real GDM session, `Xorg vt2`, a locked login
+  keyring — `python3 -m pytest` wedged on its *first* test
+  (`test_access_page.py::test_the_page_constructs_like_every_other_tab`),
+  which reads as a GTK or display fault and is not one. CI never saw it because
+  CI has no session keyring, so the call raises and is caught.
+  Two separate sites had the identical defect: all four keyring calls in
+  `auth.py` (the startup probe, `_load_credentials`, `_save_credentials`,
+  `_clear_credentials`), and the `autouse` `clear_keyring_entries` fixture in
+  `tests/conftest.py`, which ran before *every* test. The save path was the
+  worse of the two — a locked keyring would hang on login or token refresh with
+  no feedback, not just at startup.
+  `auth.py` now routes every call through `_keyring_call()`, which runs it on a
+  daemon thread with a 2s deadline and raises `TimeoutError` on a stall. That
+  lands on the fallback the code already had: a timeout is an `OSError`
+  subclass, so the existing `except Exception` treats it as "keyring
+  unavailable" and the app continues memory-only. `conftest.py` has its own
+  bounded copy with a **one-shot latch** (`_KEYRING_UNREACHABLE`), because a
+  deadline paid before all 963 tests would cost 4s each and be worse than the
+  hang; after the first stall it stops trying. Verified: **963 passed** in
+  378s, versus an unbounded stall before.
 - System Info's card readings moved out of the widget module and into
   `system_status.py` as `hardware_card()` / `storage_card()` (done 2026-09-27).
   `tabs/system.py` no longer shells out or reads `/proc` and `/sys` itself, so

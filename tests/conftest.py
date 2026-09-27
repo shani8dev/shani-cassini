@@ -2,6 +2,7 @@
 
 import sys
 import os
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -47,17 +48,46 @@ def clear_keyring_entries():
     _clear_shani_keyring()
 
 
+# A one-shot latch, not a status flag: without it the deadline in
+# _delete_password_bounded is paid before every test instead of once.
+_KEYRING_UNREACHABLE = False
+
+
+def _delete_password_bounded(keyring, service, account, timeout=2.0):
+    """Run one `delete_password` with a hard deadline; True if it returned.
+
+    A thread is required rather than a `try/except`: keyring's SecretService
+    backend asks the session keyring to unlock, then blocks in a D-Bus read
+    waiting for a prompt nobody answers. Nothing is ever raised, so the handler
+    that used to wrap this call could not catch it, and an autouse fixture that
+    hangs blocks the whole suite at its first test.
+    """
+
+    def _run():
+        try:
+            keyring.delete_password(service, account)
+        except Exception:
+            pass
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    return not thread.is_alive()
+
+
 def _clear_shani_keyring():
     """Delete all shani-cassini entries from the real keyring if available."""
+    global _KEYRING_UNREACHABLE
+    if _KEYRING_UNREACHABLE:
+        return
     try:
         import keyring
     except ImportError:
         return
     for account in ("credentials", "__keyring_probe__"):
-        try:
-            keyring.delete_password("shani-cassini", account)
-        except Exception:
-            pass
+        if not _delete_password_bounded(keyring, "shani-cassini", account):
+            _KEYRING_UNREACHABLE = True
+            return
 
 
 @pytest.fixture
