@@ -322,8 +322,21 @@ If you haven't seen it work (or fail) for real, it isn't verified.
   leave it alone. That function is the one AGENTS.md already flags for a TOCTOU
   and a missing polkit rule, which is why Access/Remote Access/Sharing use
   `shani-cassini-save` instead and AST-gates forbid the engine's version. It is
-  still reachable from `system_status.py:1593` on the pages that legitimately
-  edit `/etc` through `config_io`.
+    still reachable from `system_status.py:1593` on the pages that legitimately
+    edit `/etc` through `config_io`.
+    **The ecosystem is clean, and that was checked rather than assumed.** All six
+    sibling Python repos — `shani-chronoa`, `shani-fleet`, `shani-insights`,
+    `shani-platform`, `shani-backup`, `shani-ci-commons` — were swept for
+    first-party `keyring` / `secretstorage` / `SecretService` use, excluding
+    `.venv` and `site-packages`: **zero hits in every one.** The only matches
+    anywhere are vendored `pip` (optional HTTP-auth keyring) and `keyring`'s
+    own test backend. So the bug was unique to this app, and the two headless
+    agents most likely to suffer a silent keyring stall are unaffected.
+    All four keyring references in `auth.py` were then confirmed bounded by AST
+    rather than by grep: they are *arguments* to `_keyring_call`, so a
+    line-based search reports three of them as unwrapped continuation lines.
+    That grep is wrong and will keep being wrong — the structural check is the
+    one that counts.
 - System Info's card readings moved out of the widget module and into
   `system_status.py` as `hardware_card()` / `storage_card()` (done 2026-09-27).
   `tabs/system.py` no longer shells out or reads `/proc` and `/sys` itself, so
