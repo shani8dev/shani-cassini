@@ -717,6 +717,91 @@ def test_biometrics_says_not_known_when_the_daemon_is_gone(fake_bin, fake_fprint
     assert not tab._fingers_group.get_visible()
 
 
+def _group_named(widget, title):
+    """The Adw.PreferencesGroup whose title is `title`, found by walking the
+    page. Deliberately not `tab._some_attribute`: the test is about which
+    group a row lands in, not about how the page stores it."""
+    from gi.repository import Adw
+    out = []
+
+    def walk(w):
+        c = w.get_first_child()
+        while c is not None:
+            if isinstance(c, Adw.PreferencesGroup) and c.get_title() == title:
+                out.append(c)
+            walk(c)
+            c = c.get_next_sibling()
+
+    walk(widget)
+    assert len(out) == 1, f"expected exactly one group titled {title!r}, found {len(out)}"
+    return out[0]
+
+
+def test_the_fingerprint_login_row_is_not_filed_under_other_sign_in_methods(
+        fake_bin, fake_fprintd):
+    """pam_fprintd's own PAM wiring belongs on the fingerprint page's own
+    "Where a Fingerprint Works" group.
+
+    It used to render inside "Other ways to sign in", which put the one row
+    that is about this page under a heading saying it was about something else.
+    Nothing about the data was wrong - hardware_auth_status() has always
+    reported it - only where it was shown.
+    """
+    from shani_cassini.tabs.biometrics import BiometricsTab
+    tab = BiometricsTab()
+    assert spin(lambda: tab._auth_group.get_visible())
+
+    where = _group_named(tab, "Where a Fingerprint Works")
+    other = _group_named(tab, "Other ways to sign in")
+
+    where_titles = _action_row_titles(where)
+    other_titles = _action_row_titles(other)
+
+    # the fingerprint login wiring is on the fingerprint page's own group
+    assert any("Fingerprint login" in t for t in where_titles), where_titles
+    # and is nowhere near the "other methods" group
+    assert not any("Fingerprint" in t for t in other_titles), other_titles
+    # the methods that genuinely have nowhere else to go are still there
+    assert any("Face" in t for t in other_titles), other_titles
+
+
+def test_the_finger_picker_offers_only_fingers_that_are_not_enrolled_yet(
+        fake_bin, fake_fprintd):
+    """Enrolling a finger that is already enrolled is a dead end, so the picker
+    must not offer it.
+
+    Plasma splits the list for exactly this reason
+    (`availableFingersToEnroll()` / `unavailableFingersToEnroll()`); this page
+    offered all ten regardless, so a user could pick one that is already
+    stored. Re-enrolling is not what the user meant.
+    """
+    from shani_cassini.tabs.biometrics import BiometricsTab
+    fake_fprintd.daemon.fingers = ["right-index-finger", "left-thumb"]
+    tab = BiometricsTab()
+    assert spin(lambda: tab._row_fingers.get_subtitle() == "2 enrolled")
+
+    assert "right-index-finger" not in tab._offered
+    assert "left-thumb" not in tab._offered
+    assert len(tab._offered) == 8, tab._offered
+    # the selection the button will act on is one of the offered ones
+    assert tab._chosen_finger() in tab._offered
+
+
+def test_enrolling_every_finger_is_reported_rather_than_left_with_an_empty_picker(
+        fake_bin, fake_fprintd):
+    """All ten enrolled is a real state, and the page has to say so instead of
+    handing back a picker with nothing in it."""
+    from shani_cassini.tabs.biometrics import BiometricsTab
+    from shani_cassini import system_status as ss
+    fake_fprintd.daemon.fingers = list(ss.FINGER_NAMES)
+    tab = BiometricsTab()
+    assert spin(lambda: tab._row_fingers.get_subtitle() == "10 enrolled")
+
+    assert tab._offered == []
+    assert not tab._btn_enroll.get_sensitive()
+    assert "every finger" in tab._row_enroll.get_subtitle().lower()
+
+
 def test_biometrics_names_the_package_when_fprintd_is_missing(fake_bin, fake_fprintd, monkeypatch):
     from shani_cassini import system_status as ss
     from shani_cassini.tabs.biometrics import BiometricsTab
@@ -767,12 +852,15 @@ def test_enrollment_claims_before_it_starts(fake_fprintd, fake_bin):
 
 def test_enrollment_calls_the_real_methods_with_the_real_arguments(fake_fprintd, fake_bin):
     from gi.repository import Gio
+    from shani_cassini import system_status as ss
     tab, _calls = _enrolling_tab(fake_bin, fake_fprintd)
     claim = fake_fprintd.args_of("Claim")
     assert claim.get_type_string() == "(s)" and claim.unpack() == ("",)
     start = fake_fprintd.args_of("EnrollStart")
     assert start.get_type_string() == "(s)"
-    assert start.unpack() == ("right-index-finger",), "a finger name from the ten, not a nickname"
+    finger = start.unpack()[0]
+    assert finger in ss.FINGER_NAMES, "a finger name from the ten, not a nickname"
+    assert finger != FINGER, "the finger fprintd already has stored must not be offered"
     for method in ("Claim", "EnrollStart"):
         call = fake_fprintd.of(method)
         assert call[1] == DEVICE_PATH and call[2] == "net.reactivated.Fprint.Device"

@@ -57,6 +57,11 @@ FINGERS_HELP = ("Each one is a stored scan of that finger, not an image. Deletin
 PAGE_BACKED_MODULES = frozenset({"pam_pkcs11.so", "pam_u2f.so", "pam_yubico.so",
                                  "pam_krb5.so"})
 
+# The one module whose rows belong on this page rather than beside it: this IS
+# the fingerprint page, so the PAM service that makes a finger usable at login
+# is this page's own business and not one of the "other ways to sign in".
+FINGERPRINT_MODULE = "pam_fprintd.so"
+
 
 def _row(title: str, subtitle: str = "", icon: str | None = None,
          cls: str | None = None) -> Adw.ActionRow:
@@ -121,6 +126,7 @@ class BiometricsTab(Gtk.Box):
         self._status: dict | None = None
         self._enroll: dict | None = None
         self._icons: dict[Adw.ActionRow, Gtk.Image] = {}
+        self._offered: list[str] = list(ss.FINGER_NAMES)
 
         self._build()
         self.refresh()
@@ -152,10 +158,13 @@ class BiometricsTab(Gtk.Box):
                         "this finishes. It asks for your password once, then it waits for the "
                         "scans.")
         # EnrollStart takes one of fprintd's ten finger names and rejects
-        # anything else ("any" included), so this offers exactly those.
+        # anything else ("any" included), so this offers exactly those. Which
+        # of the ten narrows to the ones fprintd has not stored yet, refilled
+        # from _on_status.
         self._picker = Adw.ComboRow(
-            title="Finger", model=Gtk.StringList.new([_finger_label(f) for f in ss.FINGER_NAMES]))
-        self._picker.set_selected(list(ss.FINGER_NAMES).index("right-index-finger"))
+            title="Finger", model=Gtk.StringList.new([_finger_label(f) for f in self._offered]))
+        if "right-index-finger" in self._offered:
+            self._picker.set_selected(self._offered.index("right-index-finger"))
         add.add(self._picker)
         self._row_enroll = _row("Enroll", "Needs a reader")
         self._btn_enroll = Gtk.Button(label="Enroll…", valign=Gtk.Align.CENTER, sensitive=False)
@@ -177,6 +186,12 @@ class BiometricsTab(Gtk.Box):
         where.add(self._row_edition)
         head, detail = ss.SUDO_NEVER
         where.add(_row(head, detail, "dialog-information-symbolic"))
+        # An inner group so the PAM rows can be refilled on every refresh
+        # without taking "This edition" and the sudo note out with them:
+        # _clear_group takes every row, which is right for a group that holds
+        # nothing else and wrong for one that does.
+        self._where_pam = Adw.PreferencesGroup()
+        where.add(self._where_pam)
         self._page.append(where)
 
         cli = Adw.PreferencesGroup(
@@ -216,28 +231,42 @@ class BiometricsTab(Gtk.Box):
         the rest - which is why this group still matters and is not simply
         deleted. A silent omission would read as "nobody has heard of face
         login", which is its own kind of wrong.
+
+        pam_fprintd is the exception and is routed to "Where a Fingerprint
+        Works" instead. It has no page of its own because this is its page, and
+        filing its login wiring under "other" put the one row that is about
+        this page under a heading saying it was about something else.
         """
-        rows = [r for r in rows if r.get("module") not in PAGE_BACKED_MODULES]
+        mine = [r for r in rows if r.get("module") == FINGERPRINT_MODULE]
+        theirs = [r for r in rows
+                  if r.get("module") != FINGERPRINT_MODULE
+                  and r.get("module") not in PAGE_BACKED_MODULES]
+        _clear_group(self._where_pam)
+        for row in mine:
+            self._where_pam.add(self._auth_row(row))
+        self._where_pam.set_visible(bool(mine))
         g = self._auth_group
         _clear_group(g)
-        if not rows:
+        if not theirs:
             g.set_visible(False)
             return
         g.set_description("Reported from this system's own PAM configuration.")
-        for row in rows:
-            state = row.get("state")
-            detail = row.get("detail", "")
-            r = _row(row.get("title", ""), detail)
-            r.set_subtitle_selectable(True)
-            icon, css = {
-                "ok": ("object-select-symbolic", "success"),
-                "inactive": ("dialog-information-symbolic", "dim-label"),
-            }.get(state, ("dialog-warning-symbolic", "warning"))
-            img = Gtk.Image.new_from_icon_name(icon)
-            img.add_css_class(css)
-            r.add_prefix(img)
-            g.add(r)
+        for row in theirs:
+            g.add(self._auth_row(row))
         g.set_visible(True)
+
+    @staticmethod
+    def _auth_row(row: dict) -> Adw.ActionRow:
+        r = _row(row.get("title", ""), row.get("detail", ""))
+        r.set_subtitle_selectable(True)
+        icon, css = {
+            "ok": ("object-select-symbolic", "success"),
+            "inactive": ("dialog-information-symbolic", "dim-label"),
+        }.get(row.get("state"), ("dialog-warning-symbolic", "warning"))
+        img = Gtk.Image.new_from_icon_name(icon)
+        img.add_css_class(css)
+        r.add_prefix(img)
+        return r
 
     def _fingers_group_new(self, fingers: list | None) -> Adw.PreferencesGroup:
         g = Adw.PreferencesGroup(title="Enrolled Fingers", visible=bool(fingers),
@@ -298,7 +327,11 @@ class BiometricsTab(Gtk.Box):
         self._set(self._row_fingers, "Enrolled fingers",
                   f"{enrolled} enrolled" if enrolled else "None - add one below to use a fingerprint",
                   "ok" if enrolled else None)
-        self._set_enrollable(True)
+        self._refill_picker(fingers)
+        self._set_enrollable(bool(self._offered))
+        if not self._offered:
+            self._row_enroll.set_subtitle(
+                "Every finger fprintd accepts is already enrolled - delete one above first")
         self._replace_fingers(fingers)
 
     def _set(self, row: Adw.ActionRow, title: str, subtitle: str, state: str | None) -> None:
@@ -320,6 +353,16 @@ class BiometricsTab(Gtk.Box):
 
     def _set_enrollable(self, ok: bool) -> None:
         self._btn_enroll.set_sensitive(bool(ok))
+
+    def _refill_picker(self, fingers: list[str] | None) -> None:
+        stored = {str(f) for f in (fingers or [])}
+        self._offered = [f for f in ss.FINGER_NAMES if f not in stored]
+        self._picker.set_model(
+            Gtk.StringList.new([_finger_label(f) for f in self._offered]))
+        if "right-index-finger" in self._offered:
+            self._picker.set_selected(self._offered.index("right-index-finger"))
+        else:
+            self._picker.set_selected(0 if self._offered else Gtk.INVALID_LIST_POSITION)
 
     def _replace_fingers(self, fingers: list | None) -> None:
         parent = self._fingers_group.get_parent()
@@ -347,9 +390,9 @@ class BiometricsTab(Gtk.Box):
     # ------------------------------------------------------------ enrolling
     def _chosen_finger(self) -> str:
         index = self._picker.get_selected()
-        if not 0 <= index < len(ss.FINGER_NAMES):
+        if not 0 <= index < len(self._offered):
             return ""
-        return ss.FINGER_NAMES[index]
+        return self._offered[index]
 
     def _start_enroll(self) -> None:
         if self._enroll is not None:
