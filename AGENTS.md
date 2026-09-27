@@ -27,7 +27,7 @@ for an "is not installed" status page when its app is missing.
 | Health | `pkexec shani-health --verify --json` / `--security --json` (JSON even on exit 1); `journalctl -b -p 3 -o json`; `coredumpctl list --json` |
 | Storage | `shani-health --storage-info --json` (read-only, unprivileged) via `storage_info()`; `--verify --json` uses a *different* builder and is not interchangeable with it |
 | Disk Health | `smartctl --scan` (unprivileged) to enumerate disks, then `pkexec smartctl -j -H` and `-j -a` per disk. SMART READ DATA is privileged, so the per-disk reads are. **Reads only — it cannot start a self-test, which writes to the disk.** `smartctl` lives in `/usr/sbin`, so it is resolved like `fprintd`'s tools, not with a bare `which()` |
-| System Info | `hostnamectl --json`, `timedatectl show`, `systemd-analyze time` + the older system/kernel cards. **Each hardware reading is independent** — a `/proc/meminfo` with no `MemTotal` line used to raise at the RAM row and the handler around the whole card then skipped battery, virtualisation and bluetooth, leaving three rows blank; each reading is now its own collector behind `_read()`, which returns that row's own fallback and never lets one source's failure become the card's failure. Those older cards still read `/proc` and shell out to `lspci`/`df`/`du`/`free`/`bluetoothctl` through raw `subprocess` in the widget module, bypassing `system_status.py` and its fake-CLI tests; moving them is outstanding and wants its own verification |
+| System Info | `hostnamectl --json`, `timedatectl show`, `systemd-analyze time` + the older system/kernel cards. **Each hardware reading is independent** — a `/proc/meminfo` with no `MemTotal` line used to raise at the RAM row and the handler around the whole card then skipped battery, virtualisation and bluetooth, leaving three rows blank; each reading is now its own collector behind `_read()`, which returns that row's own fallback and never lets one source's failure become the card's failure. Those readings moved into `system_status.py` as `hardware_card()` / `storage_card()`; the page renders what it is handed and no longer shells out itself |
 | Encryption | `/dev/mapper/shani_root`, `systemd-analyze has-tpm2`; `pkexec gen-efi tpm2-status --json`, `enroll-tpm2 --stdin [--with-pin]` (secrets on stdin only), `remove-tpm2` |
 | Services | `systemctl list-unit-files -o json` + `list-units -o json` (only enabled/disabled units); `systemctl enable --now` etc. — polkit is asked by systemd itself |
 | Maintenance | Gio filesystem info; `pkexec shani-deploy --cleanup/--optimize`, `shani-health --export-logs ~`, `shani-reset --yes [--home] [--keep-downloads]` (typed confirmation) |
@@ -266,8 +266,12 @@ If you haven't seen it work (or fail) for real, it isn't verified.
   on a host with a reader.
 - Piper TTS / whisper models are Chronoa's concern; Cassini only reports them.
 - `bootctl list --json` needs ESP read access — not shown to the user yet.
-- System Info's older cards (`tabs/system.py`) still parse `/proc` and
-  `lspci` themselves; move them to systemd/udev interfaces when touched.
+- System Info's card readings moved out of the widget module and into
+  `system_status.py` as `hardware_card()` / `storage_card()` (done 2026-09-27).
+  `tabs/system.py` no longer shells out or reads `/proc` and `/sys` itself, so
+  the parsing is reachable by the fake-CLI fixtures; the `/proc` and `/sys`
+  paths are module constants for that reason. The `AGENTS.md` note that
+  prompted this is now history.
 - Fixed in the 2026-09-25 rebuild (for context, not to redo): widget
   lookups used a GTK3-only call on `get_root()` (None while building) so
   pages stayed blank; Kernel/Drivers/Secure Boot never loaded when
