@@ -2396,6 +2396,52 @@ def test_a_bounded_tool_is_stopped_instead_of_waiting_for_ever(tmp_path, monkeyp
         f"a stopped read must say so rather than look like an empty result: {lines}"
 
 
+def test_a_bounded_tool_that_answers_in_time_leaves_no_timer_behind(tmp_path, monkeypatch):
+    """The other half of the watchdog: cleanup on the normal exit, not only on
+    the timeout.
+
+    The existing bound test only exercises expiry. This covers the case where a
+    bounded tool answers *before* its bound, which is the common one, and where
+    the watchdog must already be gone. If the timer were left armed, it would
+    fire later against a finished read and append "did not answer within Ns and
+    was stopped" to a page that already has its answer -- a page contradicting
+    itself, from a tool that worked. So this waits past the bound and asserts
+    nothing was added and on_exit fired exactly once.
+    """
+    from shani_cassini import system_status as ss
+
+    fake = tmp_path / "lxc"
+    fake.write_text("#!/bin/sh\necho 'pci-0000:00:1f.2 (virtio): /dev/sda'\n")
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(ss, "STREAM_BOUNDS", {"lxc": 1})
+
+    lines: list = []
+    exits: list = []
+    ctx = GLib.MainContext.default()
+    started = time.monotonic()
+    ss.run_stream_tool(["lxc", "list"], lines.append, exits.append)
+    while not exits and time.monotonic() - started < 10:
+        ctx.iteration(True)
+    assert exits, "a tool that answers must settle"
+    assert "pci-0000" in "".join(lines), lines
+
+    # Now outlive the bound. A surviving watchdog would fire in here.
+    # Non-blocking iteration on purpose: ctx.iteration(True) is a BLOCKING wait,
+    # and in this loop there is nothing left to arrive, so it would never
+    # return. The suite masked that - with other tests leaving events pending,
+    # the blocking form returns by accident, so this test passed in a full run
+    # and hung when run alone.
+    while time.monotonic() - started < 3.5:
+        ctx.iteration(False)
+        time.sleep(0.01)
+
+    assert len(exits) == 1, f"on_exit fired {len(exits)} times: {exits}"
+    assert not any("stopped" in line for line in lines), \
+        f"the watchdog outlived the read and contradicted it: {lines}"
+    assert not any("did not answer" in line for line in lines), lines
+
+
 def test_an_unbounded_tool_is_left_alone(tmp_path, monkeypatch):
     """Only a tool measured to hang gets a bound, so the negative case has to be
     able to fail: the fake here blocks on `read` from a stdin that never closes,
@@ -2416,12 +2462,22 @@ def test_an_unbounded_tool_is_left_alone(tmp_path, monkeypatch):
     exits: list = []
     ctx = GLib.MainContext.default()
     started = time.monotonic()
-    ss.run_stream_tool(["virsh", "list"], lines.append, exits.append)
-    while not exits and time.monotonic() - started < 4:
-        ctx.iteration(True)
+    # The handle is kept and cancelled below. Discarding it is what made this
+    # test hang when run on its own: the fake busy-loops for ever, nothing had
+    # the means to stop it, and pytest never got to exit. In a full run other
+    # tests leave enough pending on the main context to carry the process past
+    # it, which is why the suite was green and this test alone was not.
+    proc = ss.run_stream_tool(["virsh", "list"], lines.append, exits.append)
+    try:
+        while not exits and time.monotonic() - started < 4:
+            ctx.iteration(False)
+            time.sleep(0.01)
 
-    assert exits == [], "an unbounded tool was stopped; only measured tools get a bound"
-    assert not any("stopped" in line for line in lines), lines
+        assert exits == [], "an unbounded tool was stopped; only measured tools get a bound"
+        assert not any("stopped" in line for line in lines), lines
+    finally:
+        if proc is not None:
+            proc.force_exit()
 
 
 # --- B2: the LUKS header fields gen-efi started reporting --------------------

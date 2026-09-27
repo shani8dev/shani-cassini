@@ -153,6 +153,30 @@ If you haven't seen it work (or fail) for real, it isn't verified.
   take a kwarg — `tests/test_virtualization_page.py` monkeypatches it with a
   3-arg stub. Only `lxc` is bounded; a bound on a tool nobody measured would be
   a made-up number turning a slow read into a false "stopped".
+- **A test here passed in the full suite and hung when run alone — the class
+  to check for when adding any test that spawns a real child (2026-09-27).**
+  `test_an_unbounded_tool_is_left_alone` runs a fake that busy-loops for ever
+  and deliberately must NOT be stopped, and it discarded the
+  `Gio.Subprocess` that `run_stream_tool` returns specifically so a caller can
+  cancel it. Nothing could stop that child, so pytest never exited: run alone it
+  hit the external timeout (exit 124) after the assertions had already passed.
+  In a full run it was fine, because other tests leave enough pending on the
+  default main context to carry the process past the end. Two traps in one test:
+  **run a new spawn-based test by itself, not only as part of the suite**, and
+  **keep the proc handle and `force_exit()` it in a `finally`**. It now exits in
+  4s alone.
+  A second, quieter one: the wait loops here use `ctx.iteration(False)` plus a
+  sleep, deliberately. `ctx.iteration(True)` is a *blocking* wait, and in a loop
+  whose purpose is to outlive a bound there is nothing left to arrive, so it
+  never returns — the neighbouring tests use the blocking form and it is right
+  for them, because they are waiting for something that will arrive. Copying
+  that form into an outlive-wait looks like consistency and is a hang. The full
+  suite masks this too, for the same reason.
+  This is the fourth time in one session that a green signal was the thing
+  lying — a build that produced no artifact, a `--verifysource` that died on a
+  missing `-f`, a render with zero tools executed, and now a test that passed
+  only because of its neighbours. **The tell is always an absence**, so go
+  looking for the absent thing rather than trusting the exit code.
 - **Btrfs' subvolume read needed a directory, not the device — fixed, and the
   absence case is a deliberate refusal.** `btrfs subvolume list` answers
   `ERROR: not a directory` for a block device while `btrfs fi show` on that same
