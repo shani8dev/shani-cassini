@@ -388,3 +388,65 @@ class TestSecureBootGenEfiErrorPaths:
         assert isinstance(args[2], TimeoutError)
 
 
+
+
+def _all_sections():
+    """Every (id, icon) pair, descending SECTIONS' group nesting.
+
+    SECTIONS is a list of (group_name, [(Tab, id, title, icon, ...), ...]) - five
+    groups, not thirty-two flat entries. A first attempt at these two tests read
+    the top level only, found no -symbolic strings there at all, and passed
+    vacuously against a deliberately broken icon.
+    """
+    from shani_cassini.notebook import SECTIONS
+
+    out = []
+    for group in SECTIONS:
+        for entry in group[1]:
+            icons = [x for x in entry if isinstance(x, str) and x.endswith("-symbolic")]
+            out.append((entry[1], icons[0] if icons else None))
+    return out
+
+
+def test_no_section_is_given_a_loading_or_progress_icon():
+    """A screenshot of the sidebar showed Persistence as a row of three dots.
+
+    That is `content-loading-symbolic` - the icon that means "this is loading".
+    On a page whose subject is state that survives a reboot it read as a broken
+    or missing icon rather than a choice, and a reader cannot tell the two
+    apart. The rule is worth more than the one substitution: a spinner or
+    progress glyph on a section header is always a mistake, because a header is
+    not something that loads.
+    """
+    # Deliberately NOT forbidden: view-refresh. Updates & Rollback uses it and
+    # is right to - the page is about fetching something new, so a refresh glyph
+    # is the honest category icon there. A first version of this rule banned it
+    # anyway, and the only thing it caught was that Updates had a defensible
+    # icon. A rule that fires on a good choice gets ignored, so it is narrowed
+    # to the glyphs that mean "in progress" and nothing else.
+    forbidden = ("content-loading", "process-working", "semi-colors",
+                 "weather-clear", "loading")
+    offenders = [(sid, icon) for sid, icon in _all_sections()
+                 if icon and any(bad in icon for bad in forbidden)]
+    assert not offenders, f"sections given a progress/loading icon: {offenders}"
+
+
+def test_every_section_has_an_icon_and_it_exists_in_the_theme():
+    """A missing or misspelled icon renders as nothing, silently.
+
+    Checked against the running theme rather than a hardcoded list, so it fails
+    for a name that does not exist here - which in a screenshot is
+    indistinguishable from a layout bug.
+    """
+    import gi
+    gi.require_version("Gtk", "4.0")
+    from gi.repository import Gdk, Gtk
+
+    sections = _all_sections()
+    assert sections, "SECTIONS yielded nothing; the walk is wrong again"
+    no_icon = [sid for sid, icon in sections if not icon]
+    assert not no_icon, f"sections with no icon at all: {no_icon}"
+
+    theme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default())
+    missing = [(sid, icon) for sid, icon in sections if not theme.has_icon(icon)]
+    assert not missing, f"section icons not in the theme: {missing}"

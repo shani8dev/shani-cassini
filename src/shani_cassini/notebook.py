@@ -76,7 +76,7 @@ SECTIONS = [
         (BtrfsTab, "btrfs", "Btrfs", "drive-harddisk-symbolic",
          "What btrfs reports for this filesystem - the subvolumes, the space, "
          "and whether the last scrub found anything wrong"),
-        (PersistenceTab, "persistence", "Persistence", "content-loading-symbolic",
+        (PersistenceTab, "persistence", "Persistence", "media-flash-symbolic",
          "What a blue/green switch keeps and what it discards, and why a "
          "stopped service can still remember things"),
         (TimersTab, "timers", "Timers & Background Tasks", "preferences-system-time-symbolic",
