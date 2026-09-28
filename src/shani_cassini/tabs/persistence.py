@@ -240,10 +240,7 @@ MOUNT_UNKNOWN: Final = (
     "mounted now ({fstype}) - not in the shipped bind table, so this page does "
     "not claim what it holds."
 )
-MOUNT_ABSENT: Final = (
-    "a bind mount in the image's /etc/fstab, not mounted right now - state here "
-    "would not survive a reboot as things stand."
-)
+MOUNT_ABSENT: Final = "not mounted right now"
 STORAGE_PENDING: Final = "Asking shani-health --storage-info --json…"
 STORAGE_FAILED: Final = "No subvolume report"
 STORAGE_SIZELESS: Final = "shani-health did not report a size for it."
@@ -343,7 +340,10 @@ class PersistenceTab(Gtk.Box):
             title="Service state",
             description="Read from findmnt and annotated with the shipped bind "
                         "table. The table describes the image; findmnt describes "
-                        "this machine.")
+                        "this machine. Every row is a bind mount the image's "
+                        "/etc/fstab sets up, so a row reading \"not mounted right "
+                        "now\" is one this machine is not using - and state kept "
+                        "only there would not survive a reboot as things stand.")
         self._subvol_group = Adw.PreferencesGroup(title="Subvolumes",
                                                   description=SUBVOL_HELP)
 

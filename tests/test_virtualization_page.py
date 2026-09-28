@@ -86,6 +86,8 @@ LXD_INSTANCES = """+------+----------+---------+------+---------------+---------
 MACHINECTL_MACHINES = """UNIT              MACHINE    CLASS      HOST           OS        ARCHITECTURE
 build.service     builder    system     localhost     shanios     x86-64
 test.service      tester     system     localhost     shanios     x86-64
+run-vm.service    testvm     vm         localhost     debian      x86-64
+web.service       web        container   localhost     shanios     x86-64
 """
 
 # Distinguishable markers: the no-conflation lock is only worth anything if the
@@ -478,9 +480,41 @@ def test_each_runtime_is_under_its_own_heading(tmp_path, monkeypatch):
     assert settled(tab), rows(tab)
     titles = group_titles(tab)
     assert titles == ["Reads", "libvirt / QEMU (virsh)", "LXC containers (lxc-ls)",
-                      "LXD instances (lxc list)", "systemd-nspawn machines (machinectl list)",
+                      "LXD instances (lxc list)", "systemd machines (machinectl list)",
                       "Backing store", "Read-only"], \
         f"the page's groups are {titles}"
+
+
+def test_a_systemd_vm_is_listed_and_not_filed_as_a_container(tmp_path, monkeypatch):
+    """machinectl counts a VM as a machine, and this page has to show it.
+
+    Not hypothetical: systemd-vmspawn, and systemd-run --machine, both produce
+    entries here. The group used to be headed "systemd-nspawn machines" and its
+    help said "They are containers too", so a VM row appeared under a heading
+    asserting it was a container - the page had the data and misdescribed it.
+    """
+    fake_tools(tmp_path, monkeypatch)
+    tab = VirtualizationTab()
+    assert settled(tab), rows(tab)
+    pairs = dict(rows(tab))
+    names = row_titles(tab)
+    assert "testvm" in names, f"a vm-class machine is not listed: {names}"
+    assert "web" in names, f"a container-class machine is not listed: {names}"
+    # The class is in the row, so the reader can tell a VM from a container.
+    assert "vm" in (pairs.get("testvm") or ""), pairs.get("testvm")
+    assert "container" in (pairs.get("web") or ""), pairs.get("web")
+
+
+def test_the_heading_does_not_claim_the_machines_are_containers(tmp_path, monkeypatch):
+    """The wording is the defect: the rows were right and the label was wrong."""
+    fake_tools(tmp_path, monkeypatch)
+    tab = VirtualizationTab()
+    assert settled(tab), rows(tab)
+    described = tab._nspawn_group.get_description() or ""
+    assert "nspawn" not in described.lower(), \
+        f"the help still narrows the group to containers: {described!r}"
+    assert "virtual machine" in described, described
+    assert "vm" in described.lower(), described
 
 
 # --- 3. the no-conflation lock ----------------------------------------------

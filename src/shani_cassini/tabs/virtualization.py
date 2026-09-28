@@ -166,11 +166,13 @@ LXD_HELP: Final = (
     "Both the lxc and the lxd packages ship in shani-pkgbuilds/shani-core, "
     "which is why the two are asked separately rather than merged."
 )
-NSPAWN_TITLE: Final = "systemd-nspawn machines (machinectl list)"
+NSPAWN_TITLE: Final = "systemd machines (machinectl list)"
 NSPAWN_HELP: Final = (
-    "machinectl list, systemd's own view of the systemd-nspawn machines on this "
-    "machine. They are containers too, but systemd's rather than LXC's or "
-    "LXD's, and nothing on this page starts or stops one."
+    "machinectl list, systemd's own view of the machines on this machine. "
+    "systemd counts a container, a virtual machine and the host itself as one "
+    "kind of thing, so this group holds all three and each row says which it is - "
+    "a VM started with systemd-vmspawn, or by systemd-run --machine, appears here "
+    "alongside containers. Nothing on this page starts or stops one."
 )
 STORE_TITLE: Final = "Backing store"
 STORE_HELP: Final = (

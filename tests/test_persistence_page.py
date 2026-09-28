@@ -282,6 +282,37 @@ def test_the_shipped_bind_table_is_38_paths_in_32_and_6():
     assert len(ps.SHIPPED_BINDS) == 38
 
 
+def test_the_reboot_warning_is_said_once_not_on_every_row():
+    # Deliberately does NOT take the `bin` fixture. That fixture makes findmnt
+    # answer with mounted volumes, which is right for the other tests here and
+    # exactly wrong for this one: with every bind mounted there are no absent
+    # rows at all, so the assertion below had nothing to look at and passed
+    # whatever the page said. Without it the page reads the real (absent) tools
+    # and fills the group with the 38 binds this machine is not using - which is
+    # the population the duplication was visible in.
+    """A screenshot of this page showed the same sentence on all eight rows.
+
+    Every absent bind carried the full "a bind mount in the image's /etc/fstab,
+    not mounted right now - state here would not survive a reboot as things
+    stand", so a reader learned it on row one and then read it seven more times.
+    Nothing about it is per-row: what IS per-row is only whether this mount is
+    up. The shared half now lives in the group description, once, and the rows
+    say which they are.
+    """
+    page = build()
+    group = page._mount_group
+    description = group.get_description() or ""
+    assert "would not survive a reboot" in description, \
+        f"the reboot consequence is no longer stated anywhere: {description!r}"
+    assert "/etc/fstab" in description, description
+
+    repeated = [r for r in walk(group)
+                if "would not survive a reboot" in (r.get_subtitle() or "")]
+    assert not repeated, \
+        f"{len(repeated)} rows still repeat the shared warning: " \
+        f"{[r.get_title() for r in repeated][:3]}"
+
+
 def test_a_disabled_service_still_remembers_its_state():
     """The key insight, and the thing the page exists to say."""
     page = blob(build())
