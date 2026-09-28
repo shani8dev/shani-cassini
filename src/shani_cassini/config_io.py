@@ -581,6 +581,22 @@ def read_document(path: str, parser: _Parser, *, must_contain: Sequence[str] = (
         if allow_missing:
             return _PARSERS[_SYNTAX_OF[parser]]("", path=path)
         raise ConfigRefused(f"{_label(path)} cannot be read: there is no such file") from None
+    except OSError as exc:
+        # An unreadable path is a refusal, not a crash, and this is the one call
+        # that could raise a raw OSError: stat() is the FIRST read, so before
+        # this the general case was handled further down (read_text catches
+        # OSError) but never here. /etc/sudoers.d is 0750 root:root, so a user
+        # who is not in the sudo group cannot even traverse the directory and
+        # stat() answers EACCES rather than ENOENT - which took the whole
+        # Access page down inside its constructor instead of rendering the
+        # refusal the caller already knows how to show.
+        #
+        # allow_missing deliberately does NOT apply here. "Cannot be read" and
+        # "is not there" are different facts, and only one of them is an
+        # invitation to add the first rule; returning an empty document for an
+        # unreadable file would be exactly the "shown as an empty one" that the
+        # caller refuses to do.
+        raise ConfigRefused(f"{_label(path)} cannot be read: {exc.strerror}") from exc
     if expect_owner is not None and status.st_uid != expect_owner[0]:
         raise ConfigRefused(f"{_label(path)} is not owned by root - it belongs to uid "
                             f"{status.st_uid}, not {expect_owner[0]} - refusing to edit it")
