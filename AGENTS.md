@@ -18,8 +18,8 @@ known issues. The rules are all near the top.
 - `Cross-repo impact`
 
 **On-demand reference — do not page through speculatively:**
-- `Known issues (current state, 2026-09-27)` — ~313 of this file's 468
-  lines. **Grep it for the subsystem you are changing**, then read the hits.
+- `Known issues (current state, 2026-09-27)` — ~313 lines. **Grep it for the
+  subsystem you are changing**, then read the hits.
   It is dated, so treat older entries as history unless they say "current".
   This repo has no `AUDIT-HISTORY.md` yet, so detail lives here for now.
 
