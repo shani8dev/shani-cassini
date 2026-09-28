@@ -17,11 +17,15 @@ known issues. The rules are all near the top.
 - `Boundaries` and `Commit discipline`
 - `Cross-repo impact`
 
-**On-demand reference — do not page through speculatively:**
+**Current known issues — read this before you start:**
 - `Known issues (current state, 2026-09-27)` — ~313 lines. **Grep it for the
   subsystem you are changing**, then read the hits.
   It is dated, so treat older entries as history unless they say "current".
   This repo has no `AUDIT-HISTORY.md` yet, so detail lives here for now.
+
+  This section mixes fixed history with issues that are **still open**,
+  including Critical security ones. Grep it for `not fixed`,
+  `still open`, and your subsystem name before you touch anything.
 
 ## What this repo is
 
