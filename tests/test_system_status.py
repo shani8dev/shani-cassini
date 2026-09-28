@@ -952,7 +952,7 @@ def _group_named(widget, title):
 
 
 def test_the_fingerprint_login_row_is_not_filed_under_other_sign_in_methods(
-        fake_bin, fake_fprintd):
+        fake_bin, fake_fprintd, tmp_path, monkeypatch):
     """pam_fprintd's own PAM wiring belongs on the fingerprint page's own
     "Where a Fingerprint Works" group.
 
@@ -961,6 +961,29 @@ def test_the_fingerprint_login_row_is_not_filed_under_other_sign_in_methods(
     Nothing about the data was wrong - hardware_auth_status() has always
     reported it - only where it was shown.
     """
+    from shani_cassini import system_status as ss
+    # The row only exists if a PAM service ON THIS HOST loads pam_fprintd.so,
+    # and /etc/pam.d/gdm-fingerprint is a Shanios/GNOME fact - Ubuntu ships no
+    # such service. Read unmocked this test passed on the dev host and failed
+    # on the Ubuntu runner with the row simply absent, so it was asserting the
+    # host's PAM layout rather than the placement it is named for. The data is
+    # faked here, exactly as the sibling tests in this file already do it, and
+    # the assertions below are then about grouping alone.
+    pamd = tmp_path / "pam.d"; pamd.mkdir()
+    (pamd / "gdm-fingerprint").write_text("auth required pam_fprintd.so\n")
+    sec = tmp_path / "security"; sec.mkdir()
+    (sec / "pam_fprintd.so").write_text("")
+    # _PAM_LOGIN_SERVICES is the seam that matters, not PAM_SERVICE_DIRS:
+    # hardware_auth_status() gates each of its rows on
+    # `os.path.exists(<the absolute path in the table>)` and never consults the
+    # service-dir list for them. Patching PAM_SERVICE_DIRS alone leaves the
+    # literal /etc/pam.d/gdm-fingerprint in play, which is present on this host
+    # and absent on the Ubuntu runner - the whole reason this test was flaky.
+    monkeypatch.setattr(ss, "_PAM_LOGIN_SERVICES",
+                        ((str(pamd / "gdm-fingerprint"), "Fingerprint login",
+                          "pam_fprintd.so"),))
+    monkeypatch.setattr(ss, "_PAM_SEC_DIRS", (str(sec),))
+
     from shani_cassini.tabs.biometrics import BiometricsTab
     tab = BiometricsTab()
     assert spin(lambda: tab._auth_group.get_visible())
