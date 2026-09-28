@@ -5,6 +5,24 @@ This file applies to any AI coding assistant working in this repository
 before editing, and follow the verification steps before calling any change
 done.
 
+## Start here (fast path)
+
+This is a small rules section followed by a long dated record of current
+known issues. The rules are all near the top.
+
+**Always read these first:**
+- `What this repo is` — it reads only real interfaces
+- `Empirical verification (mandatory)`
+- `Required verification for a change`
+- `Boundaries` and `Commit discipline`
+- `Cross-repo impact`
+
+**On-demand reference — do not page through speculatively:**
+- `Known issues (current state, 2026-09-27)` — ~313 of this file's 468
+  lines. **Grep it for the subsystem you are changing**, then read the hits.
+  It is dated, so treat older entries as history unless they say "current".
+  This repo has no `AUDIT-HISTORY.md` yet, so detail lives here for now.
+
 ## What this repo is
 
 **Shani Cassini** (was `shani-gui`, renamed 2026-09-25): the GTK4 +
