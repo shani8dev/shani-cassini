@@ -504,6 +504,24 @@ def test_the_page_says_the_dropin_is_added_not_merged(env):
     assert "does not switch a directive off" in note, note
 
 
+def test_the_page_says_gnomes_remote_login_is_what_starts_the_daemon(env):
+    """The coupling a user cannot see from this page on their own.
+
+    Nothing here starts a server. GNOME's Remote Login socket-activates sshd, so
+    the directives this page writes govern the daemon only after that switch is
+    turned on - and once it runs, this drop-in rather than GNOME's panel decides
+    how it answers. Without the sentence, a user flips the GNOME switch, SSH
+    behaves the way this page says, and nothing on this page told them why.
+    """
+    page = build(env)
+    group = group_titled(page, "Status")
+    status = group.get_description() or ""
+    assert "Remote Login" in status, \
+        f"the page never names GNOME's switch: {status}"
+    assert "socket-activates" in status, status
+    assert "GNOME's own" in status, status
+
+
 def test_a_directive_row_says_set_here_and_never_merely_the_value(env):
     """The row's own wording, so a value cannot read as authoritative even in
     isolation: it is what the FILE says, not what sshd does."""

@@ -179,7 +179,10 @@ HEADER_LINES: Final = (
 STATUS_HELP: Final = (
     "Where the SSH sign-in settings this page manages are written, and what that "
     "does and does not mean. It is a root-owned drop-in, so a save asks for your "
-    "password through polkit.")
+    "password through polkit. Nothing here starts a server: GNOME's Remote Login "
+    "is what socket-activates sshd, so these directives govern the daemon only "
+    "once you have turned that on — and then it is this file, not GNOME's own "
+    "panel, that decides how it answers.")
 SETTINGS_HELP: Final = (
     "One row per directive. The drop-in records what you choose here; it does not "
     "by itself decide what sshd uses, because sshd keeps the first value it "
