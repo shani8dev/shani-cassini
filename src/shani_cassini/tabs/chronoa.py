@@ -27,6 +27,24 @@ SWITCHES = [
     ("cloud-fallback-enabled", "Cloud fallback", "Use a free cloud model when the local one is unavailable"),
 ]
 
+ENTRIES = (("model", "Model"), ("ollama-host", "Ollama address"))
+
+
+def absent_keys(wanted, available) -> list:
+    """Which of `wanted` the *compiled* schema does not declare.
+
+    A key present in the XML but missing from gschemas.compiled can never be
+    read or written, and gsettings reads only the compiled file. So a control
+    bound to such a key silently does nothing - and the page shows one fewer
+    control with no explanation, which reads as "this build does not have that
+    setting" rather than "this install is broken".
+
+    Split out and pure so the question can be asked of a key list without
+    constructing a page.
+    """
+    have = set(available)
+    return [k for k in wanted if k not in have]
+
 
 def _settings():
     src = Gio.SettingsSchemaSource.get_default()
@@ -73,25 +91,44 @@ class ChronoaTab(Gtk.Box):
         # --- switches, bound to GSettings
         sw = Adw.PreferencesGroup(title="Settings")
         keys = set(self._settings.props.settings_schema.list_keys())
+        absent = absent_keys([k for k, _t, _s in SWITCHES] + [k for k, _t in ENTRIES], keys)
         for key, title, sub in SWITCHES:
             if key not in keys:
                 continue
             r = Adw.SwitchRow(title=title, subtitle=sub)
             self._settings.bind(key, r, "active", Gio.SettingsBindFlags.DEFAULT)
             sw.add(r)
-        for key, title in (("model", "Model"), ("ollama-host", "Ollama address")):
+        for key, title in ENTRIES:
             if key in keys:
                 e = Adw.EntryRow(title=title, show_apply_button=True)
                 e.set_text(self._settings.get_string(key))
                 e.connect("apply", lambda w, k=key: self._settings.set_string(k, w.get_text().strip()))
                 sw.add(e)
+        if absent:
+            # A control that cannot work says so. Dropping it silently makes a
+            # broken install look like a build that never had the setting.
+            logger.warning(
+                "%s is missing %d key(s) its compiled schema does not declare: %s",
+                SCHEMA, len(absent), ", ".join(absent),
+            )
+            sw.add(Adw.ActionRow(
+                title="Some settings are unavailable",
+                subtitle=(
+                    f"{SCHEMA} does not declare: {', '.join(absent)}. These cannot be "
+                    "read or written, so they are not shown — reinstall or update Chronoa."
+                ),
+            ))
         self.append(sw)
 
-        self._check_ollama()
+        self._check_ollama(keys)
 
-    def _check_ollama(self) -> None:
-        host = (self._settings.get_string("ollama-host") or "http://localhost:11434").rstrip("/")
-        want = self._settings.get_string("model")
+    def _check_ollama(self, keys=frozenset()) -> None:
+        # get_string() on a key the compiled schema does not declare raises, so
+        # the absent keys have to be excluded rather than read optimistically.
+        host = (self._settings.get_string("ollama-host") if "ollama-host" in keys
+                else "") or "http://localhost:11434"
+        host = host.rstrip("/")
+        want = self._settings.get_string("model") if "model" in keys else ""
 
         def done(d, err):
             if d is None:
