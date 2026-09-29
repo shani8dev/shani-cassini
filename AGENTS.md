@@ -155,6 +155,32 @@ If you haven't seen it work (or fail) for real, it isn't verified.
 
 ## Known issues (current state, 2026-09-27)
 
+- **System Info's three sections rendered at two different widths — found
+  2026-09-29 by measuring the running app, fixed.** `SystemInfoPage` is a plain
+  `Gtk.Box` that stacks `DeviceGroup`, `SystemTab` and `KernelTab` in one page.
+  `DeviceGroup` is an `Adw.PreferencesGroup` and takes the page's own inset; the
+  other two built a `content_box` that set `margin_start`/`margin_end` to 20, so
+  their cards were inset a **second** time. Measured on the running app: Device
+  spanned x=355..1142 while Hardware Information and Kernel Version spanned
+  x=375..1122 — the two lower cards 40px narrower, so the page had ragged left
+  and right edges. Both tabs now leave the horizontal inset to the container.
+  The vertical margins stay: they pad the top and bottom of the scroll area,
+  where there is no sibling spacing to inherit.
+  `tests/test_system_info_insets.py` locks it, and **that test was vacuous at
+  first** — it read `scrolled.get_child()`, which is the `Gtk.Viewport` GTK
+  inserts around a plain Box, whose margins are 0, so it passed against the
+  unfixed code. It now walks through the Viewport, and was confirmed to fail
+  with `margin_start=20` before the fix was applied. Third time in this repo
+  that a test which could not fail was the thing lying; the tell is the same,
+  an absence.
+  **Two failures in the suite are pre-existing and unrelated** — established by
+  running the full suite with this change stashed, not assumed:
+  `test_a_missing_smartctl_is_not_installed_and_not_an_error` fails on any host
+  where `smartctl` and a real disk are present (this one has `/dev/nvme0`, so the
+  page correctly reports a disk and the test's absent-tool expectation is not
+  met), and `test_the_page_reads_exactly_the_four_documented_reads` passes alone
+  and fails in a full run — the ordering class described below.
+
 - **The eight new sections (Btrfs, Timers & Background Tasks, Persistence, LSM,
   Audit, Boot & Recovery, Containers, Virtualization) have been rendered and
   unit-tested, but only Btrfs and Virtualization have been driven against a real
@@ -261,9 +287,15 @@ If you haven't seen it work (or fail) for real, it isn't verified.
   - **Known coupling, not duplication:** GNOME's Remote Login socket-activates
     sshd, and Cassini's Remote Access rewrites
     `/etc/ssh/sshd_config.d/50-cassini.conf`. If a user enables Remote Login in
-    GNOME, Cassini's directives govern the daemon that starts. The page
-    subtitle should say so — otherwise a user flips the GNOME switch and is
-    surprised Cassini's settings took effect. Not yet done.
+    GNOME, Cassini's directives govern the daemon that starts. The page subtitle
+    should say so — otherwise a user flips the GNOME switch and is surprised
+    Cassini's settings took effect. **Done, and confirmed on the running app
+    2026-09-29:** the sidebar entry reads "These govern the daemon GNOME's
+    Remote Login starts" (`notebook.py:114-117`) and the page's own Status
+    description spells it out — "GNOME's Remote Login is what socket-activates
+    sshd, so these directives govern the daemon only once you have turned that
+    on — and then it is this file, not GNOME's own panel, that decides how it
+    answers." This note said "Not yet done" and was stale.
 - **Headless V2 logged a `shani-cassini` GApplication registration failure**
   (`org.freedesktop.DBus.Error.NoReply`, no `DISPLAY`/session bus) and the real
   slot logged an **auditd crash-loop** (`status=1/FAILURE`, restart count 5).

@@ -52,8 +52,6 @@ class SystemTab(Gtk.Box):
         content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
         content_box.set_margin_top(20)
         content_box.set_margin_bottom(20)
-        content_box.set_margin_start(20)
-        content_box.set_margin_end(20)
         scrolled.set_child(content_box)
 
         # Create hardware info card
