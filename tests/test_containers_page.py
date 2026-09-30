@@ -803,9 +803,10 @@ def test_this_page_never_escalates_and_never_starts_anything_of_its_own() -> Non
 
 
 def test_the_page_adds_no_timer_of_its_own() -> None:
-    """The application has no timeout_add anywhere, so a poll here would be the
-    first one - and a poll is how an inventory page starts refreshing itself
-    behind the user's back."""
+    """Nothing in the app polls - system_status.py's two timers are
+    per-operation deadlines (STREAM_BOUNDS, fprintd's answer), not refreshes -
+    so a poll here would be the first one - and a poll is how an inventory page
+    starts refreshing itself behind the user's back."""
     code = inspect.getsource(containers)
     assert "timeout_add" not in code, "this page must not add a timer"
     assert "timeout_add" not in ast.unparse(_code_without_docstrings())

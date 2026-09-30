@@ -152,10 +152,18 @@ def _fake_sys(tmp_path, monkeypatch, *, cpuinfo=None, meminfo=None, thermal=None
     # real one, and a fake that falls through to /sys answers with this
     # machine's 98% rather than the fixture's, which is worse than no fake.
     monkeypatch.setattr(ss, "POWER_SUPPLY", str(base))
+    # Repointed for the same reason as the battery above: this host has 7 real
+    # hwmon chips, so a fall-through answers with this machine's temperatures.
+    monkeypatch.setattr(ss, "HWMON_ROOT", str(root / "hwmon"))
     for name, body in (("lspci", lspci), ("bluetoothctl", bluetooth)):
         tool = tmp_path / name
         tool.write_text("#!/bin/sh\ncat <<'EOF'\n" + body + "\nEOF\n")
         tool.chmod(0o755)
+    ppd = tmp_path / "powerprofilesctl"
+    ppd.write_text("#!/bin/sh\ncase \"$1\" in\n"
+                   f'  get) printf "%b" {PPD_GET!r} ;;\n'
+                   f'  list) printf "%b" {PPD_LIST!r} ;;\nesac\n')
+    ppd.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
 
 
@@ -174,6 +182,7 @@ def test_the_hardware_card_is_drivable_from_fakes(tmp_path, monkeypatch):
     )
     out = {}
     ss.hardware_card(lambda r: out.update(r))
+    assert spin(lambda: len(out) == 8), out
     assert out["hw-cpu"] == "Fake CPU 9000 (3 threads)"
     assert out["hw-cpu-temp"] == "45°C"
     assert out["hw-gpu"] == "Fake GPU 7"
@@ -202,6 +211,7 @@ def test_a_hardware_source_that_is_absent_falls_back_on_its_own_row_only(
     )
     out = {}
     ss.hardware_card(lambda r: out.update(r))
+    assert spin(lambda: len(out) == 8), out
     assert out["hw-battery"] == "N/A"
     assert out["hw-cpu"] == "Fake CPU (1 threads)"
     assert out["hw-ram"] == "1024 MB (512 MB used)"
@@ -235,7 +245,7 @@ def test_one_unreadable_source_does_not_blank_the_whole_hardware_card(
         return w.get_label() if w is not None else None
 
     # the one that failed says so, rather than aborting the card
-    assert label("hw-ram") == "N/A"
+    assert spin(lambda: label("hw-ram") == "N/A"), label("hw-ram")
     # and the ones after it in the same try block were still taken
     assert label("hw-battery") not in (None, ""), "battery was skipped by the RAM failure"
     assert label("hw-virt") not in (None, ""), "virtualisation was skipped by the RAM failure"
@@ -283,10 +293,15 @@ def fake_genefi(fake_bin):
     return fake_bin
 
 
+def _tpm_present(value):
+    """Stand in for ss.tpm2_present(), answering without spawning a tool."""
+    return lambda done: done(value, "")
+
+
 def test_encryption_status(fake_genefi, monkeypatch):
     from shani_cassini.tabs import encryption
     monkeypatch.setattr(encryption, "_encrypted", lambda: True)
-    monkeypatch.setattr(encryption.ss, "has_tpm2", lambda: True)
+    monkeypatch.setattr(encryption.ss, "tpm2_present", _tpm_present(True))
     tab = encryption.EncryptionTab()
     tab._load_status()
     assert spin(lambda: tab._btn_remove.get_sensitive())
@@ -296,7 +311,7 @@ def test_encryption_status(fake_genefi, monkeypatch):
 def test_enroll_passes_secrets_on_stdin_only(fake_genefi, monkeypatch):
     from shani_cassini.tabs import encryption
     monkeypatch.setattr(encryption, "_encrypted", lambda: True)
-    monkeypatch.setattr(encryption.ss, "has_tpm2", lambda: True)
+    monkeypatch.setattr(encryption.ss, "tpm2_present", _tpm_present(True))
     tab = encryption.EncryptionTab()
     tab._run_with_stdin(["pkexec", "gen-efi", "enroll-tpm2", "--stdin", "--with-pin"],
                         "my secret phrase\n1234\n", "ok", "fail")
@@ -320,6 +335,108 @@ def test_unencrypted_disk_offers_no_tpm_actions(monkeypatch):
     monkeypatch.setattr(encryption, "_encrypted", lambda: False)
     tab = encryption.EncryptionTab()
     assert not hasattr(tab, "_btn_enroll")
+
+
+def test_the_tpm_row_reads_checking_before_the_answer_arrives(monkeypatch):
+    """The page must be on screen before the probe answers.
+
+    Holding the callback open is the whole point: if _build() waited for the
+    value, the subtitle would already be "Available" here and the row would
+    never be seen mid-flight.
+    """
+    from shani_cassini.tabs import encryption
+    monkeypatch.setattr(encryption, "_encrypted", lambda: True)
+    pending = []
+    monkeypatch.setattr(encryption.ss, "tpm2_present", lambda done: pending.append(done))
+    tab = encryption.EncryptionTab()
+    assert pending, "the page asked nobody about the TPM"
+    assert tab._tpm_row.get_subtitle() == "Checking…"
+    pending[0](True, "")
+    assert tab._tpm_row.get_subtitle() == "Available"
+
+
+def test_the_enroll_button_follows_the_tpm_answer(monkeypatch):
+    from shani_cassini.tabs import encryption
+    monkeypatch.setattr(encryption, "_encrypted", lambda: True)
+    for tpm, expected in ((True, True), (False, False), (None, False)):
+        monkeypatch.setattr(encryption.ss, "tpm2_present", _tpm_present(tpm))
+        tab = encryption.EncryptionTab()
+        assert tab._btn_enroll.get_sensitive() is expected, f"tpm={tpm}"
+
+
+def test_an_unanswerable_probe_says_unknown_and_does_not_blame_the_firmware(monkeypatch):
+    from shani_cassini.tabs import encryption
+    monkeypatch.setattr(encryption, "_encrypted", lambda: True)
+    monkeypatch.setattr(encryption.ss, "tpm2_present", _tpm_present(None))
+    tab = encryption.EncryptionTab()
+    assert tab._tpm_row.get_subtitle() == "Unknown"
+
+
+def test_a_tpm_read_from_a_previous_build_cannot_land_on_a_fresh_row(monkeypatch):
+    """_build() runs again after every enrol and every remove.
+
+    A read spawned by the previous build can therefore land after the row it
+    was going to fill has been discarded. The answer has to go to the row the
+    read was spawned for, not to whatever self._tpm_row happens to be by then.
+    """
+    from shani_cassini.tabs import encryption
+    monkeypatch.setattr(encryption, "_encrypted", lambda: True)
+    pending = []
+    monkeypatch.setattr(encryption.ss, "tpm2_present", lambda done: pending.append(done))
+    tab = encryption.EncryptionTab()
+    stale = pending.pop()
+    tab._build()
+    assert tab._tpm_row.get_subtitle() is not None
+    stale(False, "")
+    assert "firmware" not in (tab._tpm_row.get_subtitle() or ""), (
+        "a discarded read wrote to the current row")
+
+
+def test_run_status_reports_the_exit_code_even_when_stdout_is_empty(fake_bin):
+    """systemd-analyze has-tpm2 -q prints nothing; run_text calls that a failure.
+
+    The one case that matters -- a working TPM -- prints the least, so a reader
+    that needs output to call the read a success reports the good answer as the
+    broken one.
+    """
+    from shani_cassini import system_status as ss
+    fake = fake_bin / "systemd-analyze"
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+    out = []
+    ss.run_status(["systemd-analyze", "has-tpm2", "-q"], lambda st, err: out.append((st, err)))
+    assert spin(lambda: bool(out))
+    assert out[0] == (0, ""), out[0]
+
+
+def test_tpm2_present_reads_the_tpm_from_the_exit_code(fake_bin, monkeypatch):
+    from shani_cassini import system_status as ss
+    fake = fake_bin / "systemd-analyze"
+
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+    out = []
+    ss.tpm2_present(lambda tpm, err: out.append((tpm, err)))
+    assert spin(lambda: bool(out))
+    assert out[0] == (True, ""), out[0]
+
+    out.clear()
+    fake.write_text("#!/bin/sh\nexit 1\n")
+    fake.chmod(0o755)
+    ss.tpm2_present(lambda tpm, err: out.append((tpm, err)))
+    assert spin(lambda: bool(out))
+    assert out[0] == (False, ""), out[0]
+
+    out.clear()
+    # Deleting the fake is not enough: the real systemd-analyze is on PATH on a
+    # systemd host, so `which` would still find it and this would be testing
+    # nothing. Empty PATH is what actually makes the tool absent.
+    empty = fake_bin / "empty-path"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    ss.tpm2_present(lambda tpm, err: out.append((tpm, err)))
+    assert spin(lambda: bool(out))
+    assert out[0][0] is None, out[0]
 
 
 def test_services_lists_only_toggleable_and_toggles(tmp_path, monkeypatch):
@@ -497,6 +614,272 @@ def test_device_card_never_shells_out_synchronously():
              and isinstance(n.func.value, ast.Name) and n.func.value.id == "subprocess"]
     assert not calls, f"device.py blocks the GTK main thread again: {calls}"
     assert "subprocess" not in src, "device.py imports subprocess again"
+
+
+# --- the System Info cards: hardware and storage -------------------------
+# The Device card above was fixed for running its reads off the main thread.
+# These two cards were not, and they sit on the same page: SystemTab.__init__
+# calls _update_data, which calls both, and _update_data runs while
+# notebook.py builds the page -- so every one of these reads was a synchronous
+# subprocess.run on the GTK main thread. Measured on the running code with
+# fakes that sleep: constructing SystemTab() took 6.33s for 6.00s of tool
+# time, i.e. the window was frozen for the whole sum. Worst single read is
+# `du -sh /var/log`, capped at 30s, which is why "small, local, fast" is a
+# comment and not a guarantee.
+#
+# The parsers are split out as pure functions for the same reason the page's
+# parsing was moved here at all: the shape of the output is testable with no
+# subprocess, no /proc and no main loop, and the only thing left to get right
+# at runtime is that the reads are not on the calling thread.
+
+DF_ROOT = """Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme0n1p2  916G  123G  744G  15% /
+"""
+
+DF_HOME = """Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme0n1p2  916G   11G  744G   2% /home
+"""
+
+DF_VAR = """Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme0n1p3   50G  8.2G   40G  18% /var
+"""
+
+FREE_H = """               total        used        free      shared  buff/cache   available
+Mem:           31Gi       6.2Gi        12Gi       210Mi        13Gi        24Gi
+Swap:          8.0Gi      128Mi       7.9Gi
+"""
+
+LSPCI = """00:02.0 VGA compatible controller: Intel Corporation Alder Lake-P GT2 (rev 0c)
+00:14.0 USB controller: Intel Corporation Alder Lake PxH USB Controller
+"""
+
+BLUETOOTHCTL_SHOW = """Controller 00:00:00:00:00:00 (public)
+\tName: host
+\tPowered: yes
+"""
+
+# Verbatim from power-profiles-daemon 0.22. The active profile is deliberately
+# NOT last (the daemon prints power-saver, balanced, performance): a parser
+# reading the list backwards would pick the wrong block, so reordering this
+# fixture silently removes the only thing that lets the test fail.
+PPD_GET = "balanced\n"
+
+PPD_LIST = """  performance:
+    CpuDriver:\tintel_pstate
+    PlatformDriver:\tplatform_profile
+    Degraded:   no
+
+* balanced:
+    CpuDriver:\tintel_pstate
+    PlatformDriver:\tplatform_profile
+
+  power-saver:
+    CpuDriver:\tintel_pstate
+    PlatformDriver:\tplatform_profile
+"""
+
+
+def _sysinfo_fakes(tmp_path, *, df_root=DF_ROOT, du="412M\t/var/log",
+                   free=FREE_H, lspci=LSPCI, bluetooth=BLUETOOTHCTL_SHOW,
+                   ppd_get=PPD_GET, ppd_list=PPD_LIST):
+    """Fake df/du/free/lspci/bluetoothctl printing what the real ones print.
+
+    `df -h` is answered per path, because the card asks for /, /home and /var
+    separately and a test that returned one answer for all of them could not
+    tell the three rows apart.
+    """
+    def write(name, body):
+        f = tmp_path / name
+        f.write_text("#!/bin/sh\n" + body)
+        f.chmod(f.stat().st_mode | stat.S_IEXEC)
+    # %b, not %s: the fixtures are Python reprs, so their newlines are "\n" and
+    # only %b turns those back into line breaks. The fakes use printf and case
+    # alone so a test can put this directory alone on PATH to test an absent
+    # tool without losing cat along with it.
+    paths = {"/": df_root, "/home": DF_HOME, "/var": DF_VAR}
+    body = ['case "$2" in']
+    for path, out in paths.items():
+        body.append(f'  {path}) printf "%b" {out!r} ;;')
+    body.append("esac\n")
+    write("df", "\n".join(body))
+    write("du", f"printf '%b\\n' {du!r}\n")
+    write("free", f"printf '%b' {free!r}\n")
+    write("lspci", f"printf '%b' {lspci!r}\n")
+    write("bluetoothctl", f"printf '%b' {bluetooth!r}\n")
+    # Answered per subcommand: the reader asks `get` for the profile in force
+    # and `list` for the drivers, and a fake that printed one answer for both
+    # would let a reader that only ever calls one of them pass.
+    write("powerprofilesctl",
+          'case "$1" in\n'
+          f'  get) printf "%b" {ppd_get!r} ;;\n'
+          f'  list) printf "%b" {ppd_list!r} ;;\n'
+          'esac\n')
+    return tmp_path
+
+
+def test_the_card_parsers_read_the_tools_own_output_format():
+    """The parsers on their own, with no subprocess and no main loop.
+
+    The formats are verbatim from the tools: df's right-aligned header, free's
+    two leading spaces, lspci's bus:slot.func class prefix, du's tab.
+    """
+    from shani_cassini import system_status as ss
+    assert ss._parse_df(DF_ROOT) == "123G/916G"
+    assert ss._parse_df(DF_HOME) == "11G/916G"
+    assert ss._parse_free(FREE_H) == "128Mi used / 8.0Gi total"
+    assert ss._parse_gpu(LSPCI) == "Intel Corporation Alder Lake-P GT2 (rev 0c)"
+    assert ss._parse_bluetooth(BLUETOOTHCTL_SHOW) == "● Active"
+    assert ss._parse_bluetooth("Powered: no\n") == "○ Inactive"
+    # A tool that answers with a header and nothing else is not a measurement.
+    assert ss._parse_df("Filesystem      Size  Used Avail Use% Mounted on\n") == ""
+    assert ss._parse_free("Mem: 1Gi\n") == ""
+    # `du` saying nothing used to raise IndexError out of a .split()[0]; the
+    # caller's fallback is the answer for that, so the parser answers empty.
+    assert ss._parse_du("") == ""
+    assert ss._parse_du("412M\t/var/log\n") == "412M"
+
+
+def test_the_storage_card_renders_every_row_from_the_fakes(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", f"{_sysinfo_fakes(tmp_path)}:{os.environ['PATH']}")
+    from shani_cassini import system_status as ss
+    out = {}
+    ss.storage_card(out.update)
+    assert spin(lambda: len(out) == 6), out
+    assert out["storage-root-usage"] == "123G/916G"
+    assert out["storage-root"] == "123G/916G"
+    assert out["storage-home-usage"] == "11G/916G"
+    assert out["storage-var-usage"] == "8.2G/50G"
+    assert out["storage-varlog"] == "412M"
+    assert out["storage-swap"] == "128Mi used / 8.0Gi total"
+
+
+def test_the_storage_card_asks_df_once_for_the_two_root_rows(tmp_path, monkeypatch):
+    """`storage-root` and `storage-root-usage` are the same read of `/`.
+
+    They were two rows fed by two `df -h /` calls, so every open of System Info
+    spawned the tool twice for one answer. The argv log is the evidence, so
+    this counts the invocations rather than trusting the row values: two equal
+    values prove nothing about how many times the tool ran.
+    """
+    log = tmp_path / "df.log"
+    fakes = _sysinfo_fakes(tmp_path)
+    dff = fakes / "df"
+    body = dff.read_text().replace("esac\n", f'esac\necho "$@" >> {log}\n')
+    dff.write_text(body)
+    monkeypatch.setenv("PATH", f"{fakes}:{os.environ['PATH']}")
+    from shani_cassini import system_status as ss
+    out = {}
+    ss.storage_card(out.update)
+    assert spin(lambda: len(out) == 6), out
+    calls = log.read_text().splitlines()
+    assert calls.count("-h /") == 1, f"df -h / ran {calls.count('-h /')}x: {calls}"
+    assert calls.count("-h /home") == 1, calls
+
+
+def test_the_hardware_card_renders_its_tool_backed_rows(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", f"{_sysinfo_fakes(tmp_path)}:{os.environ['PATH']}")
+    from shani_cassini import system_status as ss
+    out = {}
+    ss.hardware_card(out.update)
+    assert spin(lambda: len(out) == 8), out
+    assert out["hw-gpu"] == "Intel Corporation Alder Lake-P GT2 (rev 0c)"
+    assert out["hw-bluetooth"] == "● Active"
+
+
+def test_one_missing_source_does_not_blank_the_other_rows(tmp_path, monkeypatch):
+    """The per-row independence contract, on the async path.
+
+    `du` is absent while df and free answer. Every row must still be filled:
+    a card that shows four rows and two blanks is the failure this whole
+    per-reader split exists to prevent, and the async rewrite is exactly where
+    a shared error handler could quietly reintroduce it.
+    """
+    fakes = _sysinfo_fakes(tmp_path)
+    (fakes / "du").unlink()
+    # PATH is fakes ALONE, not prepended: prepending would still find this
+    # host's real du and answer with this machine's /var/log size, which is the
+    # same mistake a passing test would make here.
+    monkeypatch.setenv("PATH", str(fakes))
+    from shani_cassini import system_status as ss
+    out = {}
+    ss.storage_card(out.update)
+    assert spin(lambda: len(out) == 6), out
+    assert out["storage-varlog"] == "N/A", out
+    assert out["storage-root"] == "123G/916G", out
+    assert out["storage-swap"] == "128Mi used / 8.0Gi total", out
+
+
+def test_the_cards_never_shell_out_synchronously():
+    """The defect, pinned structurally, the way device.py's is.
+
+    A grep for subprocess would miss a regression reintroduced through any
+    other blocking reader, so this reads the AST. run_text() is the only way a
+    card may read a tool now.
+
+    Two things this deliberately does not do, both learned the hard way in this
+    file. It does not name the reader functions and check inside them: that
+    version sat green while checking five functions that had been renamed out
+    from under it, and a gate that inspects nothing reports nothing wrong. So
+    it sweeps the whole module and allowlists the few places a synchronous
+    subprocess is still deliberate, and it asserts the readers it expects are
+    actually there. If you rename one, this says so instead of going quiet.
+    """
+    import ast
+    from pathlib import Path as _P
+    src = (_P(__file__).resolve().parents[1] / "src/shani_cassini/system_status.py").read_text()
+    tree = ast.parse(src)
+
+    readers = ("_parse_gpu", "_parse_bluetooth", "_parse_df", "_parse_du", "_parse_free")
+    defined = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    missing = [name for name in readers if name not in defined]
+    assert not missing, (f"this gate inspects {readers}, and {missing} no longer exist: "
+                         "it would pass without reading anything")
+
+    # No allowlist, on purpose. has_tpm2 was one here while it was a known
+    # synchronous read on a page-build path, and letting a list grow is how a
+    # whole-module sweep decays into an exemption nobody re-reads. Every reader
+    # in this module now collects through run_json/run_text/run_status, so any
+    # subprocess call here -- under any name -- is a regression.
+    blocking = ("run", "Popen", "check_output", "call", "check_call")
+    bad = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call):
+                continue
+            if isinstance(call.func, ast.Name) and call.func.id == "_run":
+                bad.append(f"_run at line {call.lineno} in {node.name}()")
+            if (isinstance(call.func, ast.Attribute)
+                    and call.func.attr in blocking
+                    and isinstance(call.func.value, ast.Name)
+                    and call.func.value.id == "subprocess"):
+                bad.append(f"subprocess.{call.func.attr} at line {call.lineno} in {node.name}()")
+    assert not bad, ("a System Info card blocks the GTK main thread again: " + ", ".join(bad))
+
+
+def test_the_cards_collect_through_run_text():
+    """The other half: the reads went somewhere, they did not just disappear.
+
+    A gate that only proves the absence of subprocess.run would also pass if
+    someone deleted the readings outright and left every row on its fallback.
+    """
+    import ast
+    from pathlib import Path as _P
+    tree = ast.parse((_P(__file__).resolve().parents[1]
+                      / "src/shani_cassini/system_status.py").read_text())
+    cards = ("hardware_card", "storage_card")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name in cards:
+            called = {c.func.id for c in ast.walk(node)
+                      if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+            assert "_gather" in called, f"{node.name}() no longer fans its reads out"
+    # _gather is the fan-out, so the tool reads are named there, not in the cards
+    gather = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == "_gather")
+    used = {c.func.id for c in ast.walk(gather)
+            if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+    assert "run_text" in used, "_gather does not read through run_text()"
 
 
 # --- fprintd, over its own D-Bus API --------------------------------------
@@ -2512,7 +2895,7 @@ def test_an_unbounded_tool_is_left_alone(tmp_path, monkeypatch):
 def _luks_tab(monkeypatch):
     from shani_cassini.tabs import encryption
     monkeypatch.setattr(encryption, "_encrypted", lambda: True)
-    monkeypatch.setattr(encryption.ss, "has_tpm2", lambda: True)
+    monkeypatch.setattr(encryption.ss, "tpm2_present", _tpm_present(True))
     return encryption, encryption.EncryptionTab()
 
 
@@ -2604,3 +2987,305 @@ def test_the_real_slot_cipher_is_not_replaced_by_a_default(monkeypatch):
     reported value rather than against a constant chosen by the test."""
     assert ENCRYPTED_SLOT_STATUS["luks_cipher"] in ENCRYPTED_SLOT_STATUS.values()
     assert ENCRYPTED_SLOT_STATUS["luks_cipher"] != "aes"
+
+
+# --- systemd's PCR separator: the re-enrolment advisory --------------------
+#
+# systemd 261 measures a separator into PCRs 0-7, 9 and 12-14, and Arch's
+# mkinitcpio 42-1 started shipping that unit in the initrd. A seal bound to one
+# of them can stop opening the disk. Nothing read-only can say whether it has --
+# there is no enrolment date, no --list and no dry-run -- so what is tested here
+# is that the page warns exactly on the configuration the change affects, and
+# says nothing anywhere else.
+
+def _separator(tmp_path, monkeypatch, present):
+    """Aim the unit-file probe at a tmp_path the test controls, for real.
+
+    Not a stub: this reads an actual file through the actual os.path.exists, so
+    a control that moves the constant still exercises the same code a real
+    systemd 261 would.
+    """
+    from shani_cassini import system_status as ss
+    unit = tmp_path / "systemd-pcrosseparator.service"
+    if present:
+        unit.write_text("[Unit]\nDescription=stub of the real unit\n")
+    else:
+        # A leftover file from an earlier call would make present=False read as
+        # present, which is how the first version of the probe test passed its
+        # own first half and failed its second.
+        unit.unlink(missing_ok=True)
+    monkeypatch.setattr(ss, "PCR_SEPARATOR_UNIT", str(unit))
+
+
+def test_the_separator_probe_answers_from_the_unit_file(tmp_path, monkeypatch):
+    from shani_cassini import system_status as ss
+    _separator(tmp_path, monkeypatch, present=True)
+    assert ss.pcr_separator_measured() is True
+    _separator(tmp_path, monkeypatch, present=False)
+    assert ss.pcr_separator_measured() is False
+
+
+def test_the_separator_pcrs_are_the_ones_systemd_measures():
+    """0 and 7 are in the set and 8 is not. This is systemd's documented list
+    (0-7, 9, 12-14), and PCR 8 is the boundary that a reader who extrapolated
+    "0-15" or "0-9" would get wrong in the other direction."""
+    from shani_cassini import system_status as ss
+    assert {0, 7} <= ss.SEPARATOR_PCRS
+    assert 8 not in ss.SEPARATOR_PCRS
+    assert 10 not in ss.SEPARATOR_PCRS and 11 not in ss.SEPARATOR_PCRS
+    assert {9, 12, 13, 14} <= ss.SEPARATOR_PCRS
+
+
+def test_the_bound_pcrs_are_gen_efis_own_rule():
+    """gen-efi pins 0+7 with Secure Boot on and 0 with it off. Both land inside
+    the changed set, which is why this advisory exists at all -- asserted here
+    so that a future edit to either constant breaks a test rather than quietly
+    stopping the warning."""
+    from shani_cassini import system_status as ss
+    assert ss.shani_tpm2_pcr_policy(True) == frozenset({0, 7})
+    assert ss.shani_tpm2_pcr_policy(False) == frozenset({0})
+
+
+def test_an_enrolled_key_bound_to_a_changed_pcr_is_warned_about(tmp_path, monkeypatch):
+    _separator(tmp_path, monkeypatch, present=True)
+    _enc, tab = _luks_tab(monkeypatch)
+    tab._on_status({"tpm2_enrolled": True, "secure_boot": True}, None)
+    assert tab._seal_row.get_visible() is True
+    assert "0, 7" in tab._seal_row.get_subtitle()
+    assert "set automatic unlock up again" in tab._seal_row.get_subtitle()
+
+
+def test_with_secure_boot_off_only_pcr_0_is_named(tmp_path, monkeypatch):
+    _separator(tmp_path, monkeypatch, present=True)
+    _enc, tab = _luks_tab(monkeypatch)
+    tab._on_status({"tpm2_enrolled": True, "secure_boot": False}, None)
+    assert tab._seal_row.get_visible() is True
+    assert "PCR 0," in tab._seal_row.get_subtitle()
+
+
+def test_a_disk_with_no_tpm2_key_is_never_warned_about(tmp_path, monkeypatch):
+    """No key means no seal to go stale. The separator being present is not by
+    itself a reason to say anything."""
+    _separator(tmp_path, monkeypatch, present=True)
+    _enc, tab = _luks_tab(monkeypatch)
+    tab._on_status({"tpm2_enrolled": False, "secure_boot": True}, None)
+    assert tab._seal_row.get_visible() is False
+
+
+def test_a_system_too_old_for_the_separator_is_never_warned_about(tmp_path, monkeypatch):
+    _separator(tmp_path, monkeypatch, present=False)
+    _enc, tab = _luks_tab(monkeypatch)
+    tab._on_status({"tpm2_enrolled": True, "secure_boot": True}, None)
+    assert tab._seal_row.get_visible() is False
+
+
+def test_the_warning_needs_no_pcr_field_from_the_tool(tmp_path, monkeypatch):
+    """The whole point of deriving the policy from gen-efi's rule instead of
+    reading the LUKS2 token: gen-efi reports no PCR field at all, and a token's
+    tpm2-pcrs is a bitmask behind a tab where the enrolling flag used '+'. So the
+    status carrying nothing PCR-shaped must still produce the warning -- if this
+    ever needed a PCR field to fire, it would be reading a field the tool does
+    not send, and would be silent on the machines it exists to help."""
+    _separator(tmp_path, monkeypatch, present=True)
+    _enc, tab = _luks_tab(monkeypatch)
+    tab._on_status({"tpm2_enrolled": True, "secure_boot": True}, None)
+    assert tab._seal_row.get_visible() is True
+
+
+def test_the_advisory_only_appears_for_a_status_that_carries_a_reason(monkeypatch):
+    """Both halves of the row's visibility, because only asserting the first
+    makes the second untested: hidden before anything is checked, and still
+    hidden after a status that reports no risk. A row that appeared on every
+    machine would be a warning nobody reads, and one showing an empty subtitle
+    would be inventing data -- the two failures are opposite and both wrong."""
+    _enc, tab = _luks_tab(monkeypatch)
+    assert tab._seal_row.get_visible() is False
+    tab._on_status({"tpm2_enrolled": False, "secure_boot": True}, None)
+    assert tab._seal_row.get_visible() is False
+    assert tab._seal_row.get_subtitle() == ""
+
+
+def test_the_captured_slot_is_not_tpm2_enrolled():
+    """Guards the fixture, and it is a guard because of what it invalidates.
+
+    tests/fixtures/tpm2-status-encrypted-slot.json is a real capture from a
+    genuinely encrypted LUKS2 slot, but that slot unlocks on a passphrase:
+    tpm2_enrolled false, tpm2_slots 0, secure_boot false. A first attempt at
+    the advisory tests above used it as a TPM2 report and the "no warning here"
+    test passed for the wrong reason -- it was silent because there was no key,
+    not because this host has no separator. If this capture is ever replaced
+    with an enrolled one, these tests need re-reading rather than re-running.
+    """
+    assert ENCRYPTED_SLOT_STATUS["tpm2_enrolled"] is False
+    assert ENCRYPTED_SLOT_STATUS["tpm2_slots"] == 0
+
+
+def test_a_real_encrypted_slot_with_no_key_never_warns_even_with_the_separator(
+        tmp_path, monkeypatch):
+    """An encrypted disk with no TPM2 key has no seal that can go stale, so the
+    separator has nothing to say about it. Real captured bytes, on the one
+    condition that would otherwise produce a warning."""
+    _separator(tmp_path, monkeypatch, present=True)
+    _enc, tab = _luks_tab(monkeypatch)
+    tab._on_status(ENCRYPTED_SLOT_STATUS, None)
+    assert tab._seal_row.get_visible() is False
+
+
+def test_the_separator_is_the_only_thing_that_flips_the_advisory(tmp_path, monkeypatch):
+    """One status, the probe toggled and nothing else changed, so silence and
+    the warning are attributable to the separator alone. The per-condition tests
+    above each hold the other inputs still; this one shows the pair is a single
+    switch, which is what makes the proxy in pcr_separator_measured defensible."""
+    status = {"tpm2_enrolled": True, "secure_boot": True, "tpm2_slots": 1}
+    _separator(tmp_path, monkeypatch, present=False)
+    _enc, before = _luks_tab(monkeypatch)
+    before._on_status(status, None)
+    assert before._seal_row.get_visible() is False
+    _separator(tmp_path, monkeypatch, present=True)
+    _enc, after = _luks_tab(monkeypatch)
+    after._on_status(status, None)
+    assert after._seal_row.get_visible() is True
+
+
+def _fake_hwmon(tmp_path, monkeypatch, chips):
+    """Build a hwmon tree a test controls. chips maps dir name to (name, files)."""
+    from shani_cassini import system_status as ss
+    root = tmp_path / "hwmon"
+    root.mkdir(parents=True, exist_ok=True)
+    for chip, (name, files) in chips.items():
+        base = root / chip
+        base.mkdir(parents=True, exist_ok=True)
+        (base / "name").write_text(name)
+        for filename, body in files.items():
+            (base / filename).write_text(body)
+    monkeypatch.setattr(ss, "HWMON_ROOT", str(root))
+    return root
+
+
+def test_the_sensor_rows_are_built_from_the_hwmon_tree(tmp_path, monkeypatch):
+    """Each row is a reading the fake tree holds, with its own label.
+
+    Shapes are taken from a real machine: coretemp labels its inputs,
+    thinkpad labels a temperature and a fan, and the acpi chip holds no
+    temp/fan inputs at all and must contribute nothing rather than a blank row.
+    """
+    from shani_cassini import system_status as ss
+    _fake_hwmon(tmp_path, monkeypatch, {
+        "hwmon0": ("coretemp", {"temp1_input": "45000", "temp1_label": "Package id 0",
+                                "temp2_input": "41000", "temp2_label": "Core 0"}),
+        "hwmon1": ("thinkpad", {"temp1_input": "58000", "temp1_label": "CPU",
+                                "fan1_input": "3300"}),
+        "hwmon2": ("acpi", {}),
+    })
+    rows = []
+    ss.sensors_card(rows.extend)
+    assert rows == [("coretemp Package id 0", "45°C"),
+                    ("coretemp Core 0", "41°C"),
+                    ("thinkpad CPU", "58°C"),
+                    ("thinkpad Fan 1", "3300 RPM")]
+
+
+def test_an_unpopulated_sensor_is_not_shown_as_a_reading(tmp_path, monkeypatch):
+    """0, empty and negative inputs are dropped, not rendered.
+
+    All three appear in one real machine's thinkpad driver: temp4..temp7 are
+    wired to a permanent 0 because no sensor sits behind them, temp8_input is
+    an empty file, and the kernel reports an unavailable sensor as a large
+    negative. Rendering any of them would put "0°C" on the page as though it
+    were a measurement.
+    """
+    from shani_cassini import system_status as ss
+    _fake_hwmon(tmp_path, monkeypatch, {
+        "hwmon0": ("thinkpad", {"temp1_input": "84000", "temp1_label": "CPU",
+                                "temp2_input": "0", "temp2_label": "GPU",
+                                "temp3_input": "", "temp4_input": "-128000",
+                                "fan1_input": "0"}),
+    })
+    rows = []
+    ss.sensors_card(rows.extend)
+    assert rows == [("thinkpad CPU", "84°C")]
+
+
+def test_a_machine_with_no_hwmon_reports_nothing_rather_than_guessing(
+        tmp_path, monkeypatch):
+    """The absent tree is an empty list, which is what the page renders as
+    "None reported by the kernel" - not a zero reading and not a guess."""
+    from shani_cassini import system_status as ss
+    monkeypatch.setattr(ss, "HWMON_ROOT", str(tmp_path / "not-there"))
+    rows = []
+    ss.sensors_card(rows.extend)
+    assert rows == []
+
+
+def test_the_power_drivers_come_from_the_active_block_not_the_last_one():
+    """The regression this fixture is shaped for.
+
+    `powerprofilesctl list` marks the active profile with `*` and prints the
+    profiles in power-saver, balanced, performance order, so the active block
+    is the middle one. A parser that resets its block on every header keeps
+    whichever profile came last and answers for a profile that is not in force
+    - which is the only one the row must not report.
+    """
+    from shani_cassini import system_status as ss
+    assert ss._parse_power_drivers(PPD_LIST, profile="balanced") == \
+        "CpuDriver, PlatformDriver"
+    assert ss._parse_power_drivers(PPD_LIST, profile="power-saver") == \
+        "CpuDriver, PlatformDriver"
+    assert ss._parse_power_drivers(PPD_LIST, profile="nope") == ""
+
+
+def test_the_degraded_flag_is_not_reported_as_a_driver():
+    """`Degraded: no` is a state flag on the same block. Listing it beside
+    CpuDriver would name a boolean as though it drove the profile."""
+    from shani_cassini import system_status as ss
+    drivers = ss._parse_power_drivers(PPD_LIST, profile="performance")
+    assert "Degraded" not in drivers
+    assert "intel_pstate" not in drivers  # the *values* are not the driver names
+
+
+def test_the_hardware_card_names_the_active_power_profile_and_its_drivers(
+        tmp_path, monkeypatch):
+    """The row is answered end to end by the fake daemon, not by this host."""
+    from shani_cassini import system_status as ss
+    monkeypatch.setenv("PATH", f"{_sysinfo_fakes(tmp_path)}:{os.environ['PATH']}")
+    out = {}
+    ss.hardware_card(out.update)
+    assert spin(lambda: len(out) == 8), out
+    assert out["hw-power-profile"] == "balanced (CpuDriver, PlatformDriver)"
+
+
+def test_a_machine_with_no_power_profiles_daemon_says_so_on_its_own_row(
+        tmp_path, monkeypatch):
+    """The card still completes at 8 keys with the daemon absent.
+
+    A reader that only called back on success would leave the other seven rows
+    waiting forever, so the count is the assertion that matters here as much as
+    the text.
+    """
+    from shani_cassini import system_status as ss
+    empty = tmp_path / "empty-bin"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    out = {}
+    ss.hardware_card(out.update)
+    assert spin(lambda: len(out) == 8), out
+    assert out["hw-power-profile"] == "N/A"
+
+
+def test_a_profile_with_no_driver_lines_still_names_the_profile(tmp_path, monkeypatch):
+    """`list` unparseable must not cost the row the answer `get` did give.
+
+    `get` is the documented read of the profile in force; the drivers are an
+    extra. Losing them is a shorter cell, not an empty one.
+    """
+    from shani_cassini import system_status as ss
+    # One f-string, no trailing space: a space before the colon makes the
+    # first PATH entry a directory that does not exist, so the lookup falls
+    # through to the real /usr/bin/powerprofilesctl and this asserts against
+    # the machine instead of the fake.
+    monkeypatch.setenv("PATH", f"{_sysinfo_fakes(tmp_path, ppd_list='nothing useful')}"
+                       f":{os.environ['PATH']}")
+    out = {}
+    ss.hardware_card(out.update)
+    assert spin(lambda: len(out) == 8), out
+    assert out["hw-power-profile"] == "balanced"

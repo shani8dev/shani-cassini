@@ -23,7 +23,6 @@ import logging
 import os
 import re
 import shutil
-import subprocess
 from typing import Callable, Final, Optional
 
 from gi.repository import Gio, GLib  # type: ignore
@@ -130,6 +129,38 @@ def run_text(argv: list[str], done: Callable[[Optional[str], str], None]) -> Non
             done(None, _strip_ansi(err or "").strip() or f"{argv[0]} said nothing")
             return
         done(out, "")
+
+    proc.communicate_utf8_async(None, None, finish)
+
+
+def run_status(argv: list[str], done: Callable[[Optional[int], str], None]) -> None:
+    """Run argv; call done(exit_status_or_None, error_text) on the main loop.
+
+    The third reader, for a tool whose answer is its exit status rather than its
+    output. `systemd-analyze has-tpm2 -q` prints nothing at all and answers 0
+    for a usable TPM2, so run_text() would call the one case that matters
+    "said nothing" and report it as a failure. Do not reach for this when the
+    output is the answer -- run_text() or run_json() is the better fit there.
+    """
+    if not have(argv[0]):
+        GLib.idle_add(done, None, f"{argv[0]} is not installed")
+        return
+    try:
+        proc = Gio.Subprocess.new(argv, Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE)
+    except GLib.Error as e:
+        GLib.idle_add(done, None, e.message)
+        return
+
+    def finish(p, res):
+        try:
+            p.communicate_utf8_finish(res)
+        except GLib.Error as e:
+            done(None, e.message)
+            return
+        if not p.get_if_exited():
+            done(None, f"{argv[0]} did not exit")
+            return
+        done(p.get_exit_status(), "")
 
     proc.communicate_utf8_async(None, None, finish)
 
@@ -283,11 +314,7 @@ PROC_CPUINFO = "/proc/cpuinfo"
 PROC_MEMINFO = "/proc/meminfo"
 THERMAL_ZONE = "/sys/class/thermal/thermal_zone0/temp"
 POWER_SUPPLY = "/sys/class/power_supply/BAT0"
-
-
-def _run(argv: list[str], timeout: int = 10) -> str:
-    return subprocess.run(argv, capture_output=True, text=True,
-                          timeout=timeout).stdout
+HWMON_ROOT = "/sys/class/hwmon"
 
 
 def _cpu_readings() -> tuple[str, str]:
@@ -305,8 +332,7 @@ def _cpu_temp() -> str:
     return f"{int(_read_text(THERMAL_ZONE).strip()) / 1000:.0f}°C"
 
 
-def _gpu() -> str:
-    out = _run(["lspci"])
+def _parse_gpu(out: str) -> str:
     lines = [ln for ln in out.split("\n") if "VGA" in ln or "3D" in ln]
     return lines[0].split(":")[2].strip() if lines else "Unknown"
 
@@ -332,34 +358,204 @@ def _battery() -> str:
     return f"{capacity}% ({status})" if status else f"{capacity}%"
 
 
-def _bluetooth() -> str:
-    return "● Active" if "Powered: yes" in _run(["bluetoothctl", "show"], 5) \
-        else "○ Inactive"
+def _parse_bluetooth(out: str) -> str:
+    return "● Active" if "Powered: yes" in out else "○ Inactive"
 
 
-def _df_row(path: str) -> Optional[str]:
-    """`used/size` for one mount point, or None when df says nothing usable."""
-    out = _run(["df", "-h", path])
+def _parse_df(out: str) -> str:
     lines = out.strip().split("\n")
     if len(lines) < 2:
-        return None
+        return ""
     parts = lines[1].split()
     if len(parts) < 6:
-        return None
+        return ""
     return f"{parts[2]}/{parts[1]}"
 
 
-def _varlog() -> str:
-    return _run(["du", "-sh", "/var/log"], 30).split()[0]
+def _parse_du(out: str) -> str:
+    fields = out.split()
+    return fields[0] if fields else ""
 
 
-def _swap() -> str:
-    for line in _run(["free", "-h"]).strip().split("\n"):
+def _parse_free(out: str) -> str:
+    for line in out.strip().split("\n"):
         if line.startswith("Swap"):
             parts = line.split()
             if len(parts) >= 4:
                 return f"{parts[2]} used / {parts[1]} total"
     return ""
+
+
+def _gather(*rows: tuple, done: Callable[[dict], None]) -> None:
+    """Fan a card's tool reads out over run_text(), then call done once.
+
+    Each positional row is (row_keys, argv, parse, fallback). `row_keys` is one
+    key or a tuple of keys sharing a single read, because `storage-root` and
+    `storage-root-usage` are both `df -h /` and spawning the tool twice for one
+    answer is a cost with no information in it.
+
+    done is called once, with every key present, so a caller still sees a whole
+    card. A tool that is absent, exits badly or prints nothing a parser can use
+    sets only its own keys to their fallback - one source is not the card's
+    failure, and the async shape is exactly where a shared handler could
+    quietly reintroduce that.
+    """
+    out: dict = {}
+    left = len(rows)
+
+    def report(keys, value, fallback):
+        nonlocal left
+        for key in keys:
+            out[key] = value or fallback
+        left -= 1
+        if left == 0:
+            done(out)
+
+    for keys, argv, parse, fallback in rows:
+        def finish(text, err, _keys=keys, _parse=parse, _fb=fallback, _argv=argv):
+            if text is None:
+                logger.debug("%s: %s", _argv[0], err)
+            report(_keys, _parse(text) if text else "", _fb)
+        run_text(argv, finish)
+
+
+def power_profile(done: Callable[[str], None]) -> None:
+    """The active power profile and the driver actually behind it, or N/A.
+
+    powerprofilesctl ships and is enabled by shani-desktop-gnome, and nothing
+    in Cassini read it, so a machine whose daemon was running - and quietly
+    holding itself to power-saver - said so nowhere in the UI.
+
+    `list` answers both halves in one call: the block prefixed with `*` is the
+    active profile, and the CpuDriver/PlatformDriver lines under it name what is
+    moving. Since 0.22 those are independent drivers, so the profile name alone
+    no longer says whether the CPU governor or the platform profile is the
+    thing that changed.
+
+    `get` is asked alongside it because that is the documented way to read the
+    active profile and does not depend on the `*` marker surviving a format
+    change; `list` is only trusted for the driver names on top of it.
+
+    Nothing here writes. Switching a profile is a state change on the running
+    machine, so it belongs behind an explicit action in the page, not in a
+    reader that runs on every refresh.
+    """
+    out: dict = {}
+
+    def finish() -> None:
+        profile = out.get("get") or ""
+        if not profile:
+            done("N/A")
+            return
+        drivers = out.get("drivers", "")
+        done(f"{profile} ({drivers})" if drivers else profile)
+
+    def got_list(text: Optional[str], err: str) -> None:
+        if text is None:
+            logger.debug("powerprofilesctl list: %s", err)
+        out["drivers"] = _parse_power_drivers(text or "", profile=out.get("get", ""))
+        finish()
+
+    def got_get(text: Optional[str], err: str) -> None:
+        if text is None:
+            logger.debug("powerprofilesctl get: %s", err)
+        out["get"] = (text or "").strip()
+        run_text(["powerprofilesctl", "list"], got_list)
+
+    run_text(["powerprofilesctl", "get"], got_get)
+
+
+def _parse_power_drivers(out: str, *, profile: str) -> str:
+    """Driver names from the `powerprofilesctl list` block for `profile`.
+
+    Only the active block is read: listing every profile's drivers would put
+    "intel_pstate, platform_profile" on the row whether or not that is what is
+    driving the profile in force, which is the one thing the row is for.
+
+    The block is found first and then read forward, because the active profile
+    is usually *not* last in the output - `powerprofilesctl` prints them in
+    power-saver, balanced, performance order and marks the active one with `*`.
+    Resetting a running block on every header instead makes the parse succeed
+    for whichever profile happens to come last and silently return nothing for
+    the one in force, which is the only one that matters.
+    """
+    lines = out.split("\n")
+    start = next((i for i, line in enumerate(lines)
+                  if line.strip().lstrip("* ").strip() == f"{profile}:"), None)
+    if start is None:
+        return ""
+
+    block = []
+    for line in lines[start + 1:]:
+        name = line.strip().lstrip("* ").strip()
+        if name.endswith(":"):  # the next profile's header ends this block
+            break
+        # `Degraded: no` is a state flag, not a driver, and listing it beside
+        # CpuDriver would report a boolean as if it named something driving the
+        # profile. Everything else in the block is a driver line.
+        if ":" in line and name.split(":", 1)[0].strip() not in ("Degraded",):
+            block.append(line.strip())
+    if not block:
+        return ""
+    return ", ".join(dict.fromkeys(b.split(":", 1)[0].strip() for b in block))
+
+
+def sensors_card(done: Callable[[list], None]) -> None:
+    """Every hwmon temperature and fan reading, as (label, value) rows.
+
+    hwmon is the kernel's real sensor interface and is what lm-sensors itself
+    reads. Cassini had no reader for it at all, so on a laptop the fan speeds
+    and the per-core temperatures were simply not on screen anywhere, and the
+    one temperature that was shown came from thermal_zone0 - a different driver,
+    on a different machine often absent entirely.
+
+    There is no fixed set of chips to look for: this host exposes 7 and the set
+    is per-machine and per-driver, so the rows are whatever the machine really
+    reports rather than a hardcoded list that would be wrong on most of them.
+
+    A reading of 0 or less is dropped rather than shown. The ThinkPad driver
+    keeps unpopulated inputs wired to 0 (temp4..temp7 on this machine) and the
+    kernel reports unavailable sensors as a large negative, so both would add
+    rows that look like hardware facts and are not.
+    """
+    rows: list[tuple[str, str]] = []
+    try:
+        chips = sorted(os.listdir(HWMON_ROOT))
+    except OSError as err:
+        logger.debug("hwmon: %s", err)
+        done(rows)
+        return
+
+    for chip in chips:
+        base = os.path.join(HWMON_ROOT, chip)
+        if not os.path.isdir(base):
+            continue
+        name = _read_text(os.path.join(base, "name")).strip() or chip
+        try:
+            entries = os.listdir(base)
+        except OSError:
+            continue
+        for kind, unit, divisor, word in (("temp", "°C", 1000.0, "Temp"),
+                                          ("fan", " RPM", 1.0, "Fan")):
+            for entry in sorted(entries):
+                matched = re.fullmatch(rf"{kind}(\d+)_input", entry)
+                if not matched:
+                    continue
+                raw = _read_text(os.path.join(base, entry)).strip()
+                if not raw:
+                    continue
+                try:
+                    value = int(raw)
+                except ValueError:
+                    continue
+                if value <= 0:
+                    continue
+                label = _read_text(
+                    os.path.join(base, f"{kind}{matched.group(1)}_label")).strip()
+                name_suffix = label or f"{word} {matched.group(1)}"
+                rows.append((f"{name} {name_suffix}",
+                             f"{value / divisor:.0f}{unit}"))
+    done(rows)
 
 
 def hardware_card(done: Callable[[dict], None]) -> None:
@@ -368,43 +564,62 @@ def hardware_card(done: Callable[[dict], None]) -> None:
     done receives {row_name: text}; a source that could not be read is already
     carrying that row's fallback, so a caller never has to catch anything and a
     failure can never take out a row it did not belong to.
+
+    The tool-backed rows go through _gather because this card is built while
+    notebook.py is building the page, on the GTK main thread; a synchronous
+    `lspci` here froze the whole window. The /proc and /sys rows are file reads
+    that answer or fail in microseconds, so they stay inline.
     """
-    readings = (
-        ("hw-cpu", lambda: _cpu_readings()[0], "Unknown"),
-        ("hw-cpu-temp", _cpu_temp, "N/A"),
-        ("hw-gpu", _gpu, "Unknown"),
-        ("hw-ram", _ram, "N/A"),
-        ("hw-battery", _battery, "N/A"),
-        ("hw-virt", lambda: _cpu_readings()[1], "Unknown"),
-        ("hw-bluetooth", _bluetooth, "○ Inactive"),
-    )
     out: dict = {}
-    for name, read, fallback in readings:
+    try:
+        out["hw-cpu"], out["hw-virt"] = _cpu_readings()
+    except Exception:  # noqa: BLE001 - one source is not the card's failure
+        out["hw-cpu"] = out["hw-virt"] = "Unknown"
+    for name, read, fallback in (("hw-cpu-temp", _cpu_temp, "N/A"),
+                                 ("hw-ram", _ram, "N/A"),
+                                 ("hw-battery", _battery, "N/A")):
         try:
             out[name] = read()
         except Exception:  # noqa: BLE001 - one source is not the card's failure
             out[name] = fallback
-    done(out)
+
+    def finished(tool_rows: dict) -> None:
+        out.update(tool_rows)
+        arrived()
+
+    def got_profile(text: str) -> None:
+        out["hw-power-profile"] = text
+        arrived()
+
+    # Two sources, one card. This cannot hang because power_profile() answers
+    # exactly once, N/A included.
+    left = 2
+
+    def arrived() -> None:
+        nonlocal left
+        left -= 1
+        if left == 0:
+            done(out)
+
+    _gather((("hw-gpu",), ["lspci"], _parse_gpu, "Unknown"),
+            (("hw-bluetooth",), ["bluetoothctl", "show"], _parse_bluetooth, "○ Inactive"),
+            done=finished)
+    power_profile(got_profile)
 
 
 def storage_card(done: Callable[[dict], None]) -> None:
-    """The storage card's five rows, same contract as hardware_card()."""
-    readings = (
-        ("storage-root-usage", lambda: _df_row("/"), "N/A"),
-        ("storage-root", lambda: _df_row("/"), "N/A"),
-        ("storage-home-usage", lambda: _df_row("/home"), "N/A"),
-        ("storage-var-usage", lambda: _df_row("/var"), "N/A"),
-        ("storage-varlog", _varlog, "N/A"),
-        ("storage-swap", _swap, "N/A"),
-    )
-    out: dict = {}
-    for name, read, fallback in readings:
-        try:
-            value = read()
-            out[name] = value if value else fallback
-        except Exception:  # noqa: BLE001 - one source is not the card's failure
-            out[name] = fallback
-    done(out)
+    """The storage card's six rows, same contract as hardware_card().
+
+    `du -sh /var/log` carries a 30s cap because it walks a directory tree, and
+    it was the longest freeze this page could hand a user: every one of these
+    reads ran synchronously while the page was being built.
+    """
+    _gather((("storage-root-usage", "storage-root"), ["df", "-h", "/"], _parse_df, "N/A"),
+            (("storage-home-usage",), ["df", "-h", "/home"], _parse_df, "N/A"),
+            (("storage-var-usage",), ["df", "-h", "/var"], _parse_df, "N/A"),
+            (("storage-varlog",), ["du", "-sh", "/var/log"], _parse_du, "N/A"),
+            (("storage-swap",), ["free", "-h"], _parse_free, "N/A"),
+            done=done)
 
 
 def boot_entries(done) -> None:
@@ -430,20 +645,104 @@ def inhibited(argv: list[str], why: str) -> list[str]:
             "--who=Shani Cassini", f"--why={why}", "--mode=block"] + argv
 
 
-def has_tpm2() -> Optional[bool]:
-    """systemd-analyze has-tpm2: exit 0 = usable TPM2 (no root needed)."""
-    if not have("systemd-analyze"):
-        return None
-    import subprocess
-    try:
-        return subprocess.run(["systemd-analyze", "has-tpm2", "-q"], capture_output=True, timeout=10).returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+def tpm2_present(done: Callable[[Optional[bool], str], None]) -> None:
+    """systemd-analyze has-tpm2: exit 0 = usable TPM2 (no root needed).
+
+    True and False both come from the exit status, and None means the question
+    could not be asked -- tool absent, or it would not start. None is not
+    "this machine has no TPM": reporting that would tell a user with a working
+    chip to go poke their firmware because the probe itself failed.
+    """
+    run_status(["systemd-analyze", "has-tpm2", "-q"],
+               lambda status, err: done(None if status is None else status == 0, err))
 
 
 def tpm2_status(done) -> None:
     """gen-efi tpm2-status --json (root: it reads the LUKS header)."""
     run_json(["pkexec", "gen-efi", "tpm2-status", "--json"], done)
+
+
+# --- systemd's PCR separator, and what it does to an existing seal ---------
+#
+# systemd 261 ships systemd-pcrosseparator.service, and Arch's mkinitcpio 42-1
+# began including it in the systemd initrd hook. It extends a PCR's measured
+# value with a separator entry, so a seal bound to one of those PCRs records a
+# value that will never recur. Arch's own advice for a machine caught by this is
+# to re-enrol the TPM2 key.
+#
+# Two facts this deliberately does NOT claim:
+#
+#   * Whether an enrolment is stale. The LUKS2 header stores no enrolment date,
+#     systemd-cryptenroll has no --list and no dry-run, and asking the policy
+#     whether it still unseals means unsealing the key. So this reports the
+#     configuration that the change affects, and the caller must phrase it as a
+#     conditional rather than a diagnosis.
+#   * Which PCRs the key is bound to. gen-efi stores that in a systemd-tpm2
+#     token, but not in the syntax that wrote it: --tpm2-pcrs takes them
+#     '+'-separated ("0+7") and `cryptsetup luksDump` prints the result as
+#     "tpm2-pcrs:" TAB <integer bitmask> -- verbatim, from shani-deploy's own
+#     test fixture, `tpm2-pcrs:\t7`. Neither the flag's text nor a PCR list,
+#     so it has to be bit-decoded, and a decode that comes out empty reads as
+#     "no risk" on exactly the machines at risk. The policy is therefore
+#     derived from gen-efi's own rule in shani-deploy rather than parsed out
+#     of the token.
+
+PCR_SEPARATOR_UNIT: Final = "/usr/lib/systemd/system/systemd-pcrosseparator.service"
+
+# What the separator measures, per systemd's own documentation of the unit.
+SEPARATOR_PCRS: Final = frozenset({0, 1, 2, 3, 4, 5, 6, 7, 9, 12, 13, 14})
+
+
+def pcr_separator_measured() -> bool:
+    """Whether this system has the PCR separator systemd 261 introduced.
+
+    Tested by the unit file, not by running the unit: the question is what is
+    installed, and starting a service is a state change this read-only page has
+    no business making. Present exactly when systemd is new enough to ship it
+    and enabled it in sysinit.target.wants, which is the same answer for a
+    machine that cannot be affected (systemd 255) as "no".
+
+    This is a proxy, and the error is deliberately one-sided. The unit file
+    proves systemd is 261+; it does not prove the initrd on disk was rebuilt by
+    an mkinitcpio new enough to include the unit, so a machine that upgraded
+    systemd but not its initrd can be warned unnecessarily. That is the cheap
+    direction: the row advises re-running a setup that gen-efi already offers,
+    and a *missed* warning means a disk that silently stopped unlocking by
+    itself with nothing in the UI to explain it.
+    """
+    return os.path.exists(PCR_SEPARATOR_UNIT)
+
+
+def shani_tpm2_pcr_policy(secure_boot: bool) -> frozenset[int]:
+    """The PCRs gen-efi's enroll-tpm2 seals against, as gen-efi itself decides.
+
+    shani-deploy/scripts/gen-efi.sh pins "0+7" when Secure Boot is on and "0"
+    when it is off. Derived rather than read back out of the LUKS2 token, for
+    the array-vs-plus-separated reason documented above.
+    """
+    return frozenset({0, 7} if secure_boot else {0})
+
+
+def tpm2_seal_risk(status: dict) -> str:
+    """Why a re-enrolment may be needed, or "" when it cannot be.
+
+    Empty is the honest answer for a disk with no TPM2 key, for a systemd too
+    old to have the separator, and for a seal bound to none of the affected
+    PCRs. What is never returned is a claim that the seal IS stale: nothing
+    read-only can establish that, so this names the risk and lets the page's
+    existing "Set up again" action be the remedy.
+    """
+    if not status.get("tpm2_enrolled") or not pcr_separator_measured():
+        return ""
+    bound = shani_tpm2_pcr_policy(bool(status.get("secure_boot")))
+    affected = sorted(bound & SEPARATOR_PCRS)
+    if not affected:
+        return ""
+    pcrs = ", ".join(str(p) for p in affected)
+    return (f"This system's firmware measurements changed: systemd now measures a "
+            f"separator into PCR {pcrs}, which this key is bound to. If the disk "
+            f"stops unlocking by itself, set automatic unlock up again to record "
+            f"the new measurements. Your passphrase is unaffected either way.")
 
 
 # --- running a tool that lives in an sbin directory -----------------------

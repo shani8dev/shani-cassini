@@ -473,6 +473,8 @@ def test_a_disk_smartctl_says_nothing_about_is_not_given_a_model(tmp_path, monke
 
 def test_a_missing_smartctl_is_not_installed_and_not_an_error(tmp_path, monkeypatch) -> None:
     fake_bin(tmp_path, monkeypatch, scan="", smartctl=False)
+    monkeypatch.setattr(ss, "SBIN_DIRS", (str(tmp_path / "no-such"),))
+    monkeypatch.setenv("PATH", str(tmp_path))
     tab = sp.SmartTab()
     assert spin(lambda: "not installed" in all_text(tab).lower()), rows(tab)
     assert "smartctl" in all_text(tab)

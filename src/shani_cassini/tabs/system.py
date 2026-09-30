@@ -66,22 +66,44 @@ class SystemTab(Gtk.Box):
         boot_card = self._create_boot_slots_card()
         content_box.append(boot_card)
 
+        # Create sensor readings card
+        content_box.append(self._create_sensors_card())
+
         logger.debug("System tab UI created")
-        
+
         # Fetch and display initial data
         self._update_data()
 
     def _update_data(self) -> None:
         """Fetch real data and update the UI elements."""
         logger.debug("Fetching real data for system tab")
-        
+
         # Fetch hardware information
         self._fetch_hardware_info()
-        
+
         # Fetch storage information
         self._fetch_storage_info()
-        
+
         self._fetch_boot_slots_info()
+
+        self._fetch_sensors()
+
+    def _fetch_sensors(self) -> None:
+        """Fill the sensor card from the kernel's hwmon tree.
+
+        The row count is whatever the machine reports, so the grid is built
+        here rather than declared with the other rows. A machine with no
+        hwmon chips says so on one row instead of showing an empty card.
+        """
+        def done(rows: list) -> None:
+            grid = self._sensors_grid
+            if not rows:
+                self._add_info_row(grid, 0, "Sensors:", "None reported by the kernel", "")
+                return
+            for index, (label, value) in enumerate(rows):
+                self._add_info_row(grid, index, f"{label}:", value, "")
+
+        ss.sensors_card(done)
 
     def _fetch_hardware_info(self) -> None:
         """Fill the hardware card from system_status, which owns the reads.
@@ -178,7 +200,24 @@ class SystemTab(Gtk.Box):
         self._add_info_row(grid, 4, "Battery:", "", "hw-battery")
         self._add_info_row(grid, 5, "Virtualization:", "", "hw-virt")
         self._add_info_row(grid, 6, "Bluetooth:", "", "hw-bluetooth")
+        self._add_info_row(grid, 7, "Power Profile:", "", "hw-power-profile")
 
+        return card
+
+    def _create_sensors_card(self) -> Gtk.Box:
+        """Create the sensor readings card.
+
+        hwmon exposes a different set of chips per machine and per driver, so
+        the rows are not known here; the grid is filled in by _fetch_sensors
+        from what the kernel actually reported.
+        """
+        card = self._create_card("Sensors")
+        grid = Gtk.Grid()
+        grid.set_row_spacing(8)
+        grid.set_column_spacing(16)
+        grid.set_column_homogeneous(False)
+        self._sensors_grid = grid
+        card.append(grid)
         return card
 
     def _create_storage_info_card(self) -> Gtk.Box:

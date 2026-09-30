@@ -18,7 +18,7 @@ known issues. The rules are all near the top.
 - `Cross-repo impact`
 
 **Current known issues — read this before you start:**
-- `Known issues (current state, 2026-09-27)` — ~313 lines. **Grep it for the
+- `Known issues (current state, 2026-09-29)` — ~482 lines. **Grep it for the
   subsystem you are changing**, then read the hits.
   It is dated, so treat older entries as history unless they say "current".
   This repo has no `AUDIT-HISTORY.md` yet, so detail lives here for now.
@@ -49,8 +49,8 @@ for an "is not installed" status page when its app is missing.
 | Health | `pkexec shani-health --verify --json` / `--security --json` (JSON even on exit 1); `journalctl -b -p 3 -o json`; `coredumpctl list --json` |
 | Storage | `shani-health --storage-info --json` (read-only, unprivileged) via `storage_info()`; `--verify --json` uses a *different* builder and is not interchangeable with it |
 | Disk Health | `smartctl --scan` (unprivileged) to enumerate disks, then `pkexec smartctl -j -H` and `-j -a` per disk. SMART READ DATA is privileged, so the per-disk reads are. **Reads only — it cannot start a self-test, which writes to the disk.** `smartctl` lives in `/usr/sbin`, so it is resolved like `fprintd`'s tools, not with a bare `which()` |
-| System Info | `hostnamectl --json`, `timedatectl show`, `systemd-analyze time` + the older system/kernel cards. **Each hardware reading is independent** — a `/proc/meminfo` with no `MemTotal` line used to raise at the RAM row and the handler around the whole card then skipped battery, virtualisation and bluetooth, leaving three rows blank; each reading is now its own collector behind `_read()`, which returns that row's own fallback and never lets one source's failure become the card's failure. Those readings moved into `system_status.py` as `hardware_card()` / `storage_card()`; the page renders what it is handed and no longer shells out itself |
-| Encryption | `/dev/mapper/shani_root`, `systemd-analyze has-tpm2`; `pkexec gen-efi tpm2-status --json`, `enroll-tpm2 --stdin [--with-pin]` (secrets on stdin only), `remove-tpm2` |
+| System Info | `hostnamectl --json`, `timedatectl show`, `systemd-analyze time` + the older system/kernel cards. **Each hardware reading is independent** — a `/proc/meminfo` with no `MemTotal` line used to raise at the RAM row and the handler around the whole card then skipped battery, virtualisation and bluetooth, leaving three rows blank; each reading is now its own collector behind `_read()`, which returns that row's own fallback and never lets one source's failure become the card's failure. Those readings moved into `system_status.py` as `hardware_card()` / `storage_card()`; the page renders what it is handed and no longer shells out itself. Also `powerprofilesctl get` + `list` (via `power_profile()`, reporting the active profile *and its drivers*) and a `/sys/class/hwmon` walk (via `sensors_card()`) — both **read-only**: Cassini ships no polkit of its own, and switching a profile is a state change that duplicates GNOME Settings. Where the daemon is installed but unreachable — a container with the binary but no D-Bus socket for it — the row says `N/A` rather than guessing |
+| Encryption | `/dev/mapper/shani_root`, `systemd-analyze has-tpm2`; `pkexec gen-efi tpm2-status --json`, `enroll-tpm2 --stdin [--with-pin]` (secrets on stdin only), `remove-tpm2`. Plus a **read-only** re-enrolment advisory (`tpm2_seal_risk()`), from `pcr_separator_measured()` — a test for `systemd-pcrosseparator.service`, which systemd 261 added and mkinitcpio 42-1 began shipping in the initrd. It says the risk, never the diagnosis: nothing read-only can tell a stale seal from a fresh one, and it hides itself entirely when there is no key or no separator rather than showing an empty row |
 | Services | `systemctl list-unit-files -o json` + `list-units -o json` (only enabled/disabled units); `systemctl enable --now` etc. — polkit is asked by systemd itself |
 | Maintenance | Gio filesystem info; `pkexec shani-deploy --cleanup/--optimize`, `shani-health --export-logs ~`, `shani-reset --yes [--home] [--keep-downloads]` (typed confirmation) |
 | Chronoa | its GSettings (`org.shani.chronoa`, bound with `Gio.Settings.bind`), Ollama `/api/tags` |
@@ -153,7 +153,130 @@ If you haven't seen it work (or fail) for real, it isn't verified.
    compatibility shim for the old `update` test-command name: it is
    read-only and does not install, switch slots, or run the agent.
 
-## Known issues (current state, 2026-09-27)
+## Known issues (current state, 2026-09-29)
+
+- **Encryption warns about a TPM2 seal that systemd 261's PCR separator can
+  break — the warning is proven, the staleness it describes is not, and never
+  can be from this page.** Added 2026-09-29 after Arch's
+  `mkinitcpio-42-requires-manual-intervention-for-tpm2-based-unlocking-of-luks-devices`
+  news item. systemd 261 ships `systemd-pcrosseparator.service` and mkinitcpio
+  42-1 began including it in the systemd initrd hook, so PCRs `0-7`, `9`, `12-14`
+  gain a separator entry that will never recur. gen-efi pins a seal to `0+7`
+  with Secure Boot on and `0` with it off (`shani-deploy/scripts/gen-efi.sh`), so
+  **every** ShaniOS enrolment falls inside the changed set.
+  `tpm2_seal_risk()` reports that configuration and nothing more. Two claims it
+  deliberately does **not** make:
+  - **That any particular seal is stale.** The LUKS2 header stores no enrolment
+    date, `systemd-cryptenroll` has no `--list` and no dry-run, and asking a
+    policy whether it still unseals means unsealing the key. The row is
+    conditional advice, not a diagnosis, and the page's existing "Set up again"
+    button is the remedy it points at.
+  - **Which PCRs the key is bound to, read from the token.** `gen-efi` reports
+    no PCR field at all, and the token's `tpm2-pcrs` is not in the syntax that
+    wrote it: `--tpm2-pcrs` took the PCRs `+`-separated (`0+7`), while
+    `cryptsetup luksDump` prints the stored value as `tpm2-pcrs:` + tab + an
+    **integer bitmask** — verbatim from shani-deploy's own test fixture,
+    `tpm2-pcrs:<TAB>7`. It has to be bit-decoded, and a decode that comes out
+    empty reads as "no risk" on exactly the machines at risk — so the policy is
+    derived from gen-efi's own rule instead. `test_the_warning_needs_no_pcr_field_from_the_tool`
+    exists to hold that: it asserts the warning still fires from a status
+    carrying nothing PCR-shaped.
+  - **That this is the "automatic" policy breaking. It is the opposite, and
+    getting it backwards would make this whole feature dead code.** An
+    *automatic* (empty) policy binds to **no PCRs at all** — `systemd-cryptenroll(1)`:
+    *"If an empty string is specified, binds the enrollment to no PCRs at all
+    (this is also the default)"* — and the *signed* form
+    (`--tpm2-public-key-pcrs=`) *"binds decryption to any set of PCR values for
+    which a signature … can be provided"*, which is the one that survives
+    updates. The **pinned** `--tpm2-pcrs` policy is the brittle one: it *"binds
+    decryption to the current, specific PCR values"*, and the same man page
+    warns against PCR 0 and 2 precisely because *"the measurements will change
+    on every update"*. gen-efi pins `0+7`/`0`, so **every Shanios enrolment is a
+    pinned policy and every one of them is in the changed set.** Keying the
+    advisory on the automatic policy would warn on no Shanios machine ever.
+  `pcr_separator_measured()` tests for the unit file and never runs the unit
+  (starting a service is a state change a read-only page has no business
+  making). **That is a proxy and the error is deliberately one-sided**: the file
+  proves systemd is 261+, not that the initrd on disk was rebuilt by an mkinitcpio
+  new enough to include the unit, so a machine that upgraded systemd but not its
+  initrd can be warned unnecessarily. That is the cheap direction — the row
+  advises re-running a setup gen-efi already offers, and a *missed* warning means
+  a disk that silently stopped unlocking by itself with nothing in the UI to
+  explain it.
+  **`systemd-measure` is NOT on `PATH` — the same trap as `smartctl` in
+  `/usr/sbin`.** Verified in Arch/systemd 261: `command -v systemd-measure`
+  returns 1 while the binary sits at `/usr/lib/systemd/systemd-measure`. A
+  future reader wanting to measure PCRs here must resolve it like
+  `smartctl` (`tool_path_or_self()`), not with a bare `which()`. This page
+  deliberately does **not** use it: measuring PCRs is not what the advisory
+  needs, and it would be a process spawn on a read-only page.
+  Verified: **12 new tests, suite 1028 passed** (was 1016). All **seven**
+  negative controls run, and six of them failed the suite on the first attempt;
+  the seventh (`page shows the row unconditionally`) **did not**, which exposed
+  a real hole — `test_the_advisory_stays_hidden_until_the_status_is_checked`
+  only asserted the `_build()` state and never called `_on_status`, so the whole
+  "no risk means no row" half was untested. It is now
+  `test_the_advisory_only_appears_for_a_status_that_carries_a_reason`, and that
+  control fails. Two other test bugs found the same way: the probe helper reused
+  a unit file it had not removed, and — more importantly —
+  `tests/fixtures/tpm2-status-encrypted-slot.json` **is not TPM2-enrolled**
+  (`tpm2_enrolled false, tpm2_slots 0, secure_boot false`: a real encrypted
+  LUKS2 slot that unlocks on a passphrase). A first attempt used it as a TPM2
+  report, and the "no warning here" test passed for the *wrong reason* — silent
+  because there was no key, not because the host lacked the separator. Guarded
+  now by `test_the_captured_slot_is_not_tpm2_enrolled`. **So no real captured
+  TPM2-enrolled status exists in this repo, and the enrolled branch has never run
+  against genuine enrolled bytes.**
+  Rendered in **Arch under GTK 4.22.5 / libadwaita 1.9.4** against **real
+  systemd 261.3-1**, where the unit file genuinely exists, so the probe is proven
+  against the real thing and not a stub: construction 0.041s, 10 ActionRows read
+  back out of the widget tree, the advisory row among them naming `PCR 0, 7`, and
+  the three silence cases (no key, no separator, the real passphrase-only
+  capture) all confirmed silent. The widget-tree readback asserts a non-zero row
+  count, because the first version of it printed nothing and would have been a
+  vacuous check read as a pass.
+  **Still open:** closing the enrolled branch against a real TPM2 key needs a
+  privileged `enroll-tpm2` in a disposable slot — a TPM write, deliberately not
+  done here.
+
+- **The `cassini-ux` container's GTK4 segfaults on the host `:1` display, and
+  `xvfb-run` inside the container is the fix — found 2026-09-29 while verifying
+  the advisory, and it is not caused by any app code.** A bare `Gtk.Box()`, with
+  no shani_cassini import at all, segfaults (exit 139) after `Gtk.init()`
+  succeeds. Ruled out by bisection rather than assumed: not the app, not
+  `dbus-run-session` (still 139), not `GSK_RENDERER=cairo` or
+  `LIBGL_ALWAYS_SOFTWARE=1` (still 139). The same script passes every step under
+  `xvfb-run` inside the container, which is also what the required-verification
+  list asks for anyway — the host-display route was only ever a workaround.
+  **If a render check segfaults at the first widget, check the display before
+  suspecting the page.** Note `dbus-daemon` is present but the container has no
+  `/etc/machine-id`, so every run logs an `Unable to acquire session bus` warning
+  that is harmless and expected.
+
+- **System Info now reports the power profile and every hwmon sensor — the
+  *populated* power-profile branch is proven on the host, but not yet in a slot.**
+  Added `power_profile()` and `sensors_card()` to `system_status.py`, wired as a
+  `hw-power-profile` row plus a Sensors group; both are read-only, so no
+  ask-first boundary was crossed and no new section was added. Verified:
+  this host renders `balanced (CpuDriver, PlatformDriver)` and 13 sensor rows
+  from 7 chips, construction `0.087s`, and the whole page renders in Arch under
+  PyGObject 3.56.3 / GTK 4.22.5 / libadwaita 1.9.4 with no traceback. Suite
+  **1016 passed** (was 1008; the 8 new tests).
+  **Still open:** the *populated* branch was only proven against **ppd 0.22 on
+  Ubuntu**; Arch ships **0.30** and its `list` format has not been read against a
+  live daemon, so confirm in a real slot before trusting the driver names there.
+  The *unreachable* branch is proven in Arch — the real `powerprofilesctl` itself
+  fails with `Could not connect: No such file or directory` when the binary is
+  installed without a D-Bus socket, so `N/A` is the honest answer, not a fallback
+  masking a bug. Two parser traps, both now covered: the active profile is
+  **not** the last block in `list` (an earlier version reset state per header and
+  silently returned the wrong block's drivers), and `Degraded: no` is a state
+  flag, not a driver. hwmon readings `<= 0` are dropped, because they are how the
+  kernel spells "unpopulated" — showing `0°C` as a real temperature is the
+  "invent data" failure. **All five negative controls were run and each one
+  fails the suite when the reader is broken**; reordering the fixture so the
+  active profile is last makes the parser test *pass against the buggy parser*,
+  which is why the fixture comment is load-bearing and not decorative.
 
 - **System Info's three sections rendered at two different widths — found
   2026-09-29 by measuring the running app, fixed.** `SystemInfoPage` is a plain
@@ -197,10 +320,16 @@ If you haven't seen it work (or fail) for real, it isn't verified.
   `system_status.STREAM_BOUNDS` now stops it at 20s and says so on the row.
   **Unverified in a real slot.** Note *how* it is bounded: in the shared runner,
   keyed by tool name, because the page's own AST gate forbids `timeout_add`
-  (the app has no GLib timer anywhere) and `run_stream_tool`'s signature cannot
+  and `run_stream_tool`'s signature cannot
   take a kwarg — `tests/test_virtualization_page.py` monkeypatches it with a
   3-arg stub. Only `lxc` is bounded; a bound on a tool nobody measured would be
   a made-up number turning a slow read into a false "stopped".
+  (Correcting the reason this gate exists, which was stated here as "the app has
+  no GLib timer anywhere" and was **false** — `system_status.py` carries two,
+  `STREAM_BOUNDS` above and fprintd's answer deadline. The gate is still right,
+  for the narrower reason: nothing in the app *polls*, so a page-level
+  `timeout_add` would be the app's only refresh timer and would have no
+  refresh to drive. `idle_add` is not a timer and is not gated.)
 - **A test here passed in the full suite and hung when run alone — the class
   to check for when adding any test that spawns a real child (2026-09-27).**
   `test_an_unbounded_tool_is_left_alone` runs a fake that busy-loops for ever
@@ -421,7 +550,17 @@ If you haven't seen it work (or fail) for real, it isn't verified.
   was covered: every keyring test here used a mock that returns instantly.
   **The rest of the class was swept, so this need not be re-audited.** Every
   other blocking-I/O candidate was checked and is either bounded or *correctly*
-  blocking: `system_status._run` defaults to `timeout=10`; there is no
+  blocking. `system_status.py` no longer has any synchronous call to bound —
+  the entry it originally leaned on, `_run`'s `timeout=10`, is gone, and the
+  last one left in the module was deleted 2026-09-29 with `has_tpm2()` (see
+  below), so this is now an AST fact rather than a per-function read: the whole
+  module is subprocess-free and any `subprocess` call in it fails the gate.
+  That is a stronger property than the bounded timeout it replaced, and it is
+  checked rather than asserted. Note what the async readers do **not** do:
+  `run_json`/`run_text`/`run_status` never time out a wedged tool — they keep
+  the GTK main thread free, which was the defect, and a tool that never answers
+  leaves a row on its fallback. The one deliberate bound is
+  `STREAM_BOUNDS` (`lxc`, above). There is no
   `call_sync` anywhere (the single `call_finish` in `system_status.py:720` is
   an async completion, the right pattern); and `config_io._run_install` is
   genuinely unbounded but runs `pkexec`, which **must** be allowed to wait for
@@ -449,7 +588,9 @@ If you haven't seen it work (or fail) for real, it isn't verified.
   `tabs/system.py` no longer shells out or reads `/proc` and `/sys` itself, so
   the parsing is reachable by the fake-CLI fixtures; the `/proc` and `/sys`
   paths are module constants for that reason. The `AGENTS.md` note that
-  prompted this is now history.
+  prompted this is now history. Note this was an *extraction* only — the
+  extracted functions were still synchronous here, which is what the
+  2026-09-29 entry below then fixed.
 - **`tabs/device.py` was the straggler that migration missed, and it blocked
   the GTK main thread — fixed 2026-09-27.** `DeviceGroup.__init__` is called
   from `notebook.py:59` while the page is built, i.e. on the main thread, and
@@ -485,11 +626,130 @@ If you haven't seen it work (or fail) for real, it isn't verified.
   Verified in **Arch under GTK4/libadwaita** per the required-verification
   list, because Arch's PyGObject is newer than the dev host's and a GTK startup
   crash shipped here once: renders and exits clean with no traceback, and with
-  fake CLIs on `PATH` the populated branch renders `Europe/London ·
+  fake CLIs on `PATH`   the populated branch renders `Europe/London ·
   synchronized with network time` and `4.5s`. Without those fakes every row
   reads `Unknown` — correct, since the builder container has no systemd for
   either tool to answer from, and a reminder that an all-`Unknown` render says
   nothing about the populated one.
+- **`system_status.py` had the same main-thread block, six calls wide — fixed
+  2026-09-29.** The 2026-09-27 `device.py` entry above fixed one card and left
+  the other two on the same page untouched: `hardware_card()` and
+  `storage_card()` both ran `subprocess.run` inline from `SystemTab.__init__`,
+  which `notebook.py:59` calls on the main thread. Six blocking reads —
+  `lspci`, `bluetoothctl`, `df -h /` (twice), `df -h /home`, `df -h /var`,
+  `du -sh /var/log`, `free -m` — 10s apiece, so a wedged `lspci` or a busy
+  `du` on a large `/var/log` froze the entire window opening System Info, up to
+  a minute. The duplicate `df -h /` was a separate defect: `storage-root` and
+  `storage-root-usage` are the same row set, so the tool was spawned twice for
+  one answer. Proved with slow fake CLIs rather than argued from the code:
+  `SystemTab()` construction measured **6.33s** against 6.00s of injected tool
+  sleep, and `df -h /` appeared twice in the trace.
+  Both cards now collect through a shared `_gather(*rows, done=...)` helper on
+  `run_text()`, the same primitive `device.py` adopted. Each tool's parse is a
+  pure function — `_parse_gpu`, `_parse_bluetooth`, `_parse_df`, `_parse_du`,
+  `_parse_free` — so parsing is testable without spawning anything. `df -h /`
+  is now run once and its row appended to both consumers, which is why five
+  tool runs still fill six rows. The `hardware_card` `/proc` and `/sys` reads
+  stay **synchronous on purpose**: they are file reads, not process spawns, and
+  moving them to threads would buy nothing. Same construction now measures
+  **0.080s**, rows settle **1.05s** after the window is up, and `df -h /`
+  appears once. The dead `_run()` and the module-level `subprocess` import are
+  gone.
+  `test_the_cards_never_shell_out_synchronously` is a whole-module **AST** gate
+  that guards that the expected parsers still exist, so it cannot pass
+  vacuously. That guard exists because the first version of this test **was**
+  vacuous: it grepped for names from the pre-fix code that no longer appeared
+  anywhere, so it would have stayed green against any future regression. All
+  three negative controls were run — re-injecting `subprocess.run` fails the
+  gate with the offending line, splitting the two root reads fails on
+  `df -h / ran 2x`, and deleting the `du` fan-out fails the storage contract.
+  Suite **997 passed**, 1 failed:
+  `test_a_missing_smartctl_is_not_installed_and_not_an_error`, which is
+  pre-existing and host-specific (this machine has `/dev/nvme0` and
+  `/usr/sbin/smartctl`) and was reproduced at HEAD with the patch stashed.
+  Verified in **Arch under GTK4/libadwaita** per the required-verification list:
+  construction **0.122s** with all 13 hardware and storage rows populated and no
+  traceback. Note that a screenshot is *not* sufficient evidence here — the page
+  is a scrolled stack of three cards, so in a 1000px window the Storage rows sit
+  below the fold and read as absent from the capture whether or not they filled.
+  The check that answers the actual question reads the row labels back out of
+  the widget tree.
+- **`has_tpm2()` was the last synchronous read in `system_status.py`, and
+  `run_text()` was the wrong tool for it — fixed 2026-09-29.** The two entries
+  above fixed the System Info cards; this was the same defect one page over.
+  `EncryptionTab.__init__` → `_build()` called `ss.has_tpm2()`, which ran
+  `systemd-analyze has-tpm2 -q` inline with a 10s timeout, so merely opening the
+  Encryption page could freeze the window for ten seconds. It was the one
+  synchronous call the AST gate had to carry an `allowed = {"has_tpm2"}` escape
+  for; the allowlist is now gone and the gate is an unsparing whole-module
+  sweep, because every reader in the module collects through
+  `run_json`/`run_text`/`run_status` and any `subprocess` call there is a
+  regression under any name. Do not reintroduce an allowlist: a growing
+  exemption list is how a whole-module sweep decays into a gate nobody re-reads.
+  It needed a **third** reader rather than either existing one. `run_text()`
+  treats empty stdout as a failure (`"{argv[0]} said nothing"`), and
+  `has-tpm2 -q` prints *nothing* — its whole answer is the exit status. So
+  `run_text()` would have reported the one case that matters, a working TPM, as
+  the tool having said nothing, and turned the good answer into the error. The
+  new `run_status(argv, done)` calls `done(exit_status, error)` and is for tools
+  whose answer is the status; `run_text`/`run_json` remain the right tools
+  wherever the output is the answer.
+  `tpm2_present(done)` maps it to True / False / None, and **None means the
+  question could not be asked, not that the machine lacks a chip** — the row says
+  "Unknown", and an unanswerable probe must not send a user with a working TPM
+  to poke their firmware.
+  **Writing the test found a real ordering bug in the fix.** The page asks for
+  the probe *last*, after the Set Up button exists, because an answer that
+  arrives first would find no button to enable — leaving a permanently greyed
+  "Set Up…" on a machine with a working chip. The real reader always defers
+  (Gio.Subprocess), so the earlier placement worked, but only by accident of
+  that timing. The control that exposes it is the synchronous stub
+  `_tpm_present(...)`, which is worth keeping for exactly that reason.
+  A second guard came out of this too: `_build()` runs again after every enrol
+  and every remove, so a read spawned by the previous build can land after the
+  row it was going to fill is gone. The callback writes to **the row it was
+  spawned for**, never `self._tpm_row`. My first version also compared row
+  identity, and **that guard was removed** — the control showed it could not
+  fail, because the captured row already makes the outcome correct and the extra
+  check was untestable defence implying protection it did not provide. That is
+  the fourth time in this repo a test which could not fail was the thing lying.
+  A third detail is an existing contract, not a new one: an unencrypted disk
+  returns from `_build()` before the button is made, so `_btn_enroll` is
+  **absent** rather than None, and `test_unencrypted_disk_offers_no_tpm_actions`
+  asserts exactly that. Do not "tidy" it into an initialised `None` — that test
+  exists to hold it.
+  Suite **1007 passed**, 1 failed (the same pre-existing smartctl test as above).
+  Verified in **Arch under GTK4/libadwaita** with the probe answered by a real
+  fake: construction **0.044s** unencrypted and **0.013s** encrypted, against a
+  10s blocking read; the TPM row and the Set Up button's sensitivity both agree
+  with the answer, confirmed by reading the row labels back out of the widget
+  tree and independently by the screenshot, which agree. Without a fake on PATH
+  the row says "Unknown", correct for a container with no systemd to answer from.
+- **`_httpx_compat.py` could not start the app on current Arch — found by
+  running the required verification, fixed 2026-09-29.** The shim's fallback was
+  `try: import httpx2 / except ModuleNotFoundError: import httpx`, and its own
+  docstring asserted "On a ShaniOS/Arch install there is no httpx2 package". That
+  stopped being true: Arch ships a package named `httpx2` that is not the
+  project this shim targets, and it has no `alias_httpx`. So the `else` branch
+  raised `AttributeError: module 'httpx2' has no attribute 'alias_httpx'` and
+  **the app did not start at all** — the required Arch check died on it before
+  rendering anything. Checking only for the *module* being absent missed the
+  case that actually occurs: present, importable, and not the right thing.
+  `_enable_httpx_alias(import_httpx2, import_httpx)` now checks for the
+  attribute and falls back on a missing one as well as a missing module, and
+  returns which client won. The importers are parameters rather than bare
+  `import` statements so all three states are testable without reloading the
+  module; the module-level call is unchanged in effect.
+  `tests/test_httpx_compat.py` covers the three states. Its negative control
+  pins down that only one of them was ever broken: the absent-httpx2 case
+  **passes under the old logic too**, so it is regression cover rather than
+  proof, while the missing-alias case fails with the exact production
+  AttributeError. Verified in **Arch with the trap deliberately staged** —
+  `python-httpx2` and `python-httpx` both installed, so `httpx2` shadows just as
+  it did when the crash was found: the app starts, `ShaniosApplication
+  activated`, **zero tracebacks**, and the Encryption page renders. The
+  docstring's claim about Arch is corrected rather than left to mislead the next
+  reader.
 - Fixed in the 2026-09-25 rebuild (for context, not to redo): widget
   lookups used a GTK3-only call on `get_root()` (None while building) so
   pages stayed blank; Kernel/Drivers/Secure Boot never loaded when

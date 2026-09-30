@@ -838,9 +838,11 @@ def test_this_page_never_starts_stops_enables_or_disables_anything() -> None:
 
 
 def test_the_page_registers_no_timer_and_nests_no_scroller() -> None:
-    """The app has no timeout_add anywhere, and a page about timers must not be
-    the one that introduces the first: a poll here would read systemd on a
-    timer of its own, forever, for a page nobody is looking at. And _add_page
+    """Nothing in the app polls - system_status.py's two timers are
+    per-operation deadlines (STREAM_BOUNDS, fprintd's answer), not refreshes -
+    so this page must not be the one that introduces a refresh: a poll here
+    would read systemd on a timer of its own, forever, for a page nobody is
+    looking at. And _add_page
     already supplies the Adw.Clamp and the ScrolledWindow, so a second one
     inside is the sliver-inside-a-scroller bug _unnest_scrolling exists for."""
     code = _code_without_docstrings()

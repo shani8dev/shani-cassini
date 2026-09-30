@@ -917,7 +917,8 @@ def test_the_page_uses_the_widget_api_that_works() -> None:
     assert "get_root" not in code, "get_root() is None while the page is built"
     assert "get_descendant_by_name" not in code, \
         "GTK4 has no get_descendant_by_name"
-    assert "timeout_add" not in code, "the app has no timers; neither does a page"
+    assert "timeout_add" not in code, \
+        "nothing in the app polls, so a page timer would be a refresh with no refresh"
     assert "ScrolledWindow" not in code, \
         "_add_page applies the Clamp and the ScrolledWindow for every page"
 

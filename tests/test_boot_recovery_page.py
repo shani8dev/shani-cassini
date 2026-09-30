@@ -676,8 +676,10 @@ def test_this_page_adds_no_scroller_no_timers_and_no_get_root() -> None:
     fixes up any tab that grew its own - so a second scroller here is a sliver
     inside the page's own. get_root() is None while the page is being built,
     which is how every value update failed and pages stayed blank on
-    2026-09-25. The app has no timeout_add anywhere and this page must not be
-    the one that introduces the first one.
+    2026-09-25. Nothing in this app polls - system_status.py's two timers are
+    per-operation deadlines (STREAM_BOUNDS, fprintd's answer), not refreshes -
+    so a timer here would be the app's only refresh timer with no refresh to
+    drive, and this page must not be the one that introduces the first one.
     """
     code = ast.unparse(_code_without_docstrings())
     assert "ScrolledWindow" not in code, "the page scrolls itself; do not add one"

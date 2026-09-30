@@ -81,7 +81,6 @@ class EncryptionTab(Gtk.Box):
 
         self._luks_rows = {}
         encrypted = _encrypted()
-        tpm = ss.has_tpm2()
         g = Adw.PreferencesGroup(title="Disk Encryption")
         if encrypted:
             g.add(_row("Encrypted", "The system disk is protected with LUKS2 encryption",
@@ -89,11 +88,11 @@ class EncryptionTab(Gtk.Box):
         else:
             g.add(_row("Not encrypted", "Encryption is chosen when Shanios is installed; "
                        "it cannot be turned on afterwards", "dialog-warning-symbolic", "warning"))
-        g.add(_row("TPM 2.0 security chip",
-                   {True: "Available", False: "Not found - check the firmware (BIOS/UEFI) settings",
-                    None: "Unknown"}[tpm]))
+        self._tpm_row = tpm_row = _row("TPM 2.0 security chip", "Checking…")
+        g.add(tpm_row)
         self._page.append(g)
         if not encrypted:
+            self._ask_tpm(tpm_row)
             return
 
         self._unlock = Adw.PreferencesGroup(
@@ -106,8 +105,16 @@ class EncryptionTab(Gtk.Box):
         self._status_row.add_suffix(self._btn_details)
         self._unlock.add(self._status_row)
 
+        # Hidden until the status actually carries a reason to show it. A row
+        # that existed and said nothing would be inventing data, and a row that
+        # appeared on every enrolled machine would be a warning nobody reads.
+        self._seal_row = _row("Firmware measurements changed", "",
+                              "dialog-warning-symbolic", "warning")
+        self._seal_row.set_visible(False)
+        self._unlock.add(self._seal_row)
+
         self._enroll_row = _row("Set up automatic unlock", "Uses the TPM; optional PIN at boot")
-        self._btn_enroll = Gtk.Button(label="Set Up…", valign=Gtk.Align.CENTER, sensitive=bool(tpm))
+        self._btn_enroll = Gtk.Button(label="Set Up…", valign=Gtk.Align.CENTER, sensitive=False)
         self._btn_enroll.add_css_class("suggested-action")
         self._btn_enroll.connect("clicked", lambda *_: self._enroll_dialog())
         self._enroll_row.add_suffix(self._btn_enroll)
@@ -131,8 +138,27 @@ class EncryptionTab(Gtk.Box):
             self._luks_rows[key] = row
             details.add(row)
         self._page.append(details)
+        # Asked last, and not where the row is made: the Set Up button has to
+        # exist before an answer can enable it. The real reader always defers,
+        # so the earlier placement worked -- but it made the page correct only
+        # by accident of that timing, and a greyed-out Set Up on a machine with
+        # a working chip is a bug nobody would connect to this.
+        self._ask_tpm(tpm_row)
+
+    def _ask_tpm(self, row) -> None:
+        ss.tpm2_present(lambda tpm, err: self._on_tpm(row, tpm, err))
 
     # ------------------------------------------------------------ status
+    def _on_tpm(self, row, tpm, err) -> None:
+        row.set_subtitle({True: "Available",
+                          False: "Not found - check the firmware (BIOS/UEFI) settings",
+                          None: "Unknown" if not err else f"Unknown - {err}"}[tpm])
+        # An unencrypted disk returns from _build() before the button is made,
+        # so the attribute is absent rather than None there.
+        btn = getattr(self, "_btn_enroll", None)
+        if btn is not None:
+            btn.set_sensitive(bool(tpm))
+
     def _load_status(self) -> None:
         self._btn_details.set_sensitive(False)
         ss.tpm2_status(self._on_status)
@@ -153,6 +179,9 @@ class EncryptionTab(Gtk.Box):
         else:
             self._status_row.set_subtitle("Off - the passphrase is asked at every boot")
             self._btn_remove.set_sensitive(False)
+        risk = ss.tpm2_seal_risk(st)
+        self._seal_row.set_subtitle(risk)
+        self._seal_row.set_visible(bool(risk))
         if (st.get("tpm2_slots") or 0) > 1:
             self._status_row.set_subtitle(self._status_row.get_subtitle()
                                           + f" · {st['tpm2_slots']} TPM keys (older ones are unused)")
