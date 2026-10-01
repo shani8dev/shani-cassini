@@ -1055,3 +1055,290 @@ class TestGpuPowerState:
                  and isinstance(node.func, ast.Name)
                  and node.func.id == "gpu_power_states"]
         assert calls, "gpu_report does not read the power state at all"
+
+
+class TestJournalRetention:
+    """journald's cap, and whether the journal survives a reboot.
+
+    Both exist because the page used to *assert* them, and one assertion was
+    wrong: Shanios caps the journal with a drop-in under
+    /usr/lib/systemd/journald.conf.d, while /etc/systemd/journald.conf is
+    unmodified out of the box. The page pointed users at the file that changes
+    nothing. These tests pin the fixture to the real shipped drop-in's body.
+    """
+
+    SHIPPED = "[Journal]\nSystemMaxUse=128M\nSystemMaxFiles=2\n"
+
+    def test_the_shipped_drop_in_is_read_verbatim(self, tmp_path, monkeypatch):
+        """Fixture is `shani-settings/usr/lib/systemd/journald.conf.d/
+        00-journal-size.conf` byte for byte."""
+        d = tmp_path / "journald.conf.d"
+        d.mkdir()
+        (d / "00-journal-size.conf").write_text(self.SHIPPED)
+        monkeypatch.setattr(ss, "JOURNALD_DROPIN_DIR", str(d))
+        monkeypatch.setattr(ss, "JOURNALD_USER_DROPIN_DIR", str(tmp_path / "none"))
+
+        out = ss.journal_retention()
+
+        assert out["keys"] == {"SystemMaxUse": "128M", "SystemMaxFiles": "2"}, out
+        assert out["source"].endswith("00-journal-size.conf"), out
+
+    def test_a_later_drop_in_wins_because_journald_reads_them_in_order(
+            self, tmp_path, monkeypatch):
+        """Sorted by filename, last value of a key wins - the same order
+        journald itself uses, so a user who raises the cap in /etc sees the
+        raised value rather than the shipped one."""
+        d = tmp_path / "journald.conf.d"
+        d.mkdir()
+        (d / "00-journal-size.conf").write_text(self.SHIPPED)
+        (d / "99-user.conf").write_text("[Journal]\nSystemMaxUse=2G\n")
+        monkeypatch.setattr(ss, "JOURNALD_DROPIN_DIR", str(d))
+        monkeypatch.setattr(ss, "JOURNALD_USER_DROPIN_DIR", str(tmp_path / "none"))
+
+        out = ss.journal_retention()
+
+        assert out["keys"]["SystemMaxUse"] == "2G", out
+        assert out["keys"]["SystemMaxFiles"] == "2", out
+        assert out["source"].endswith("99-user.conf"), out
+
+    def test_only_the_journal_section_counts(self, tmp_path, monkeypatch):
+        """A `SystemMaxUse` under some other section is not this setting, and
+        reading it as one would be a fact invented."""
+        d = tmp_path / "journald.conf.d"
+        d.mkdir()
+        (d / "weird.conf").write_text(
+            "[Journal]\nSystemMaxUse=128M\n[Something Else]\nSystemMaxFiles=9\n")
+        monkeypatch.setattr(ss, "JOURNALD_DROPIN_DIR", str(d))
+        monkeypatch.setattr(ss, "JOURNALD_USER_DROPIN_DIR", str(tmp_path / "none"))
+
+        out = ss.journal_retention()
+
+        assert out["keys"] == {"SystemMaxUse": "128M"}, out
+
+    def test_no_drop_in_reports_no_keys_rather_than_a_default(
+            self, tmp_path, monkeypatch):
+        """The alternative is inventing a number. journald's own default is
+        10% of the filesystem, which depends on the disk, so there is no
+        single correct value to substitute."""
+        monkeypatch.setattr(ss, "JOURNALD_DROPIN_DIR", str(tmp_path / "absent"))
+        monkeypatch.setattr(ss, "JOURNALD_USER_DROPIN_DIR", str(tmp_path / "gone"))
+
+        assert ss.journal_retention()["keys"] == {}
+
+    def test_the_page_points_at_the_dropin_dir_not_the_decoy(self):
+        """The note may *mention* /etc/systemd/journald.conf, but only to say
+        it is not the place - so the sentence carrying it must be a negation.
+        A plain substring ban would forbid the useful warning as well as the
+        wrong instruction, which is the wrong test entirely."""
+        import shani_cassini.tabs.journal as journal_mod
+        note = journal_mod.DOES_NOT_NOTE
+        assert "journald.conf.d" in note, "the real drop-in dir is not named"
+        # Split on newlines, not on "." - the filename itself contains dots,
+        # and splitting on them cuts "journald" from "conf" in the middle of
+        # the one line under test.
+        sentences = [s.strip() for s in note.splitlines() if "journald.conf" in s]
+        assert sentences, "the note says nothing about journald.conf at all"
+        for sentence in sentences:
+            if sentence.startswith("Retention limits live in"):
+                assert "not in" in sentence, (
+                    f"the page is telling users to edit "
+                    f"/etc/systemd/journald.conf, which is unmodified out of "
+                    f"the box and changes nothing: {sentence!r}")
+
+    def test_a_ram_only_journal_is_said_so(self, tmp_path, monkeypatch):
+        """Absence of /var/log/journal is not "not configured yet" - it is
+        every entry gone at the next reboot."""
+        monkeypatch.setattr(ss, "JOURNAL_PERSISTENT_DIR", str(tmp_path / "gone"))
+        assert ss.journal_persistent() is False
+        monkeypatch.setattr(ss, "JOURNAL_PERSISTENT_DIR", str(tmp_path))
+        assert ss.journal_persistent() is True
+
+
+class TestEtcCrontab:
+    """`/etc/crontab`, which the Cron page claimed to cover and did not.
+
+    The page exists because "no tool lists the system crontabs" - and
+    /etc/crontab is one, so a `0 4 * * * root /usr/local/bin/maintenance.sh`
+    line in it was invisible in the page, in `crontab -l` (which means only the
+    calling user), and in `systemctl list-timers`.
+
+    The fixture is the real file's shape, from cronie's own default: a
+    SHELL=/PATH= preamble, a column-comment header, tab-separated fields, and
+    one line too short to be a job.
+    """
+
+    REAL = """SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+# m h dom mon dow user  command
+17 *	* * *	root	cd / && run-parts --report /etc/cron.hourly
+25 6	* * *	root	test -x /usr/sbin/anacron || run-parts --report /etc/cron.daily
+not a job
+"""
+
+    def _write(self, tmp_path, body):
+        path = tmp_path / "crontab"
+        path.write_text(body)
+        monkey = tmp_path
+        return path
+
+    def test_it_reads_the_jobs_with_the_user_split_out(self, tmp_path,
+                                                       monkeypatch):
+        path = self._write(tmp_path, self.REAL)
+        monkeypatch.setattr(ss, "CRONTAB", str(path))
+
+        rows = ss._crontab_file_entries()
+
+        assert [r["schedule"] for r in rows] == ["17 * * * *", "25 6 * * *"], rows
+        # The username is its own field here and is NOT part of /etc/cron.d's
+        # line shape, so leaving it in the command column would show every job
+        # as "root something".
+        assert rows[0]["name"] == "crontab (root)", rows
+        assert rows[0]["command"] == "cd / && run-parts --report /etc/cron.hourly", \
+            rows
+        assert "root" not in rows[0]["command"], rows
+
+    def test_the_env_preamble_is_not_a_job(self, tmp_path, monkeypatch):
+        """SHELL= and PATH= set the job's environment. A real /etc/crontab
+        leads with them, so taking the first line would name `/bin/bash` as the
+        command on a correctly-written file."""
+        path = self._write(tmp_path, self.REAL)
+        monkeypatch.setattr(ss, "CRONTAB", str(path))
+
+        rows = ss._crontab_file_entries()
+
+        assert not any("PATH=" in r["command"] for r in rows), rows
+        assert not any("SHELL=" in r["command"] for r in rows), rows
+
+    def test_a_line_too_short_to_be_a_job_is_skipped(self, tmp_path,
+                                                     monkeypatch):
+        path = self._write(tmp_path, self.REAL)
+        monkeypatch.setattr(ss, "CRONTAB", str(path))
+
+        rows = ss._crontab_file_entries()
+
+        assert not any("not a job" in r["command"] for r in rows), rows
+
+    def test_several_jobs_in_one_file_are_separate_rows(self, tmp_path,
+                                                       monkeypatch):
+        """Unlike a /etc/cron.d file, which is one schedule, this file
+        routinely holds unrelated ones - and collapsing them into a single row
+        would name only the first."""
+        path = self._write(tmp_path, self.REAL)
+        monkeypatch.setattr(ss, "CRONTAB", str(path))
+
+        assert len(ss._crontab_file_entries()) == 2
+
+    def test_no_file_is_no_jobs_not_an_error(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ss, "CRONTAB", str(tmp_path / "absent"))
+
+        assert ss._crontab_file_entries() == []
+
+    def test_the_reader_actually_calls_it(self, monkeypatch):
+        """The parser existing is not the same as the page reading it - which
+        is exactly how the omission survived, since the old parser for this
+        page was perfectly correct about the other five sources."""
+        import inspect
+        src = inspect.getsource(ss.cron_system_jobs)
+        assert "_crontab_file_entries()" in src, (
+            "cron_system_jobs does not read /etc/crontab, so the page still "
+            "cannot show a system crontab line")
+
+
+class TestPcrlockStatus:
+    """Which PCR policy actually protects the disk.
+
+    This page used to *derive* that from gen-efi's enrolment rule, so it could
+    only ever say "if" — and gen-efi has answered the question directly via
+    `pcrlock-status --json` all along. Its `enrolled_mode` is the machine's own
+    answer, and the docstring's refusal is the shape of the fallback: "an
+    undeterminable field is null, never a default, because enrolled_mode asserts
+    what protects the disk, and a wrong one is worse than an absent one."
+    """
+
+    LITERAL = {"enrolled_mode": "literal", "literal_pcrs": "7",
+               "luks_device": "/dev/nvme0n1p3", "policy_hash": ""}
+    PCRLOCK = {"enrolled_mode": "pcrlock", "literal_pcrs": None,
+               "policy_hash": "a1b2c3", "entry_tokens": ["7"]}
+
+    def _page(self, encrypted=True):
+        """Build the page as an *encrypted* machine, so the details group and
+        its rows exist at all.
+
+        `_build()` returns early when the disk is not encrypted, so the row
+        under test is absent rather than empty on a passphrase-only machine —
+        the same contract `test_unencrypted_disk_offers_no_tpm_actions` holds
+        for the Set Up button. Driving the policy row therefore needs the
+        encrypted shape.
+        """
+        import shani_cassini.tabs.encryption as enc
+        from shani_cassini.state import AppState
+        from shani_cassini.auth import AuthManager
+        real = enc._encrypted
+        enc._encrypted = lambda: encrypted
+        try:
+            return enc.EncryptionTab(state=AppState(),
+                                      auth_manager=AuthManager())
+        finally:
+            enc._encrypted = real
+
+    def test_a_pinned_policy_says_so_and_names_the_firmware_hazard(self):
+        tab = self._page()
+        tab._on_pcrlock(self.LITERAL, "")
+        sub = tab._policy_row.get_subtitle()
+        assert "Fixed PCR values" in sub, sub
+        # PCR 0 is what a firmware update changes, and the man page's own
+        # warning is that it "changes on every update" - so this is the whole
+        # reason the row exists and it must not be softened away.
+        assert "firmware update stops it unlocking" in sub, sub
+
+    def test_a_policy_hash_is_reported_as_surviving_an_update(self):
+        tab = self._page()
+        tab._on_pcrlock(self.PCRLOCK, "")
+        sub = tab._policy_row.get_subtitle()
+        assert "policy hash" in sub, sub
+        assert "stops it unlocking" not in sub, (
+            "a pcrlock policy is bound to a hash and is not stranded by a "
+            f"firmware update; saying otherwise is a false alarm: {sub!r}")
+
+    def test_an_undeterminable_mode_is_not_reported_as_literal(self):
+        """gen-efi returns null when it cannot tell, precisely because the
+        wrong answer is worse than no answer. Falling back to `literal` would
+        claim a stranded key on every machine the read failed on."""
+        for payload in ({}, {"enrolled_mode": None}, {"enrolled_mode": "???"}):
+            tab = self._page()
+            tab._on_pcrlock(payload, "")
+            sub = tab._policy_row.get_subtitle()
+            assert sub == "Not determined", (payload, sub)
+            assert "stops it unlocking" not in sub, (payload, sub)
+
+    def test_a_refusal_shows_the_tools_own_message_not_an_alarm(self):
+        tab = self._page()
+        tab._on_pcrlock(None, "gen-efi is not authorized")
+        assert tab._policy_row.get_subtitle() == "gen-efi is not authorized"
+
+    def test_the_page_asks_for_the_policy_only_when_there_is_a_key(self):
+        """A passphrase-only disk has no TPM seal, so there is no policy to
+        name. Asking anyway spends a privileged read to learn nothing."""
+        asked = []
+        import shani_cassini.system_status as ss
+        real = ss.tpm2_pcrlock_status
+        ss.tpm2_pcrlock_status = lambda done: asked.append(done)
+        try:
+            # Encrypted disk, but no TPM key: there is no seal, so no policy.
+            tab = self._page(encrypted=True)
+            tab._on_status({"tpm2_enrolled": False}, "")
+            assert asked == [], asked
+            assert "No TPM key" in tab._policy_row.get_subtitle()
+
+            tab = self._page(encrypted=True)
+            tab._on_status({"tpm2_enrolled": True}, "")
+            assert len(asked) == 1, asked
+        finally:
+            ss.tpm2_pcrlock_status = real
+
+    def test_the_subcommand_is_gen_efi_own_and_read_only(self):
+        """Not a flag invented here: it is in gen-efi's own dispatcher and its
+        own usage text, and it reads the LUKS header like tpm2-status does."""
+        import inspect
+        src = inspect.getsource(ss.tpm2_pcrlock_status)
+        assert '["pkexec", "gen-efi", "pcrlock-status", "--json"]' in src, src

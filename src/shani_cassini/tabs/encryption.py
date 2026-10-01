@@ -130,9 +130,12 @@ class EncryptionTab(Gtk.Box):
         self._page.append(self._unlock)
 
         self._luks_rows = {}
+        self._policy_row = _row("PCR policy", "Read with the button above")
         details = Adw.PreferencesGroup(
             title="Encryption details",
             description="As the encryption tool reports them, read with the button above.")
+        self._policy_row.set_subtitle(NOT_AVAILABLE)
+        details.add(self._policy_row)
         for key, title in LUKS_DETAILS:
             row = _row(title, NOT_AVAILABLE)
             self._luks_rows[key] = row
@@ -187,6 +190,54 @@ class EncryptionTab(Gtk.Box):
                                           + f" · {st['tpm2_slots']} TPM keys (older ones are unused)")
         for key, _title in LUKS_DETAILS:
             self._luks_rows[key].set_subtitle(_luks_value(st.get(key)))
+        # The PCR policy is a *second* read, asked only once automatic unlock is
+        # actually on: a passphrase-only disk has no TPM seal, so there is no
+        # policy to name and the question does not apply.
+        #
+        # No guard on the row existing here, and deliberately so: `_on_status`
+        # already dereferences `_btn_details` on its first line, and that is
+        # also only created for an encrypted disk, so an unencrypted page can
+        # never get this far. A `hasattr` check on `_policy_row` would be
+        # untestable defence implying protection it does not provide — the
+        # repo has removed that shape twice before. The real invariant is that
+        # only the Check button calls this, and that button is in the same
+        # block `_build()` returns early from.
+        if st.get("tpm2_enrolled"):
+            ss.tpm2_pcrlock_status(self._on_pcrlock)
+        else:
+            self._policy_row.set_subtitle("No TPM key, so nothing is bound to a PCR")
+
+    def _on_pcrlock(self, st, err) -> None:
+        """Say which PCR policy protects the disk, or that we could not tell.
+
+        `gen-efi pcrlock-status` is the machine's own answer, and it is the
+        answer this page previously could only reason its way to. `literal` is
+        the policy `systemd-cryptenroll(1)` calls brittle — bound to current
+        specific PCR values, against a warning that PCR 0's "measurements will
+        change on every update" — so on a `literal` disk a firmware update is
+        enough to stop the key unlocking, and saying so is the whole point of
+        the row.
+
+        `pcrlock` is bound to a policy hash and survives an update that keeps the
+        same policy. `None` and anything unrecognised render as **not
+        determined**, never as `literal`: gen-efi's own comment is that "a wrong
+        one is worse than an absent one", so the fallback here is the honest
+        unknown, not the alarming answer.
+        """
+        mode = (st or {}).get("enrolled_mode")
+        if mode == "literal":
+            pcrs = (st or {}).get("literal_pcrs")
+            bound = f", pinned to PCR {pcrs}" if pcrs else ""
+            self._policy_row.set_subtitle(
+                "Fixed PCR values" + bound +
+                " - a firmware update stops it unlocking")
+            self._policy_row.add_css_class("warning")
+        elif mode == "pcrlock":
+            self._policy_row.set_subtitle(
+                "A policy hash - survives an update that keeps the same policy")
+        else:
+            self._policy_row.set_subtitle(
+                "Not determined" if st else (err or "Not determined"))
 
     # ------------------------------------------------------------ enroll
     def _enroll_dialog(self) -> None:

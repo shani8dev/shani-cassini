@@ -30,6 +30,12 @@ logger = logging.getLogger(__name__)
 EFI_DIR = Path("/sys/firmware/efi")
 EFIVARS = EFI_DIR / "efivars"
 
+# gen-efi's own literal, from `gen-efi.sh`: `mokutil --generate-hash=shanios`,
+# which it then logs as "confirm with password 'shanios' in MokManager on first
+# boot". Kept as a constant rather than inlined in the message so a test can
+# check it against the script instead of against a copy of itself.
+MOK_PASSWORD = "shanios"
+
 
 @dataclass(frozen=True)
 class SecureBootStatus:
@@ -383,8 +389,28 @@ class SecureBootTab(Gtk.Box):
         return card
 
     def _on_enroll_mok(self, _btn: Gtk.Button) -> None:
-        """Stage a MOK enrollment via gen-efi (not direct mokutil --import)."""
-        self._run_gen_efi("enroll-mok", "Stage MOK enrollment", "Staging MOK enrollment via gen-efi. A reboot will be needed to complete enrollment.")
+        """Stage a MOK enrollment via gen-efi (not direct mokutil --import).
+
+        The detail **names the MokManager password**, because that is the one
+        thing a user cannot work out: it is shown only in the firmware's own
+        blue screen after the reboot this button asks for, and gen-efi does not
+        print it to the terminal the way it prints other output. Without it,
+        the reboot lands on a password prompt nobody knows the answer to, and
+        the natural conclusion is that Secure Boot is broken.
+
+        `shanios` is not read from here - it is gen-efi's own literal, at
+        `gen-efi.sh:263` (`mokutil --generate-hash=shanios`), which also logs
+        "confirm with password 'shanios' in MokManager on first boot". If gen-efi
+        ever changes it, `test_the_mok_password_this_page_names_is_gen_efi_own`
+        fails rather than the page quietly lying to a user at a firmware prompt.
+        """
+        self._run_gen_efi(
+            "enroll-mok", "Stage MOK enrollment",
+            "Staging MOK enrollment via gen-efi. A reboot will be needed to "
+            "complete enrollment.\n\n"
+            "At the blue MokManager screen on the next boot, choose "
+            "Enroll MOK, then enter this password: "
+            + MOK_PASSWORD)
 
     def _on_cleanup_mok(self, _btn: Gtk.Button) -> None:
         """Remove old MOK keys via gen-efi cleanup-mok."""

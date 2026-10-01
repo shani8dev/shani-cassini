@@ -4,6 +4,7 @@ import ast
 import inspect
 import subprocess
 import unittest.mock
+from pathlib import Path
 
 import pytest
 import gi
@@ -183,6 +184,50 @@ class TestSecureBootGenEfiRouting:
             cmd = args[0]
             assert cmd[:3] == ["pkexec", "gen-efi", "enroll-mok"], \
                 f"expected [pkexec gen-efi enroll-mok], got {cmd}"
+
+    def test_the_mok_password_the_page_names_is_gen_efi_own(self):
+        """The page tells the user a password; gen-efi decides what it is.
+
+        `gen-efi.sh` hashes MOK enrollment against its own literal, so this
+        reads the script rather than comparing the page against a copy of
+        itself - a test that asserted `MOK_PASSWORD == "shanios"` would keep
+        passing after gen-efi changed it, which is exactly when the page would
+        start lying to someone standing at a firmware password prompt with no
+        other way to get the answer.
+
+        Skipped when the sibling checkout is absent (CI has only this repo), so
+        the constant is still covered by
+        `test_the_page_tells_the_user_the_password` there.
+        """
+        import re
+        from shani_cassini.tabs.secureboot import MOK_PASSWORD
+
+        script = (Path(__file__).resolve().parents[2]
+                  / "shani-deploy" / "scripts" / "gen-efi.sh")
+        if not script.exists():
+            pytest.skip("shani-deploy is not checked out beside this repo")
+        found = set(re.findall(r"mokutil --generate-hash=(\S+)",
+                               script.read_text()))
+        assert found, f"gen-efi.sh no longer sets a MOK password: {script}"
+        assert MOK_PASSWORD in found, (
+            f"the page names {MOK_PASSWORD!r} but gen-efi hashes with {found}")
+
+    def test_the_page_tells_the_user_the_password(self):
+        """A reboot is asked for by this button, and the password is shown
+        only in the firmware screen that reboot reaches. Not naming it leaves a
+        user at a prompt with no way to answer."""
+        from unittest.mock import patch, MagicMock
+        tab = self._make_tab()
+        btn = self._find_button(tab, "mok-enroll-btn")
+        shown = []
+        with patch("shani_cassini.tabs.secureboot.subprocess.run"), \
+             patch.object(tab, "_show_gen_efi_result",
+                          side_effect=lambda *a, **k: shown.extend(a)):
+            tab._on_enroll_mok(btn)
+        from shani_cassini.tabs.secureboot import MOK_PASSWORD
+        text = " ".join(str(x) for x in shown)
+        assert MOK_PASSWORD in text, (
+            f"the enrollment result never names the password; got {text!r}")
 
     def test_cleanup_button_invokes_gen_efi_cleanup_mok_via_pkexec(self):
         """Clicking cleanup must call: pkexec gen-efi cleanup-mok."""

@@ -6,11 +6,18 @@ exists for the part that page deliberately does not do: **the system-wide
 crontabs**, which no `crontab -l` will ever show you.
 
 **Why `crontab -l` alone is not enough.** With no `-u`, crontab means *the
-calling user's* table, and nothing in cron offers a query for `/etc/cron.d` or
-the four run-part directories - they are plain files with no tool in front of
-them. So those are read directly, which is also the only way to see the machine's
-real schedule. Reading them is unprivileged: `/etc/cron.d` and `/etc/cron.daily`
-are world-readable, so this page needs no password for anything.
+calling user's* table, and nothing in cron offers a query for `/etc/crontab`,
+`/etc/cron.d` or the four run-part directories - they are plain files with no
+tool in front of them. So those are read directly, which is also the only way
+to see the machine's real schedule. Reading them is unprivileged: `/etc/crontab`
+and `/etc/cron.daily` are world-readable, so this page needs no password for
+anything.
+
+**`/etc/crontab` needs its own parser** because its lines carry an extra
+username field (`17 * * * * root cd / && …`) that a `/etc/cron.d` file's do not.
+It is listed first and one row per job, since a single `/etc/crontab` routinely
+holds several unrelated schedules - which is the one case where one row per file
+would name only the first.
 
 **`crontab -l` exits 1 with empty stdout when there is no crontab.** It says
 `no crontab for <user>` on stderr. So "you have no scheduled jobs" is an

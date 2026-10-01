@@ -876,6 +876,37 @@ def tpm2_status(done) -> None:
     run_json(["pkexec", "gen-efi", "tpm2-status", "--json"], done)
 
 
+def tpm2_pcrlock_status(done) -> None:
+    """gen-efi pcrlock-status --json — which PCR policy protects this disk.
+
+    This is the read that answers a question `tpm2-status` cannot. gen-efi
+    enrols with `--tpm2-pcrs=0+7` (or `0` without Secure Boot), which the
+    `systemd-cryptenroll(1)` man page calls the **brittle** policy: it "binds
+    decryption to the current, specific PCR values", against a warning not to use
+    PCR 0 precisely because "the measurements will change on every update". So
+    every Shanios enrolment is a pinned policy, and a firmware update is enough
+    to strand it.
+
+    Until now this page asserted that conclusion *from gen-efi's own rule*
+    rather than from the machine, which is why it could only ever say "if".
+    gen-efi has answered exactly this question since it grew the subcommand, and
+    the answer is machine-checkable:
+
+        enrolled_mode == "literal"  the key is pinned to PCR values, and it
+                                    stops unlocking after a firmware update
+        enrolled_mode == "pcrlock"  it is bound to a policy hash instead, which
+                                    survives updates that keep the same policy
+
+    `pcrlock_status_json` documents its own refusal: an undeterminable field is
+    `null`, never a default, "because enrolled_mode asserts what protects the
+    disk, and a wrong one is worse than an absent one". `None` here therefore
+    means *could not be determined* and is rendered as such — it must never fall
+    back to `literal`, which would have the page claim a stranded key on every
+    machine it cannot read.
+    """
+    run_json(["pkexec", "gen-efi", "pcrlock-status", "--json"], done)
+
+
 # --- systemd's PCR separator, and what it does to an existing seal ---------
 #
 # systemd 261 ships systemd-pcrosseparator.service, and Arch's mkinitcpio 42-1
@@ -2577,10 +2608,60 @@ def cron_system_jobs(done: Callable[[list[dict], str], None]) -> None:
     directory is a machine with no system crontabs, not an error.
     """
     entries: list[dict] = []
+    entries += _crontab_file_entries()
     entries += _cron_entries_in(CRON_D)
     for suffix in ("hourly", "daily", "weekly", "monthly"):
         entries += _cron_entries_in(f"{CRON_USER_D}.{suffix}")
     done(entries, "")
+
+
+CRONTAB: Final = "/etc/crontab"
+
+
+def _crontab_file_entries() -> list[dict]:
+    """/etc/crontab's own jobs — one entry per job, not per file.
+
+    This is the gap that made the page's premise false. The page exists because
+    "no tool lists the system crontabs", and `/etc/crontab` is a system
+    crontab: a `0 4 * * * root /usr/local/bin/maintenance.sh` line in it is
+    invisible here, invisible to `crontab -l` (which means only the calling
+    user), and invisible to `systemctl list-timers`. Adding it needed its own
+    parser because **`/etc/crontab` lines carry an extra username field** —
+    `schedule user command`, where a `/etc/cron.d` file's line is just
+    `schedule command`. Reusing the per-file logic would have put `root` in
+    the command column of every row.
+
+    Returned one entry per job rather than one per file, because unlike
+    /etc/cron.d this file routinely holds several unrelated schedules, and
+    collapsing them into a single row would name only the first.
+    """
+    try:
+        with open(CRONTAB, encoding="utf-8", errors="replace") as handle:
+            body = handle.read()
+    except OSError:
+        # No /etc/crontab is a machine with no system crontab, not an error.
+        return []
+    out: list[dict] = []
+    for raw in body.splitlines():
+        text = raw.strip()
+        if not text or text.startswith("#") or _CRON_ASSIGN.match(text):
+            continue
+        fields = text.split(None, 5)
+        # A line too short to hold five fields plus a user and a command is not
+        # a job cronie will run, and rendering it as one would be inventing a
+        # schedule or a user the line does not name.
+        if len(fields) < 6:
+            continue
+        # fields[5] holds both the user and the command, and the real file
+        # separates them with a tab - which the page would render as a run of
+        # spaces in the middle of the command.
+        user, _, rest = fields[5].partition("\t")
+        if not rest.strip():
+            user, _, rest = fields[5].partition(" ")
+        out.append({"name": f"{os.path.basename(CRONTAB)} ({user.strip()})",
+                    "schedule": " ".join(fields[:5]),
+                    "command": " ".join(rest.split())})
+    return out
 
 
 # --- AppArmor: profiles, which no settings app lists ------------------------
@@ -3455,4 +3536,84 @@ def gpu_power_states(addresses: list[str]) -> dict[str, dict]:
         except OSError:
             pass
         out[address] = entry
+    return out
+
+
+# --- is the journal actually retained, and what caps it? ---------------------
+#
+# Two facts the Journal page was asserting rather than reading, and one of the
+# assertions was wrong.
+#
+# 1. Shanios caps the journal with a **drop-in**, not /etc/systemd/journald.conf.
+#    The shipped one is `00-journal-size.conf` under /usr/lib/systemd/journald.conf.d
+#    (`SystemMaxUse=128M`, `SystemMaxFiles=2`), and /etc/systemd/journald.conf is
+#    **unmodified out of the box** — so the page was pointing users at a file
+#    that changes nothing. This reads whatever is actually installed, so a user
+#    who raises the cap sees the page stop claiming the old one.
+#
+# 2. A journal in /run/log/journal is in RAM and is **gone at the next reboot**;
+#    one in /var/log/journal is on disk and survives. That single directory is
+#    the whole difference, and it is the reason a log can look truncated for no
+#    visible reason.
+#
+# Pure file reads, so nothing here can block the main thread.
+
+JOURNALD_DROPIN_DIR: Final = "/usr/lib/systemd/journald.conf.d"
+JOURNALD_USER_DROPIN_DIR: Final = "/etc/systemd/journald.conf.d"
+JOURNAL_PERSISTENT_DIR: Final = "/var/log/journal"
+
+
+def journal_persistent() -> bool:
+    """Whether the journal survives a reboot.
+
+    journald writes to /var/log/journal when that directory exists and to
+    /run/log/journal when it does not. The directory is created by
+    `systemd-journald` itself at first start when `Storage=persistent` is in
+    effect, which is what makes its absence a real answer rather than "not set
+    up yet" on a machine that has been running for months.
+    """
+    return os.path.isdir(JOURNAL_PERSISTENT_DIR)
+
+
+def journal_retention() -> dict:
+    """journald's size/file caps, as installed.
+
+    A drop-in is a plain ini file; `SystemMaxUse` and `SystemMaxFiles` are the
+    two Shanios sets. Later files win, so the list is walked in the same order
+    journald reads them and the last value of each key is the one reported —
+    which is also why this reports a key as "not set" rather than "unset"
+    whenever any file mentions it at all.
+    """
+    out: dict[str, str] = {"source": "", "keys": {}}
+    keys: dict[str, str] = {}
+    for directory in (JOURNALD_DROPIN_DIR, JOURNALD_USER_DROPIN_DIR):
+        try:
+            names = sorted(os.listdir(directory))
+        except OSError:
+            continue
+        for name in names:
+            if not name.endswith(".conf"):
+                continue
+            try:
+                with open(os.path.join(directory, name), encoding="utf-8") as fh:
+                    body = fh.read()
+            except OSError:
+                continue
+            section = ""
+            for raw in body.splitlines():
+                line = raw.strip()
+                if not line or line.startswith(("#", ";")):
+                    continue
+                if line.startswith("[") and line.endswith("]"):
+                    section = line[1:-1]
+                    continue
+                if section != "Journal":
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip()
+                if key.startswith("SystemMax") and value:
+                    keys[key] = value
+                    out["source"] = os.path.join(directory, name)
+    out["keys"] = keys
     return out

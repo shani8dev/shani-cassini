@@ -208,6 +208,101 @@ with `iso-install --boot-only --console-exec=CMD`, for anything touching `/var`.
 
 ## Known issues (current state, 2026-10-01)
 
+- **Four fixes from reading all 204 `shani-docs` pages as a spec. Each was
+  verified against the image repos before being believed — three of the four
+  claims that came out of the survey were themselves wrong, which is the
+  reason the verification step is recorded here rather than just the outcome.**
+  Suite **1144 passed** (was 1124). Every negative control was run; the first
+  attempt at two of them was a silent no-op (`str.replace` matching nothing
+  because of line wrapping) and passed against the broken code, which is
+  exactly the trap this file warns about further down.
+
+  - **The Secure Boot page told users to reboot without naming the MokManager
+    password.** `gen-efi.sh:263` hashes MOK enrollment against its own literal
+    (`mokutil --generate-hash=shanios`) and logs "confirm with password
+    'shanios' in MokManager on first boot". The page's post-staging detail said
+    only "A reboot will be needed" — and the reboot lands on a blue firmware
+    prompt whose answer is shown **nowhere else**. A user who cannot answer it
+    concludes Secure Boot is broken. The password is now named, and
+    `MOK_PASSWORD` is checked **against `gen-efi.sh` itself** rather than
+    against a copy of itself, so a change to gen-efi fails
+    `test_the_mok_password_the_page_names_is_gen_efi_own` instead of quietly
+    making the page lie at a firmware prompt. (The docs were wrong here too:
+    `secure-boot.md` said the password "is not a fixed value" and named
+    `shanios` in the same sentence.)
+
+  - **The Journal page pointed users at a file that does nothing, and asserted
+    two facts instead of reading them.** Shanios caps the journal with a
+    drop-in at `/usr/lib/systemd/journald.conf.d/00-journal-size.conf`
+    (`SystemMaxUse=128M`, `SystemMaxFiles=2`); `/etc/systemd/journald.conf` is
+    **unmodified out of the box**. The page named the latter twice, while
+    already reading `journalctl --disk-usage` — so it knew how much the journal
+    used while directing the user to a file with no effect. `journal_retention()`
+    now reads whatever drop-ins are installed (so a user who raises the cap
+    sees the raised value), and `journal_persistent()` reports whether
+    `/var/log/journal` exists — the difference between "the log ends at the last
+    boot" and "the log is filling the disk", previously invisible. Two
+    deliberate non-answers: an **empty** status file reads `unknown` (sysfs-like
+    honesty — it means this is not the interface it claims to be), and **no**
+    drop-in reports no keys rather than journald's default, because that default
+    is 10% of the filesystem and depends on the disk.
+
+  - **`/etc/crontab` was not read, which made the Cron page's premise false.**
+    The page exists because "no tool lists the system crontabs" — and
+    `/etc/crontab` is one. A `0 4 * * * root /usr/local/bin/maintenance.sh`
+    line in it was invisible in the page, in `crontab -l` (which means only the
+    calling user) and in `systemctl list-timers`. It needed its own parser
+    because **its lines carry an extra username field** that a `/etc/cron.d`
+    file's do not: reusing the per-file logic would have put `root` in the
+    command column of every row. Listed first, **one row per job** — unlike a
+    cron.d file this one routinely holds several unrelated schedules, so one row
+    per file would name only the first. The real file also separates fields with
+    **tabs**, which rendered as a run of spaces mid-command.
+
+  - **Encryption asked a question gen-efi had been answering all along, and
+    inferred the answer instead.** This page's own AGENTS entry stated it
+    *cannot* determine which PCRs the key is bound to, and derived the policy
+    from gen-efi's enrolment rule — so it could only ever say "if". But
+    `gen-efi pcrlock-status --json` returns `enrolled_mode: pcrlock | literal |
+    null` directly, and Cassini never called it (nor `cleanup-tpm2`). Now read
+    behind the existing Check button, and only when a TPM key is enrolled: a
+    passphrase-only disk has no seal, so the question does not apply. `literal`
+    — what **every** Shanios enrolment is, since gen-efi enrols with
+    `--tpm2-pcrs=0+7` — is the policy `systemd-cryptenroll(1)` calls brittle,
+    and the row says a firmware update stops it unlocking. `pcrlock` is bound to
+    a policy hash and survives an update keeping the same policy. **`null`
+    renders "Not determined", never `literal`**: gen-efi's own comment is that
+    "a wrong one is worse than an absent one", so the fallback here is the
+    honest unknown rather than the alarming answer.
+    **One guard was written and then removed**, which is the point worth
+    keeping: I added `if not hasattr(self, "_policy_row"): return` because
+    `_build()` returns early on an unencrypted disk. The control proved it
+    **dead** — `_on_status` already dereferences `_btn_details` on its first
+    line, which is also unencrypted-only, so the check could never be reached.
+    Untestable defence implying protection it did not provide, the shape this
+    repo has removed twice before. The real invariant (only the Check button
+    calls `_on_status`, and it lives in the same early-returned block) is now
+    recorded in the code instead.
+
+  **Not done, and why.** A survey of all 204 docs also proposed: an `/etc`
+  customisation browser with per-file revert on Persistence; `shani-deploy
+  --dry-run` before the one irreversible button; a DNS page (three shipped
+  resolvers, one switch, a documented port-53 conflict); SMB in Sharing; firewall
+  write access; the keyring trust-root report; `pam_pwquality` posture. All are
+  real, and all are **not** in this commit. They need their own verification,
+  and the three doc-side corrections they depend on are the ones worth having
+  landed first.
+
+- **`web_client --crawl` reported PASS having crawled nothing, and the real
+  docs site hit it (2026-10-01; fixed in `shani-testbed`, not here).** The run
+  said `RESULT crawl PASS (0/0 same-origin pages clean)` and it read as a pass.
+  `crawl()` collects `a[href]` from the start page, and **this site's home page
+  navigates with `<button onclick="navigate(...)">`** — no `href` at all — so it
+  collected nothing and reported the confidence of a green check. Zero pages
+  crawled is now a FAIL, with the detail naming the cause. Noted here because
+  **this repo's own pages are the reason**: the Graphics page's cards are
+  buttons for the same reason the docs site's are.
+
 - **Hybrid graphics is reported, never switched — because `switcheroo-control`
   implements no call that changes anything.** Added to the Graphics page
   2026-10-01, and the limit is the load-bearing part. Live introspection of

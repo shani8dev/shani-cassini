@@ -26,13 +26,25 @@ a separate application in GNOME and has no panel in either settings app, so this
 is the only journal view a Shanios user has inside a settings window.
 
 **This page reads logs; it does not manage them.** `journalctl --vacuum-*` and
-`--rotate` delete history, and `systemd-journald`'s retention settings are in
-`/etc/systemd/journald.conf`. Both are named in the group at the bottom.
+`--rotate` delete history, and journald's retention limits live in a drop-in
+under `JOURNALD_DROPIN_DIR`. Both are named in the group at the bottom.
 """
 
 from __future__ import annotations
 
 import logging
+
+# Where Shanios actually puts its journald retention cap, and what it says.
+# These are read at run time, not hardcoded: a user who raises the cap in
+# /etc should see the page stop claiming 128M, and an image that changed the
+# shipped value should not leave this page asserting a number that is no longer
+# true. `/etc/systemd/journald.conf` is a decoy - see JOURNAL_RETENTION_NOTE.
+JOURNALD_DROPIN_DIR = "/usr/lib/systemd/journald.conf.d"
+# Where the persistent journal lives when it is persistent. Absent means the
+# journal is in RAM only and every entry is lost at the next reboot, which is
+# the difference between "the log ends at the last boot" and "the log is
+# filling the disk".
+JOURNAL_PERSISTENT_DIR = "/var/log/journal"
 
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
@@ -58,7 +70,8 @@ DOES_NOT_NOTE = (
     "Nothing on this page deletes or rotates anything.\n"
     "  sudo journalctl --vacuum-size=500M    shrink to a size\n"
     "  sudo journalctl --rotate               start a new journal file\n"
-    "Retention limits live in /etc/systemd/journald.conf."
+    "Retention limits live in a drop-in under " + JOURNALD_DROPIN_DIR +
+    ", not in /etc/systemd/journald.conf."
 )
 
 # Priority names as journald spells them. A number is shown with its name and
@@ -162,6 +175,30 @@ class JournalTab(Gtk.Box):
         self._summary = Adw.PreferencesGroup(title="Journal", description=BOOTS_NOTE)
         self._row_usage = _row("Disk usage", "Reading…")
         self._summary.add(self._row_usage)
+        # Read at build time, not asked for: both are file reads the kernel has
+        # already answered, and a journal that is in RAM only is a fact the
+        # user needs *before* they go looking for last week's entry.
+        self._summary.add(_row("Kept across reboots",
+                                "Yes - on disk" if ss.journal_persistent()
+                                else "No - in RAM only, lost at the next reboot"))
+        retention = ss.journal_retention()
+        keys = retention.get("keys") or {}
+        if keys:
+            # Named rather than printed as key names, and the size first
+            # because that is the limit a user actually hits: "Use 128M, 2
+            # files" reads, "Files 2, Use 128M" does not.
+            parts = []
+            if keys.get("SystemMaxUse"):
+                parts.append(keys["SystemMaxUse"])
+            if keys.get("SystemMaxFiles"):
+                parts.append(f"{keys['SystemMaxFiles']} files")
+            for name, value in sorted(keys.items()):
+                if name not in ("SystemMaxUse", "SystemMaxFiles"):
+                    parts.append(f"{name.removeprefix('SystemMax')} {value}")
+            subtitle = f"{' · '.join(parts)} ({retention['source']})"
+        else:
+            subtitle = "No drop-in sets a limit - journald's built-in default applies"
+        self._summary.add(_row("Size limit", subtitle))
 
         self._checks: dict[str, tuple[Adw.CheckButton, Adw.ActionRow]] = {}
         self._boots_group = Adw.PreferencesGroup(title="Boots",
