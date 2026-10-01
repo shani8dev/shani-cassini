@@ -142,3 +142,36 @@ class TestPageWithKeysMissingFromTheCompiledSchema:
         # argument it is given, so passing a key the schema lacks would be
         # testing the test's lie rather than the page.
         page._check_ollama(keys={"privacy-mode"})
+
+
+class TestWakePhrase:
+    """Chronoa's wake phrase is whisper.cpp: the page says what it needs and what to say."""
+
+    def test_the_status_names_what_is_missing(self):
+        assert "whisper-cpp" in tab_mod.wake_phrase_status(None, [], "hey chronoa")
+        assert "model" in tab_mod.wake_phrase_status("/usr/bin/whisper-cli", [], "hey chronoa")
+
+    def test_a_ready_engine_says_the_phrase_and_the_model(self):
+        s = tab_mod.wake_phrase_status("/usr/bin/whisper-cli", ["/m/ggml-tiny-q5_1.bin"], "hey chronoa")
+        assert "hey chronoa" in s and "ggml-tiny-q5_1.bin" in s
+
+    def test_models_are_found_where_chronoa_looks(self, monkeypatch, tmp_path):
+        d = tmp_path / "whisper" / "models"
+        d.mkdir(parents=True)
+        (d / "ggml-base-q5_1.bin").write_bytes(b"x")
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        assert str(d / "ggml-base-q5_1.bin") in tab_mod.whisper_models()
+
+    def test_the_page_has_the_phrase_entry_and_the_engine_row(self, monkeypatch):
+        wanted = [k for k, _t, _s in tab_mod.SWITCHES] + [k for k, _t in tab_mod.ENTRIES]
+        assert "wake-phrase" in wanted
+        monkeypatch.setattr(tab_mod, "_settings", lambda: _Settings(wanted))
+        titles = {r.get_title() for r in _all_rows(tab_mod.ChronoaTab())}
+        assert {"Wake phrase", "Wake phrase engine"} <= titles
+
+    def test_an_older_chronoa_without_the_key_still_builds(self, monkeypatch):
+        kept = [k for k, _t, _s in tab_mod.SWITCHES] + ["model", "ollama-host"]
+        monkeypatch.setattr(tab_mod, "_settings", lambda: _Settings(kept))
+        rows = _all_rows(tab_mod.ChronoaTab())
+        text = " ".join(f"{r.get_title()} {r.get_subtitle() if hasattr(r, 'get_subtitle') else ''}" for r in rows)
+        assert "Wake phrase engine" in text and "wake-phrase" in text, "the absent key is named"

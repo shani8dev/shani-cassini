@@ -8,8 +8,10 @@ which starts the app). API keys in the schema are never shown here.
 
 from __future__ import annotations
 
+import glob
 import json
 import logging
+import os
 import shutil
 
 from gi.repository import Adw, Gio, GLib, Gtk  # type: ignore
@@ -22,12 +24,35 @@ SCHEMA = "org.shani.chronoa"
 SWITCHES = [
     ("privacy-mode", "Privacy mode", "Only local models; nothing leaves this computer"),
     ("auto-start", "Start at login", "Chronoa is ready in the background"),
-    ("wake-word-enabled", "Wake word", "Listen for the wake word, hands-free"),
+    ("wake-word-enabled", "Wake phrase", "Start listening when you say the wake phrase, hands-free"),
     ("notification-enabled", "Spoken replies", "Read answers and timers aloud"),
     ("cloud-fallback-enabled", "Cloud fallback", "Use a free cloud model when the local one is unavailable"),
 ]
 
-ENTRIES = (("model", "Model"), ("ollama-host", "Ollama address"))
+ENTRIES = (("model", "Model"), ("ollama-host", "Ollama address"), ("wake-phrase", "Wake phrase"))
+
+
+def whisper_models() -> list:
+    """whisper.cpp model files where Chronoa looks for them (stt.py's two dirs)."""
+    data = os.environ.get("XDG_DATA_HOME") or ""
+    if not os.path.isabs(data):
+        data = os.path.expanduser("~/.local/share")
+    found = []
+    for d in (os.path.join(data, "whisper", "models"), "/usr/share/whisper/models"):
+        found += sorted(glob.glob(os.path.join(d, "ggml-*.bin")))
+    return found
+
+
+def wake_phrase_status(whisper_cli, models, phrase="") -> str:
+    """What the wake-phrase engine row says. Chronoa's wake phrase is whisper.cpp
+    transcribing each short utterance, so it needs exactly what speech input
+    needs - the binary and a model - and says which one is missing."""
+    if not whisper_cli:
+        return "Needs whisper.cpp (the whisper-cpp package)"
+    if not models:
+        return "Needs a whisper model - Chronoa's Settings > Voice can download one"
+    said = f"Say \u201c{phrase}\u201d" if phrase else "Ready"
+    return f"{said} - whisper.cpp, {os.path.basename(models[0])}"
 
 
 def absent_keys(wanted, available) -> list:
@@ -83,6 +108,10 @@ class ChronoaTab(Gtk.Box):
         stt = shutil.which("whisper-cli")
         eng.add(Adw.ActionRow(title="Speech input",
                               subtitle="whisper.cpp" if stt else "Not installed (whisper-cpp)"))
+        names = set(self._settings.props.settings_schema.list_keys())
+        phrase = self._settings.get_string("wake-phrase") if "wake-phrase" in names else ""
+        eng.add(Adw.ActionRow(title="Wake phrase engine",
+                              subtitle=wake_phrase_status(stt, whisper_models(), phrase)))
         tts = next((n for b, n in (("piper-tts", "Piper"), ("RHVoice-test", "RHVoice"), ("espeak-ng", "eSpeak NG"))
                     if shutil.which(b)), None)
         eng.add(Adw.ActionRow(title="Speech output", subtitle=tts or "No speech engine installed"))
