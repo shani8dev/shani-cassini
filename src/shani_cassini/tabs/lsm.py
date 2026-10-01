@@ -87,6 +87,15 @@ LSM_PATH: Final = "/sys/kernel/security/lsm"
 AA_STATUS: Final = "aa-status"
 APPARMOR_UNIT: Final = "apparmor.service"
 APPARMOR_QUERY: Final = ["systemctl", "is-active", "apparmor"]
+# A second unit the image enables and this page said nothing about.
+# `shani-core.install` runs `systemctl enable snapd.apparmor.service` (and
+# `apparmor.service`) at install, so Snap confinement is meant to be on. It is
+# a *separate* unit, so the row for apparmor.service says nothing about it — and
+# `is-active` on an absent unit is `inactive`, which reads exactly like "on but
+# idle". So without its own row, a machine with Snap confinement silently off is
+# indistinguishable from a healthy one.
+SNAPD_APPARMOR_UNIT: Final = "snapd.apparmor.service"
+SNAPD_APPARMOR_QUERY: Final = ["systemctl", "is-active", "snapd.apparmor"]
 
 # --- the filter -------------------------------------------------------------
 #
@@ -150,9 +159,11 @@ LSM_NOT_REPORTED: Final = (
 
 AA_TITLE: Final = "AppArmor"
 AA_HELP: Final = (
-    "aa-status is the tool's own summary of loaded and enforced profiles, and "
-    "the row below it is what systemd says about apparmor.service. They are "
-    "two separate facts and neither is combined with the other here."
+    "aa-status is the tool's own summary of loaded and enforced profiles. The "
+    "two rows below it are what systemd says about two separate units, "
+    "apparmor.service and snapd.apparmor.service - the image enables both, and "
+    "Snap confinement is off if the second is not running, which the first "
+    "cannot show. Three separate facts, none combined with the others here."
 )
 AA_PENDING: Final = f"Asking {AA_STATUS}…"
 AA_UNIT: Final = "unit state"
@@ -409,6 +420,7 @@ class LsmTab(Gtk.Box):
             self._ask_audit()
         self._ask_stream(AA_STATUS, [AA_STATUS])
         self._ask_stream(APPARMOR_UNIT, list(APPARMOR_QUERY))
+        self._ask_stream(SNAPD_APPARMOR_UNIT, list(SNAPD_APPARMOR_QUERY))
 
     def _ask_audit(self) -> None:
         """The one privileged read: exactly what the Directory page runs.
@@ -525,6 +537,28 @@ class LsmTab(Gtk.Box):
         self._add(self._aa_group, _row(
             APPARMOR_UNIT, f"{_esc(word)} - as systemctl is-active reports it",
             *UNIT_ICONS.get(word, UNIT_ICONS["unknown"])))
+
+        snapd = self._streams.get(SNAPD_APPARMOR_UNIT,
+                                  {"lines": [], "done": False})
+        if not snapd["done"]:
+            self._add(self._aa_group, _row(SNAPD_APPARMOR_UNIT,
+                                           UNIT_PENDING, *STATE_ICONS["info"]))
+            return
+        sword = " ".join(line.strip() for line in snapd["lines"]
+                         if line.strip())
+        if not sword:
+            self._add(self._aa_group, _row(
+                SNAPD_APPARMOR_UNIT,
+                f"systemctl is-active returned no state word for "
+                f"{SNAPD_APPARMOR_UNIT}, so its state is not shown here",
+                *STATE_ICONS["warning"]))
+            return
+        detail = f"{_esc(sword)} - Snap confinement" if sword != "inactive" \
+            else "inactive - Snap confinement is off; Snap apps are " \
+                 "not confined"
+        self._add(self._aa_group, _row(
+            SNAPD_APPARMOR_UNIT, detail,
+            *UNIT_ICONS.get(sword, UNIT_ICONS["unknown"])))
 
     def _render_audit(self) -> None:
         """The filtered rows, or one honest sentence about why there are none.

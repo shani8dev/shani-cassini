@@ -1342,3 +1342,97 @@ class TestPcrlockStatus:
         import inspect
         src = inspect.getsource(ss.tpm2_pcrlock_status)
         assert '["pkexec", "gen-efi", "pcrlock-status", "--json"]' in src, src
+
+
+class TestLingerAndSnapdApparmor:
+    """Two reads that close a silent failure each.
+
+    **linger:** `shani-docs/docs/system/backup.md` teaches
+    `loginctl enable-linger $USER` as a *required* step for backup timers, and
+    the Backup page is the page whose subject those timers are. A user timer
+    with linger off does not fire when nobody is logged in, and the first sign
+    of that is needing a restore. Nothing in the app read it.
+
+    **snapd.apparmor:** `shani-core.install` runs `systemctl enable` on *both*
+    `apparmor.service` and `snapd.apparmor.service`. They are separate units, so
+    the row for the first says nothing about the second — and `is-active` on an
+    absent unit is `inactive`, which reads exactly like "on but idle".
+    """
+
+    def test_linger_is_read_for_the_calling_user_with_no_privilege(self):
+        """The reader must ask about *this* account: no username argument is
+        invented, because a wrong one would report someone else's state."""
+        import inspect
+        src = inspect.getsource(ss.user_linger)
+        assert "show-user" in src, src
+        assert "getpwuid" in src, (
+            "the reader is not deriving the user from the current uid, so it "
+            "would have to guess or take an argument")
+
+    def test_the_three_linger_states_stay_distinct(self):
+        """`could not tell` must not render as `no`: an absent logind would
+        otherwise nag a user about a setting they may well have enabled, and a
+        warning nobody can act on is how people learn to ignore the ones they
+        can."""
+        from shani_cassini.tabs.backup import BackupTab
+        tab = BackupTab()
+        tab._on_linger(True, "")
+        assert "Yes" in tab._linger_row.get_subtitle()
+        tab._on_linger(False, "")
+        assert "No" in tab._linger_row.get_subtitle()
+        assert tab._linger_note.get_visible() is True
+        tab._on_linger(None, "logind is not running")
+        sub = tab._linger_row.get_subtitle()
+        assert "Could not tell" in sub, sub
+        assert "logind is not running" in sub, sub
+        # No nagging group when the answer is unknown.
+        assert tab._linger_note.get_visible() is False
+
+    def test_only_yes_lingers_on(self):
+        """A single unprivileged `is-active`-style query per unit: the gate
+        above fails if anything else is added."""
+        import inspect
+        src = inspect.getsource(ss.user_linger)
+        assert "is-active" not in src
+        assert src.count("Linger") >= 2, src
+
+    def test_the_snapd_unit_is_a_separate_ask_not_derived_from_the_first(self):
+        """Deriving it - "presumably fine if apparmor.service is" - is exactly
+        the assumption that hides Snap confinement being off."""
+        import inspect
+        import shani_cassini.tabs.lsm as lsm_mod
+        assert lsm_mod.SNAPD_APPARMOR_UNIT == "snapd.apparmor.service"
+        assert lsm_mod.SNAPD_APPARMOR_QUERY == ["systemctl", "is-active",
+                                                "snapd.apparmor"]
+        # `refresh()` is what issues the asks - there is no `_build` on this
+        # page, so naming one would have made this test vacuous.
+        build = inspect.getsource(lsm_mod.LsmTab.refresh)
+        assert "SNAPD_APPARMOR_UNIT" in build, (
+            "the page never asks about snapd.apparmor.service, so Snap "
+            "confinement being off is invisible")
+
+    def test_an_inactive_snapd_unit_says_confinement_is_off(self):
+        """`inactive` is ambiguous in general — it also means "on, nothing to
+        do" — but for a unit that is enabled and idle that reading is wrong,
+        so the row has to say which one it means."""
+        from shani_cassini.tabs.lsm import LsmTab
+        tab = LsmTab()
+        tab._streams = {
+            "apparmor.service": {"lines": ["active"], "done": True},
+            "snapd.apparmor.service": {"lines": ["inactive"], "done": True},
+        }
+        found = []
+        original = tab._add
+
+        def spy(group, row):
+            found.append((row.get_title(), row.get_subtitle() or ""))
+            return original(group, row)
+
+        tab._add = spy
+        tab._render_lsm_audit_groups() if hasattr(tab, "_render_lsm_audit_groups") \
+            else tab._render()
+        joined = " | ".join(f"{t}: {s}" for t, s in found)
+        assert "snapd.apparmor.service" in joined, joined
+        assert "not confined" in joined, (
+            f"an inactive snapd.apparmor.service is drawn without saying Snap "
+            f"apps are unconfined: {joined}")

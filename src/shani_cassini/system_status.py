@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import pwd
 import re
 import shutil
 from typing import Callable, Final, Optional
@@ -3617,3 +3618,48 @@ def journal_retention() -> dict:
                     out["source"] = os.path.join(directory, name)
     out["keys"] = keys
     return out
+
+
+# --- will this account's timers run when you are logged out? ------------------
+#
+# linger is the answer, and the failure it prevents is silent. A *user* systemd
+# timer only runs while the user has a session; with linger off, a
+# `backup.timer` armed with `Persistent=true` simply does not fire when nobody
+# is logged in — and the first sign of that is needing a restore. `shani-docs`
+# teaches `loginctl enable-linger $USER` as a required step for exactly this,
+# and nothing anywhere in the app checked it.
+#
+# Unprivileged, and about the *caller*, so it needs no username argument: this
+# is "will my timers run", not "will someone else's".
+
+LOGINCTL: Final = "loginctl"
+
+
+def user_linger(done: Callable[[Optional[bool], str], None]) -> None:
+    """Whether linger is enabled for the calling user.
+
+    `loginctl show-user <self> -p Linger` needs no privilege to read your own
+    account. The three states are kept apart: **yes**, **no** (the actionable
+    one), and **could not tell** — an absent logind, or a machine where the
+    query is refused, is neither of the other two, and reporting "no" there
+    would nag a user about a setting they may well have enabled.
+    """
+    def on_text(text: Optional[str], err: str) -> None:
+        if text is None:
+            done(None, err)
+            return
+        match = re.search(r"^Linger=(\S+)", _strip_ansi(text), re.M)
+        if not match:
+            done(None, "loginctl did not report a Linger state")
+            return
+        done(match.group(1).strip().lower() == "yes", "")
+
+    try:
+        user = pwd.getpwuid(os.getuid()).pw_name
+    except (KeyError, OSError):
+        # No passwd entry for this uid: `loginctl` would have nothing to query,
+        # so say so rather than asking about nobody.
+        done(None, "this account has no passwd entry")
+        return
+    run_text([tool_path_or_self(LOGINCTL), "show-user", user, "-p", "Linger"],
+             on_text)

@@ -442,8 +442,12 @@ def test_the_page_reads_exactly_the_three_documented_reads(tmp_path, monkeypatch
     assert settled(tab), rows(tab)
     assert seen_json == [["pkexec", "shani-health", "--security", "--json"]], \
         f"this is the only privileged command on the page, and it ran: {seen_json}"
+    # snapd.apparmor is here because shani-core.install enables it separately
+    # from apparmor.service, so the latter's state says nothing about Snap
+    # confinement. Every one of these is `is-active` or a bare tool name.
     assert seen_stream == [["aa-status"],
-                           ["systemctl", "is-active", "apparmor"]], \
+                           ["systemctl", "is-active", "apparmor"],
+                           ["systemctl", "is-active", "snapd.apparmor"]], \
         f"these are the only unprivileged commands, and they ran: {seen_stream}"
 
 
@@ -862,7 +866,8 @@ def test_nothing_this_page_can_run_mutates_anything() -> None:
     # above, which sees the argv the page really passed.
     assert lsm.AA_STATUS == "aa-status", lsm.AA_STATUS
     assert sorted(argvs) == sorted([["pkexec", "--security", "--json"],
-                                    ["systemctl", "is-active", "apparmor"]]), \
+                                    ["systemctl", "is-active", "apparmor"],
+                                    ["systemctl", "is-active", "snapd.apparmor"]]), \
         f"these are every command literal on the page, and it has: {argvs}"
     for items in _string_lists(_tree_without_docstrings(lsm)):
         for banned in MUTATORS:
