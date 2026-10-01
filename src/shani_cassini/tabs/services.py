@@ -36,6 +36,10 @@ class ServicesTab(Gtk.Box):
         self._toasts.set_child(page)
 
         self._search = Gtk.SearchEntry(placeholder_text="Search services")
+        # a placeholder is not an accessible name: without a label a screen
+        # reader announced this as just "entry" (found by shani-testbed's
+        # a11y-lint on the cassini tour)
+        self._search.update_property([Gtk.AccessibleProperty.LABEL], ["Search services"])
         self._search.connect("search-changed", lambda *_: self._filter())
         page.append(self._search)
         self._running = Adw.PreferencesGroup(title="Running")
