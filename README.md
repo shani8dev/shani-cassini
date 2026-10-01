@@ -69,7 +69,10 @@ so a card that is present but unbound is visible, and reports hybrid-graphics
 state from `switcheroo-control`: how many GPUs, which is the default, and the
 `DRI_PRIME` value that addresses each. It does not switch the session default —
 that service exposes no call that does — and names `switcherooctl launch -g N`
-instead. **Audio** reports the PipeWire
+instead. Each card also carries the kernel's own runtime power state, so "is my
+dGPU drawing power right now" is answered from
+`/sys/bus/pci/devices/*/power/runtime_status` rather than guessed from whether
+the display is busy. **Audio** reports the PipeWire
 graph — devices, outputs, inputs, which is the default, and which programs are
 connected — rather than a volume slider, and deliberately sets none.
 **Journal** lists every boot still on disk and searches the entries, reading a

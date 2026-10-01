@@ -247,6 +247,48 @@ with `iso-install --boot-only --console-exec=CMD`, for anything touching `/var`.
   `Could not connect: No such file or directory` — correct, and the reason the
   refusal is worded as an environment fact rather than a machine one.
 
+- **Each GPU card now carries the kernel's own runtime power state, and
+  rendering caught that `lspci` was never actually giving us an address.**
+  Added 2026-10-01, prompted by the ArchWiki PRIME/Optimus pages: the question
+  a hybrid-graphics user actually asks is not "how many GPUs do I have" but
+  **"is my dGPU drawing power right now"**, and the kernel answers it directly —
+  `/sys/bus/pci/devices/<addr>/power/runtime_status` is `active` or
+  `suspended`, with `control` alongside it saying whether runtime PM is even
+  permitted. Read from sysfs, so no tool, no password, no privilege. The
+  ArchWiki's own note is the reason the row is worth having at all: *a thermal
+  monitor polling `nvidia-smi` will itself hold the card awake*, so `active`
+  does not mean the workload you are running.
+  **The defect that only rendering found: `_parse_gpus` split the slot line on
+  its first colon, so the address was the bus number alone — `00` instead of
+  `00:02.0`.** A slot line is `00:02.0 VGA compatible controller: Intel …`, and
+  the colon inside the BDF comes first. The consequence was silent and total:
+  no `/sys/bus/pci/devices` directory is named `00`, so **every** power lookup
+  missed, `power` came back `{}` for every card, and the page rendered exactly
+  as it did before this change — a correct-looking row with no power on it. The
+  row *title* had been wrong too, reading `… (00)`, and nothing noticed,
+  because `00` looks like an address at a glance. The address is now the
+  **first whitespace-delimited token**. `test_a_gpu_with_no_driver_bound_is_shown_not_omitted`
+  now asserts the full address list; its control (restoring the first-colon
+  split) fails it. Suite **1124 passed**.
+  Read from `/sys`, so the *populated* branch is proven only where the device
+  directory exists: rendered in Arch under GTK 4.22.5 / libadwaita 1.9.4 against
+  this host's **real** `/sys/bus/pci/devices/0000:00:02.0` (`driver i915 ·
+  power active`) and, with a two-card `lspci` fake and a pretend sysfs tree,
+  against the dual case — a suspended iGPU and an awake dGPU — which shows
+  `power suspended` and `power active` on the two rows respectively.
+  **Unverified on a hybrid machine** for the reason given above: this host has
+  one GPU, so the dGPU row has never been read from a real NVIDIA card.
+  Three deliberate refusals, each because the alternative is a fact invented: an
+  address that is **not in the list** is omitted rather than reported as
+  `suspended` (an unplugged eGPU has no directory, and "not present" and
+  "asleep" are different); a missing `control` file still yields the `status`
+  (it is a nicety, and refusing without it would lose the one fact the row
+  exists for); and an **empty** status file reads `unknown` rather than
+  `suspended`, because sysfs never returns one and an empty file means this is
+  not the interface it is pretending to be. The two tests covering those are
+  `test_an_address_that_is_not_there_is_omitted_not_called_suspended` and
+  `test_an_empty_status_file_is_unknown_not_a_guess`.
+
 - **Seven pages exist because neither GNOME Control Center nor KDE System
   Settings has a panel for their subject — all read-only reporters.** Added
   2026-10-01 from a survey of the 100 `shani-docs` pages under

@@ -42,7 +42,11 @@ logger = logging.getLogger(__name__)
 GPUS_NOTE = (
     "Read from lspci -k, the same command the Drivers page uses — one tool, "
     "two questions, and no second opinion about how many cards this machine "
-    "has."
+    "has. The power state is the kernel's own, from "
+    "/sys/bus/pci/devices/*/power/runtime_status: active means something is "
+    "holding the card awake right now, and suspended means it is not. A "
+    "temperature monitor polling the card is enough to hold it awake, so this "
+    "is not always about the workload you are running."
 )
 RENDER_NOTE = (
     "The kernel's own DRM render nodes. A card with no render node is present "
@@ -176,6 +180,13 @@ class GraphicsTab(Gtk.Box):
                     subtitle += f" · modules {_esc(gpu['modules'])}"
             else:
                 subtitle = DRIVER_MISSING
+            # "Is my dGPU drawing power right now" is the question a hybrid-graphics
+            # user actually asks, and sysfs answers it. It is shown on every
+            # card, not only the discrete one, because a card that is *not*
+            # suspended when it has no business being awake is the surprise.
+            power = (payload.get("power") or {}).get(f"0000:{gpu['slot']}")
+            if power and power.get("status"):
+                subtitle += f" · power {power['status']}"
             row = _row(title, subtitle)
             if not gpu["driver"]:
                 img = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")

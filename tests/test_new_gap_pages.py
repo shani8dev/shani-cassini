@@ -30,6 +30,7 @@ answered, is the failure this repo keeps shipping.
 from __future__ import annotations
 
 import ast
+from pathlib import Path
 import inspect
 import json
 import os
@@ -732,6 +733,11 @@ def test_a_gpu_with_no_driver_bound_is_shown_not_omitted() -> None:
     gpus = ss._parse_gpus(text)
     assert [g["driver"] for g in gpus] == ["i915", ""]
     assert "NVIDIA" in gpus[1]["device"]
+    # The address is the whole leading token. Splitting on the first colon
+    # gives the bus number alone - "00" - which no sysfs directory is named
+    # after, so every lookup keyed on it silently misses. Found by rendering:
+    # the row title read "(00)".
+    assert [g["slot"] for g in gpus] == ["00:02.0", "01:00.0"]
 
 
 def test_the_graphics_page_never_installs_a_driver() -> None:
@@ -954,3 +960,98 @@ def test_the_launch_command_uses_switcherooctl_not_a_bare_environment_prefix() -
     # No -g at all means "the first non-default GPU", which is switcherooctl's
     # own documented behaviour and must not be spelled as -g=0 by this page.
     assert "-g=" not in ss.switcheroo_launch_command("", "blender")[2]
+
+
+class TestGpuPowerState:
+    """The kernel's runtime PM state per PCI address, read from sysfs.
+
+    The point of this reader is that `suspended` and "not in the list" are
+    different facts: an eGPU that has been unplugged has no directory at all,
+    and reporting that as suspended would be claiming the kernel knows the
+    state of hardware that is not there.
+    """
+
+    def _tree(self, tmp_path, name, files):
+        """A fake /sys/bus/pci/devices/<addr>/power directory."""
+        base = tmp_path / "devices" / name / "power"
+        base.mkdir(parents=True)
+        for filename, body in files.items():
+            (base / filename).write_text(body)
+        return base
+
+    def test_it_reads_the_status_and_the_control(self, tmp_path, monkeypatch):
+        self._tree(tmp_path, "0000:00:02.0",
+                   {"runtime_status": "suspended\n", "control": "auto\n"})
+        monkeypatch.setattr(ss, "PCI_DEVICES", str(tmp_path / "devices"))
+
+        assert ss.gpu_power_states(["0000:00:02.0"]) == {
+            "0000:00:02.0": {"status": "suspended", "control": "auto"}}
+
+    def test_a_gpu_with_no_control_file_still_reports_its_status(self,
+                                                                 tmp_path,
+                                                                 monkeypatch):
+        """`control` is a nicety. Refusing to report the status without it
+        would lose the one fact the row exists for."""
+        self._tree(tmp_path, "0000:01:00.0", {"runtime_status": "active\n"})
+        monkeypatch.setattr(ss, "PCI_DEVICES", str(tmp_path / "devices"))
+
+        assert ss.gpu_power_states(["0000:01:00.0"]) == {
+            "0000:01:00.0": {"status": "active"}}
+
+    def test_an_address_that_is_not_there_is_omitted_not_called_suspended(
+            self, tmp_path, monkeypatch):
+        """An unplugged eGPU has no directory. Reporting it as suspended
+        would be a reading of hardware that is not present."""
+        self._tree(tmp_path, "0000:00:02.0", {"runtime_status": "active\n"})
+        monkeypatch.setattr(ss, "PCI_DEVICES", str(tmp_path / "devices"))
+
+        out = ss.gpu_power_states(["0000:00:02.0", "0000:ff:99.9"])
+
+        assert "0000:ff:99.9" not in out
+        assert out["0000:00:02.0"]["status"] == "active"
+
+    def test_an_empty_status_file_is_unknown_not_a_guess(self, tmp_path,
+                                                         monkeypatch):
+        """sysfs never returns an empty file, so an empty one means this is
+        not the interface it is pretending to be. Reporting it as `suspended`
+        would be the safe-looking lie."""
+        self._tree(tmp_path, "0000:00:02.0", {"runtime_status": ""})
+        monkeypatch.setattr(ss, "PCI_DEVICES", str(tmp_path / "devices"))
+
+        assert ss.gpu_power_states(["0000:00:02.0"])["0000:00:02.0"][
+            "status"] == "unknown"
+
+    def test_an_empty_input_is_an_empty_answer(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ss, "PCI_DEVICES", str(tmp_path / "devices"))
+
+        assert ss.gpu_power_states([]) == {}
+
+    def test_lspci_slots_are_addressed_with_their_pci_domain(self):
+        """lspci prints `00:02.0`; sysfs keys the directory `0000:00:02.0`.
+
+        A missing or wrong domain is an ENOENT, which reads as "no power
+        information" for every card on the machine — silently, and with the
+        page looking otherwise complete.
+        """
+        body = ast.parse(Path(ss.__file__).read_text())
+        reader = next(node for node in ast.walk(body)
+                      if isinstance(node, ast.FunctionDef)
+                      and node.name == "gpu_report")
+        # The literal has to be a *prefix* of an f-string, so `0000:{slot}`
+        # survives and `0000:` alone does not.
+        literals = [node.value for node in ast.walk(reader)
+                    if isinstance(node, ast.Constant)
+                    and isinstance(node.value, str)
+                    and node.value.startswith("0000:")]
+
+        assert literals == ["0000:"], (
+            f"the lspci slot is not having a PCI domain added to it: "
+            f"{literals}")
+
+        # And the control: the same reader must actually reach the power
+        # read, not just build the address and drop it.
+        calls = [node for node in ast.walk(reader)
+                 if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Name)
+                 and node.func.id == "gpu_power_states"]
+        assert calls, "gpu_report does not read the power state at all"

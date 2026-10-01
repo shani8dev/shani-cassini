@@ -3208,11 +3208,14 @@ def gpu_report(done: Callable[[dict, str], None]) -> None:
     def on_text(text: Optional[str], err: str) -> None:
         if text is None:
             done({"ok": False, "problem": err or "lspci did not answer",
-                  "gpus": [], "render_nodes": render_nodes}, err)
+                  "gpus": [], "render_nodes": render_nodes, "power": {}}, err)
             return
         gpus = _parse_gpus(text)
+        # lspci's slot is "00:02.0"; sysfs wants the full domain "0000:00:02.0".
+        addresses = [f"0000:{g['slot']}" for g in gpus if ":" in g["slot"]]
         done({"ok": True, "problem": "", "gpus": gpus,
-              "render_nodes": render_nodes}, "")
+              "render_nodes": render_nodes,
+              "power": gpu_power_states(addresses)}, "")
 
     run_text(["lspci", "-k"], on_text)
 
@@ -3225,6 +3228,16 @@ def _parse_gpus(text: str) -> list[dict]:
     line is reported with an empty driver**, not omitted: an unbound GPU is the
     single most useful thing this page can say, and dropping it would leave a
     machine with no working graphics looking like a machine with none.
+
+    The address is the **first whitespace-delimited token**, not the text before
+    the first colon. A slot line is
+
+        00:02.0 VGA compatible controller: Intel Corporation TigerLake-LP …
+
+    so splitting on the first colon yields the bus number `00` — a truncated
+    address that is not an address, and which no `/sys/bus/pci/devices`
+    directory is named after. Found by rendering: the row title read
+    `(00)`, and every power-state lookup missed because of it.
     """
     gpus: list[dict] = []
     current: dict | None = None
@@ -3233,11 +3246,11 @@ def _parse_gpus(text: str) -> list[dict]:
         if not line.strip():
             continue
         if not line.startswith((" ", "\t")):
-            head = line.split(":", 1)
-            is_gpu = any(c in head[-1] for c in GPU_CLASSES)
-            current = {"slot": head[0].strip(), "device": head[-1].strip(),
-                       "driver": "", "modules": ""} if is_gpu and \
-                len(head) > 1 else None
+            fields = line.split(None, 1)
+            address, rest = fields[0], (fields[1] if len(fields) > 1 else "")
+            is_gpu = any(c in rest for c in GPU_CLASSES)
+            current = {"slot": address.strip(), "device": rest.strip(),
+                       "driver": "", "modules": ""} if is_gpu else None
             if current:
                 gpus.append(current)
             continue
@@ -3397,3 +3410,49 @@ def switcheroo_launch_command(gpu_index: str, command: str) -> list[str]:
         argv.append(f"-g={gpu_index}")
     argv.append(command)
     return argv
+
+
+# --- is the discrete GPU actually awake? -----------------------------------
+#
+# The question a hybrid-graphics user actually asks is not "how many GPUs do I
+# have" but "is my dGPU drawing power right now" — because a laptop that feels
+# hot is usually one whose dGPU never went to sleep. The kernel answers it
+# directly: /sys/bus/pci/devices/<addr>/power/runtime_status is `active` or
+# `suspended`, and the same directory's `control` says whether runtime PM is
+# even permitted.
+#
+# Read from sysfs, so no tool and no privilege. ArchWiki's own note is that a
+# temperature monitor polling `nvidia-smi` will itself hold the card awake —
+# which is exactly the sort of thing this row makes visible.
+#
+# The addresses come from `lspci -nn`, which prints domain:bus:dev.func as hex
+# (0000:00:02.0); sysfs uses the same spelling, with no reformatting needed.
+
+PCI_DEVICES: Final = "/sys/bus/pci/devices"
+
+
+def gpu_power_states(addresses: list[str]) -> dict[str, dict]:
+    """Runtime power state per PCI address, from sysfs.
+
+    An address that cannot be read is omitted rather than reported as
+    suspended: "not in the list" and "asleep" are different facts, and a card
+    that has gone away entirely is the normal state of an unplugged eGPU.
+    """
+    out: dict[str, dict] = {}
+    for address in addresses:
+        base = os.path.join(PCI_DEVICES, address, "power")
+        try:
+            with open(os.path.join(base, "runtime_status"),
+                      encoding="utf-8") as handle:
+                status = handle.read().strip()
+        except OSError:
+            continue
+        entry = {"status": status or "unknown"}
+        try:
+            with open(os.path.join(base, "control"),
+                      encoding="utf-8") as handle:
+                entry["control"] = handle.read().strip()
+        except OSError:
+            pass
+        out[address] = entry
+    return out
