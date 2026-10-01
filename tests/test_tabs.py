@@ -94,9 +94,15 @@ class TestHealthTab:
 class TestNotebook:
     """The sidebar lists every section, in order; pages build on demand."""
 
+    # The sidebar order, and it is asserted exactly: an entry that moves group
+    # or position has to be a deliberate edit here, not a side effect of
+    # registering a page. The seven added at the end of this file's history are
+    # the interfaces with no panel in GNOME Control Center or KDE System
+    # Settings - Cron, AppArmor, Kernel Modules, Firmware, Graphics, Audio and
+    # Journal - each in the group its subject belongs to.
     EXPECTED = ["Overview", "Health",
         "Storage", "Disk Health", "System Info", "Drivers",
-        "Btrfs", "Persistence", "Timers & Background Tasks",
+        "Btrfs", "Persistence", "Timers & Background Tasks", "Cron",
                 "Secure Boot",
                 "Encryption", "LSM", "Audit",
                 "Firewall",
@@ -104,8 +110,10 @@ class TestNotebook:
         "Smartcard",
         "Security Keys",
         "SSH Keys",
-        "Kerberos", "Directory", "Access", "Remote Access", "Boot & Recovery", "Updates & Rollback", "Services",
+        "Kerberos", "Directory", "Access", "Remote Access", "AppArmor",
+        "Boot & Recovery", "Updates & Rollback", "Services",
         "Containers", "Virtualization", "Sharing", "Backup", "Maintenance",
+        "Kernel Modules", "Firmware", "Graphics", "Audio", "Journal",
                 "Chronoa", "Fleet"]
 
     def test_sections(self):
@@ -308,11 +316,28 @@ class TestBiometricsNoPrivilegeEscalation:
             assert forbidden not in code, f"{forbidden} must never appear in the tab"
 
     def test_fprintd_probes_never_use_pkexec(self):
+        """fprintd asks polkit itself over D-Bus, so a pkexec or a subprocess
+        anywhere in its readers is both unnecessary and a privilege escalation.
+
+        Scoped to the **fprintd functions by AST**, not by slicing the module
+        text from `FPRINTD_CLI` onward. That slice was a stand-in for "the
+        fprintd readers" and quietly became "the rest of the module" — so when
+        a later, unrelated reader legitimately needed pkexec (`aa-status` needs
+        root), this failed and pointed at fprintd, which does not use it.
+        """
+        import ast as _ast
         from shani_cassini import system_status
-        fprintd = self._code(system_status)
-        fprintd = fprintd[fprintd.index("FPRINTD_CLI"):]
-        for forbidden in ("pkexec", "subprocess", "Gio.Subprocess"):
-            assert forbidden not in fprintd, f"fprintd asks polkit itself; {forbidden} is out"
+        tree = _ast.parse(inspect.getsource(system_status))
+        funcs = [n for n in tree.body
+                 if isinstance(n, _ast.FunctionDef)
+                 and ("fprint" in n.name.lower() or "FPRINTD" in n.name)]
+        assert funcs, ("no fprintd reader found - this gate inspects nothing "
+                       "and reports nothing wrong")
+        for func in funcs:
+            body = _ast.unparse(func)
+            for forbidden in ("pkexec", "subprocess", "Gio.Subprocess"):
+                assert forbidden not in body, (
+                    f"{func.name} uses {forbidden}; fprintd asks polkit itself")
 
     def test_biometrics_is_registered_in_the_security_group(self):
         from shani_cassini.notebook import SECTIONS, REQUIRES
@@ -323,7 +348,7 @@ class TestBiometricsNoPrivilegeEscalation:
                                                     "smartcard", "securitykeys",
                                                     "sshkeys", "kerberos",
                                                     "directory", "access",
-                                                    "remoteaccess"]
+                                                    "remoteaccess", "apparmor"]
         # By id, not by position: inserting a section used to move this assertion
         # silently onto a different page, which is how the wrong icon passes.
         assert next(p[3] for p in security if p[1] == "biometrics") == \

@@ -47,6 +47,16 @@ from shani_cassini.tabs.kernel import KernelTab
 from shani_cassini.tabs.access import AccessTab
 from shani_cassini.tabs.remote_access import RemoteAccessTab
 from shani_cassini.tabs.sharing import SharingTab
+# Interfaces with no panel in GNOME Control Center or KDE System Settings. All
+# read-only reporters: the desktop apps own whatever they do cover, and a second
+# place to change it is a second place to keep honest about it.
+from shani_cassini.tabs.apparmor import AppArmorTab
+from shani_cassini.tabs.audio import AudioTab
+from shani_cassini.tabs.cron import CronTab
+from shani_cassini.tabs.firmware import FirmwareTab
+from shani_cassini.tabs.graphics import GraphicsTab
+from shani_cassini.tabs.journal import JournalTab
+from shani_cassini.tabs.modules import ModulesTab
 logger = logging.getLogger(__name__)
 
 
@@ -82,6 +92,10 @@ SECTIONS = [
         (TimersTab, "timers", "Timers & Background Tasks", "preferences-system-time-symbolic",
          "The systemd timers on this machine, and your own crontab - the whole "
          "scheduler is listed, not just the calendar-based part of it"),
+        (CronTab, "cron", "Cron", "clock-symbolic",
+         "The system's own scheduled jobs, read from /etc/cron.d and the "
+         "cron.{hourly,daily,weekly,monthly} directories - which crontab -l "
+         "cannot show you. Read-only: no job is installed or edited here"),
     ]),
     ("Security", [
         (SecureBootTab, "secureboot", "Secure Boot", "security-high-symbolic", "Secure Boot and MOK keys"),
@@ -115,6 +129,10 @@ SECTIONS = [
          "The sshd settings Cassini keeps in its own drop-in, and the ones "
          "sshd's main file decides. These govern the daemon GNOME's Remote "
          "Login starts"),
+        (AppArmorTab, "apparmor", "AppArmor", "security-high-symbolic",
+         "The confinement profiles this machine is enforcing, and which of "
+         "them are enforcing rather than complaining. Needs your password to "
+         "read, so it runs when you ask"),
     ]),
     ("Updates", [
         (BootRecoveryTab, "boot", "Boot & Recovery", "media-removable-symbolic",
@@ -137,6 +155,21 @@ SECTIONS = [
         (BackupTab, "backup", "Backup", "drive-multidisk-symbolic", "Snapshots and backups"),
         (MaintenanceTab, "maintenance", "Maintenance", "applications-utilities-symbolic",
          "Disk space, diagnostic report, reset"),
+        (ModulesTab, "modules", "Kernel Modules", "application-x-addon-symbolic",
+         "Every module the kernel has loaded, what depends on what, and each "
+         "parameter's current value. Read from the kernel's own files"),
+        (FirmwareTab, "firmware", "Firmware", "computer-symbolic",
+         "The hardware firmware this machine carries, and what the Linux "
+         "Vendor Firmware Service is offering it. Reports; installs nothing"),
+        (GraphicsTab, "graphics", "Graphics", "video-display-symbolic",
+         "The graphics hardware, the kernel driver bound to each, and the "
+         "render nodes this session can actually draw through"),
+        (AudioTab, "audio", "Audio", "audio-speakers-symbolic",
+         "The PipeWire graph itself - devices, outputs, inputs and which "
+         "program is connected - rather than a volume slider"),
+        (JournalTab, "journal", "Journal", "text-x-generic-symbolic",
+         "Every boot the journal still holds, and a search across the entries. "
+         "Reads logs; never rotates or vacuums them"),
     ]),
     ("Apps", [
         (ChronoaTab, "chronoa", "Chronoa", "audio-input-microphone-symbolic", "The Chronoa assistant"),

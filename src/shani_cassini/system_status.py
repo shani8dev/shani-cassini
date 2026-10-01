@@ -223,6 +223,220 @@ def health_report(mode: str, done) -> None:
     run_json(["pkexec", HEALTH, f"--{mode}", "--json"], done)
 
 
+def run_streaming_stdin(argv: list[str], data: str, on_line: Callable[[str], None],
+                        on_exit: Callable[[int], None]) -> Optional[Gio.Subprocess]:
+    """run_streaming(), and the tool may also read a secret from stdin.
+
+    For the tools that prompt: `shani-fleet-agent enroll` does
+    `read -rp "Enrollment token: "`, and there is no flag to answer it
+    non-interactively. The prompt is written to stderr and the answer is read
+    from stdin, so writing the answer to the child's stdin and leaving stderr
+    merged into the same stream is what makes a GUI drive it.
+
+    **The secret is written to stdin and never to argv**, which is the whole
+    reason this exists rather than a shell string: argv is world-readable in
+    /proc for the life of the process, and a token in it would be in every
+    process listing on the machine for as long as the call ran.
+
+    `data` is written once and stdin closed, so a tool that prompts twice gets
+    EOF on the second rather than hanging forever on a pipe nobody will write
+    to. Verified against a stand-in with the real agent's exact prompt shape.
+    """
+    try:
+        proc = Gio.Subprocess.new(argv, Gio.SubprocessFlags.STDIN_PIPE
+                                  | Gio.SubprocessFlags.STDOUT_PIPE
+                                  | Gio.SubprocessFlags.STDERR_MERGE)
+    except GLib.Error as e:
+        on_line(e.message)
+        GLib.idle_add(on_exit, 127)
+        return None
+
+    stdin = proc.get_stdin_pipe()
+
+    def wrote(p, res):
+        # A closed pipe is not a failure worth surfacing: the tool read what it
+        # wanted and exited, which is the success case this exists to produce.
+        try:
+            p.close(None)
+        except GLib.Error:
+            pass
+
+    # write_all_async, not write_all: the synchronous form returns
+    # (ok, bytes_written) rather than taking a callback, and a blocking write on
+    # the GTK main thread is the exact defect the rest of this module exists to
+    # prevent.
+    stdin.write_all_async(data.encode("utf-8"), GLib.PRIORITY_DEFAULT, None,
+                          lambda _p, res: wrote(_p, res))
+
+    stream = Gio.DataInputStream.new(proc.get_stdout_pipe())
+
+    def read_next():
+        stream.read_line_async(GLib.PRIORITY_DEFAULT, None, got_line)
+
+    def got_line(s, res):
+        try:
+            line, _len = s.read_line_finish_utf8(res)
+        except GLib.Error:
+            line = None
+        if line is None:
+            proc.wait_async(None, lambda p, r: (p.wait_finish(r), on_exit(p.get_exit_status())))
+            return
+        on_line(_strip_ansi(line))
+        read_next()
+
+    read_next()
+    return proc
+
+
+# --- reading shani-deploy's own progress output -----------------------------
+#
+# The deploy script writes everything to stderr and marks its phases with
+# log_section, which is three lines: a rule, the phase name indented two spaces,
+# and the rule again. Its own log lines are "<date> [TAG] message", with TAG one
+# of INFO/DEBUG/SUCCESS/WARNING/ERROR/FATAL.
+#
+# So the phase a line belongs to is recoverable from the text alone, with no
+# second channel and nothing added to the deploy script. That matters because
+# the alternative - asking the script to emit machine-readable progress - is a
+# change to a safety-critical file whose whole contract is that this app reads
+# it. Parsed from a reproduction of the real log_section/log_* output, not from
+# the shape it ought to have.
+
+# The rule is 42 '=' in the script; matched by shape rather than by count so a
+# cosmetic change to its width does not turn every phase into ordinary text.
+_PHASE_LINE = re.compile(r"^={10,}\s*$")
+
+# The phases a full deploy runs through, in the order main() calls them. Used to
+# draw a progress bar, so a phase the script has not reached yet is drawn as
+# pending rather than as failed. Anything not in this list is still shown as
+# text: an unrecognised phase is a phase this list is stale about, and hiding
+# it would be worse than drawing it at the end.
+DEPLOY_PHASES: Final[tuple[str, ...]] = (
+    "Boot Validation",
+    "Update Check",
+    "Disk Space Check",
+    "Download Phase",
+    "Deployment Phase",
+    "Finalization",
+)
+
+# The rollback path logs its own single phase.
+ROLLBACK_PHASES: Final[tuple[str, ...]] = ("System Rollback",)
+
+_LEVELS: Final = {
+    "INFO": "info",
+    "DEBUG": "info",
+    "STEP": "info",
+    "SUCCESS": "success",
+    "WARNING": "warning",
+    "ERROR": "error",
+    "FATAL": "error",
+}
+
+_LOG_LINE = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \[(\w+)\] (.*)$")
+
+# aria2c/wget/curl write a progress bar with \r, not \n, so it arrives as one
+# long "line" whose last frame is the current one. Anything with a \r in it is a
+# progress redraw rather than a message, and the page shows the last frame
+# instead of appending hundreds of near-identical rows.
+_PROGRESS = re.compile(r"(\d+(?:\.\d+)?)%")
+
+# How long a coalesced "line" is allowed to grow before it is treated as junk
+# rather than parsed. 64KiB is far past any real bar frame plus the log line
+# that follows it, and far under a runaway.
+_MAX_LINE = 65536
+
+
+_LOG_PREFIX = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \[[A-Z]+\] ")
+
+
+def strip_log_prefix(text: str) -> str:
+    """The message from one of the deploy script's own log lines.
+
+    The prefix is "<date> [TAG] ", and a column of near-identical timestamps in
+    a log pane is noise: the pane is a record of one run, so the date on every
+    line tells the reader nothing they cannot see from the first one. Anything
+    without the prefix is returned unchanged - a line the script did not write
+    must not be edited to look as though it had.
+    """
+    return _LOG_PREFIX.sub("", text).strip()
+
+
+def parse_deploy_line(line: str) -> list[tuple[str, str, str]]:
+    """Everything in one line of shani-deploy output, as (kind, level, message).
+
+    A **list**, because one "line" is not one event and that is not a detail:
+    a downloader redraws its bar with `\\r` and no `\\n`, so a pipe hands over
+    `#####  12% ...\\r#####  88% ...` followed by whatever the script logged next,
+    all as a single string ending at the *next* newline. An earlier version of
+    this function returned one event per line and classified that whole string
+    as a progress redraw - which silently discarded every log line the tool
+    printed during the download, and a missing log line reads as a tool that
+    said nothing rather than as a reader that threw it away.
+
+    kind is "phase", "level", "progress" or "text"; `level` is "" for the kinds
+    that carry none. A pure function of its argument on purpose: the phase table
+    and the format are both read from the deploy script's own source, and a test
+    can hold this against a reproduction of that output without spawning
+    anything.
+    """
+    if len(line) > _MAX_LINE:
+        return []
+    events: list[tuple[str, str, str]] = []
+    if "\r" in line:
+        # Split on the redraw character and treat each frame as its own line.
+        # The last frame is the current one; every earlier one is superseded.
+        frames = line.split("\r")
+        for frame in frames[:-1]:
+            events.extend(_one_event(frame))
+        # The final frame is kept only when it is not the empty tail a trailing
+        # \r leaves behind - `read_line_utf8` hands the \n-stripped remainder,
+        # and a bar that ends on \r must not add a blank line to the log.
+        last = frames[-1].strip()
+        if last:
+            events.extend(_one_event(last))
+        return events
+    return _one_event(line)
+
+
+def _one_event(line: str) -> list[tuple[str, str, str]]:
+    stripped = line.strip()
+    if not stripped or _PHASE_LINE.match(stripped):
+        return []
+    match = _LOG_LINE.match(stripped)
+    if match:
+        tag, message = match.group(1), match.group(2).strip()
+        return [("level", _LEVELS.get(tag, "info"), message)]
+    # A phase name is the only line of the script's output that is a bare name
+    # between two rules. Matched against the table rather than by its
+    # indentation, because these lines reach the page already trimmed by the
+    # reader and an indent-sensitive check would quietly stop matching - which
+    # would leave the stage bar frozen on the first phase while the log looked
+    # perfectly normal. An unrecognised bare name is text, and the page handles
+    # that case explicitly rather than this function guessing.
+    if stripped in DEPLOY_PHASES or stripped in ROLLBACK_PHASES:
+        return [("phase", "", stripped)]
+    if "\r" not in line:
+        # A bar frame that reached _one_event without \r separators, e.g. the
+        # last frame of a coalesced run. Recognised by the percentage so it does
+        # not become a row of hashes in the log.
+        matches = _PROGRESS.findall(stripped)
+        if matches and stripped.lstrip("#").strip().startswith(matches[-1]):
+            return [("progress", "", f"{matches[-1]}%")]
+    return [("text", "", stripped)]
+
+
+def deploy_backups(done) -> None:
+    """shani-deploy --list-backups --json: {"ok", "slots": [{slot, version, backups}]}.
+
+    Root: it mounts the subvolume table to read each slot's own
+    /etc/shani-version, which is the only place a slot's version exists. That is
+    also why a version cannot be folded into --status, and why this is a pkexec
+    call the user must click for - never one that runs because a page opened.
+    """
+    run_json(["pkexec", DEPLOY, "--list-backups", "--json"], done)
+
+
 def run_streaming(argv: list[str], on_line: Callable[[str], None],
                   on_exit: Callable[[int], None]) -> Optional[Gio.Subprocess]:
     """Run argv (merged stdout+stderr), feeding each line to on_line; then
@@ -2213,3 +2427,973 @@ def storage_info(done: Callable[[dict], None]) -> None:
         done(result)
 
     run_json(["shani-health", "--storage-info", "--json"], finish)
+
+
+# ---------------------------------------------------------------------------
+# Interfaces with no GUI in GNOME Control Center or KDE System Settings
+# ---------------------------------------------------------------------------
+#
+# Every reader here is read-only, collects through run_json/run_text/run_status,
+# and reports what the tool said rather than interpreting it. They are grouped
+# here because they were added for one reason - the desktop settings apps have
+# no panel for them - and that reason is worth keeping in one place: if one of
+# them ever grows a GUI elsewhere, this is the list to revisit.
+#
+# Two of these tools live in /usr/sbin (aa-status, fwupdmgr) and one in
+# /usr/bin, and the sbin trap has already cost this repo a page once.
+
+
+# --- cron: the schedules systemd timers do not cover ----------------------
+#
+# `crontab -l` **exits 1 with empty stdout** when the account has no crontab,
+# and says "no crontab for <user>" on stderr. run_text's contract is that empty
+# stdout is a failure, which is right for a tool that should have said
+# something - so this cannot use it naively, and the distinction is load-bearing:
+# "you have no crontab" is an answer, and reporting it as an error would put a
+# failure on the page of every account that has never scheduled anything.
+
+CRON_SPOOL: Final = "/var/spool/cron/crontabs"
+CRON_D: Final = "/etc/cron.d"
+CRON_USER_D: Final = "/etc/cron.daily"
+
+
+def cron_service_status(done: Callable[[Optional[bool], str], None]) -> None:
+    """Is the cron daemon actually running?
+
+    `systemctl is-active cron` answers 0 and prints "active", and exits
+    **non-zero while inactive** while still printing the word - which is exactly
+    the case run_text was built to keep (see its note on systemd-analyze time).
+    So the answer is the text, and the exit status is not consulted.
+    """
+    def on_text(text: Optional[str], err: str) -> None:
+        if text is None:
+            done(None, err)
+            return
+        state = text.strip().lower()
+        if state in ("active", "activating"):
+            done(True, "")
+        elif state in ("inactive", "failed", "deactivating"):
+            done(False, "")
+        else:
+            done(None, f"cron is {state}" if state else err)
+    run_text(["systemctl", "is-active", "cron"], on_text)
+
+
+def user_crontab(done: Callable[[list[str], str], None]) -> None:
+    """The calling user's own crontab lines, or [] when they have none.
+
+    The *calling user's*, not root's and not a scan of the spool: reading other
+    people's schedules is not this app's business, and `crontab -l` with no `-u`
+    already means "mine". An account with no crontab is handed [] with no error,
+    because it is the single most common state on a desktop and the page must
+    say "you have no scheduled jobs" rather than failing.
+    """
+    def on_text(text: Optional[str], err: str) -> None:
+        if text is None:
+            # run_text's "said nothing" wording is cron's own
+            # "no crontab for <user>", and that is a real answer, not a failure.
+            lowered = err.lower()
+            if "no crontab for" in lowered:
+                done([], "")
+                return
+            done([], err)
+            return
+        done([line for line in text.splitlines() if line.strip()], "")
+
+    argv = ["crontab", "-l"]
+    run_text(argv, on_text)
+
+
+def _cron_entries_in(directory: str) -> list[dict]:
+    """Scheduled files in one cron directory, read directly rather than by tool.
+
+    /etc/cron.d and /etc/cron.{hourly,daily,weekly,monthly} are plain files
+    with no query tool for them - `crontab -l` only ever means the calling
+    user's table. So the directory is read, which is also the only way to see
+    the *system* schedules at all.
+
+    A file that cannot be read is skipped rather than reported: /etc/cron.d
+    holds files for packages that may have been removed, and one unreadable
+    entry must not blank a list of a dozen working ones.
+    """
+    out: list[dict] = []
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        return out
+    for name in names:
+        # cron ignores dotfiles and names containing anything but the safe set;
+        # listing one as a schedule would be reporting a file cron will not run.
+        if name.startswith(".") or not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+            continue
+        path = os.path.join(directory, name)
+        if os.path.isdir(path):
+            continue
+        try:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                body = handle.read()
+        except OSError:
+            continue
+        if not body.strip():
+            continue
+        # The file name is the schedule for the run-part directories, and the
+        # contents are the job for /etc/cron.d. Both are shown, neither guessed.
+        # A /etc/cron.d file *carries* its own schedule on each line, while a
+        # run-part file is named for the **directory it is in**: /etc/cron.daily/
+        # logrotate runs daily, and the schedule is "daily", not "logrotate".
+        # The first version put the file's own name in the schedule column,
+        # which rendered every run-part job as a job named after itself.
+        schedule = "" if directory.endswith("cron.d") else \
+            os.path.basename(directory).removeprefix("cron.")
+        out.append({"name": name, "schedule": schedule,
+                    "command": _cron_first_job(body), "body": body.strip()})
+    return out
+
+
+# A crontab's leading `NAME=value` lines set the job's environment; they are not
+# the job. A real /etc/cron.d/anacron is nine lines of SHELL=/PATH=/START= and
+# only then a schedule, so taking the first non-comment line names the *shell*
+# as the command on every correctly-written file.
+_CRON_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\s*=")
+
+
+def _cron_first_job(body: str) -> str:
+    """The first line of a crontab file that is actually a scheduled job."""
+    for line in body.splitlines():
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        if _CRON_ASSIGN.match(text):
+            continue
+        return text
+    return ""
+
+
+def cron_system_jobs(done: Callable[[list[dict], str], None]) -> None:
+    """Every system-wide schedule: /etc/cron.d and the four run-part dirs.
+
+    Read from the filesystem, so this one answers with no tool and no privilege,
+    and unlike the other readers on this page it cannot fail - an absent
+    directory is a machine with no system crontabs, not an error.
+    """
+    entries: list[dict] = []
+    entries += _cron_entries_in(CRON_D)
+    for suffix in ("hourly", "daily", "weekly", "monthly"):
+        entries += _cron_entries_in(f"{CRON_USER_D}.{suffix}")
+    done(entries, "")
+
+
+# --- AppArmor: profiles, which no settings app lists ------------------------
+#
+# aa-status **needs root** and exits 4 without it, having printed the module
+# line but no profiles. So this is a pkexec read: a password prompt behind a
+# button, never on page load, for the same reason --list-backups is.
+#
+# aa-status has no JSON. Its output is a human summary, so the parser below
+# takes the counts from the tool's own wording rather than inventing structure.
+
+def apparmor_status(done: Callable[[dict, str], None]) -> None:
+    """Loaded / enforce / complain profile counts, as aa-status counts them.
+
+    Shape like storage_info(): a dict that is always safe to render. `ok=False`
+    means the *read* did not happen, which is different from "the module is not
+    enabled" - and the page has to keep those apart, because a user whose
+    AppArmor is genuinely off and a user whose prompt was dismissed both
+    otherwise end up looking like the same machine.
+    """
+    empty = {"ok": False, "problem": "", "module_loaded": False,
+             "loaded": 0, "enforce": 0, "complain": 0, "unconfined": None}
+
+    # done(payload, error) - the two-argument shape every reader in this module
+    # uses. aa-status prints prose, so there is no JSON to parse with run_json
+    # and the raw text is handed to a parser instead.
+    run_text(["pkexec", tool_path_or_self("aa-status")],
+             lambda text, err: done(_parse_aa_status(text, err), err))
+
+
+def _parse_aa_status(text: Optional[str], error: str) -> dict:
+    """aa-status's own summary text into the counts it prints.
+
+    Verbatim shape from AppArmor 3.x/4.x:
+
+        apparmor module is loaded.
+        42 profiles are loaded.
+        40 profiles are in enforce mode.
+         2 profiles are in complain mode.
+         0 unconfined processes.
+
+    Parsed by number-in-sentence rather than by fixed line order, because the
+    lines differ between apparmor-parser versions (3.x prints "N unconfined
+    processes", 4.x prints the process table instead) and a line-index parser
+    silently reports 0 for a machine with profiles. **A count that is absent is
+    left at 0 and `unconfined` at None** - never inferred from another line.
+    """
+    out = {"ok": False, "problem": "", "module_loaded": False,
+           "loaded": 0, "enforce": 0, "complain": 0, "unconfined": None}
+    if not text:
+        # Without root aa-status prints only the module line and exits 4. That
+        # is a refusal to answer, not a machine with no profiles.
+        out["problem"] = error or "aa-status did not answer"
+        return out
+    body = _strip_ansi(text)
+    out["module_loaded"] = "apparmor module is loaded" in body
+    # Checked BEFORE the counts, because this is the shape aa-status prints
+    # without root: the module line and then a refusal, with no numbers at all.
+    # Falling through to the count parser reported that as "the module is loaded
+    # but printed no profile counts this build understands" - which blames this
+    # parser for the tool having refused, and sends the reader to look for a
+    # format bug that is not there.
+    #
+    # The wording matched is aa-status's own: "You do not have enough privilege
+    # to read the profile set." An earlier version tested for "not enough
+    # privilege", which **is not a substring of that sentence** - it says "do
+    # not have enough" - so the refusal went undetected while the test that
+    # claimed to cover it passed. The needle is the tool's exact phrase.
+    if "do not have enough privilege" in body.lower():
+        out["problem"] = "aa-status needs an administrator password"
+        return out
+    patterns = (
+        ("loaded", r"(\d+)\s+profiles?\s+are\s+loaded"),
+        ("enforce", r"(\d+)\s+profiles?\s+are\s+in\s+enforce"),
+        ("complain", r"(\d+)\s+profiles?\s+are\s+in\s+complain"),
+    )
+    found = False
+    for key, pattern in patterns:
+        match = re.search(pattern, body)
+        if match:
+            out[key] = int(match.group(1))
+            found = True
+    unconf = re.search(r"(\d+)\s+unconfined", body)
+    if unconf:
+        out["unconfined"] = int(unconf.group(1))
+        found = True
+    if not found:
+        # The module is loaded but no profile line matched: this is a parser
+        # that is out of date, and saying so beats reporting zero profiles on a
+        # machine that has them.
+        out["problem"] = ("aa-status said the module is loaded but printed no "
+                          "profile counts this build understands")
+        return out
+    out["ok"] = True
+    return out
+
+
+def apparmor_profiles(done: Callable[[dict, str], None]) -> None:
+    """The profile names aa-status lists, in enforce/complain order.
+
+    Two lines out of the same tool's output, parsed from the same read as the
+    counts rather than by a second privileged call: `aa-status` prints
+
+        Profiles:
+          Enforcement mode
+            /usr/bin/foo// null
+          complain mode
+            /usr/bin/bar// null
+
+    and re-running it to get this would put a second password prompt behind the
+    same button.
+    """
+    def on_text(text: Optional[str], err: str) -> None:
+        done(_parse_aa_profiles(text, err), err)
+
+    run_text(["pkexec", tool_path_or_self("aa-status")], on_text)
+
+
+def _parse_aa_profiles(text: Optional[str], error: str) -> dict:
+    """The profile names out of aa-status's Profiles block."""
+    out: dict = {"ok": False, "problem": "", "enforce": [], "complain": []}
+    if not text:
+        out["problem"] = error or "aa-status did not answer"
+        return out
+    section = None
+    saw_header = False
+    for raw in _strip_ansi(text).splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        if lowered == "profiles:":
+            saw_header = True
+            continue
+        if not saw_header:
+            continue
+        if "enforcement mode" in lowered:
+            section = "enforce"
+            continue
+        if "complain mode" in lowered:
+            section = "complain"
+            continue
+        # "Processes are in enforce mode" also *contains* "enforcement mode"-
+        # shaped wording, and a process line under it looks exactly like a
+        # profile line - so without this the confined-process table would be
+        # read as a list of complain-mode profiles, naming the user's browser
+        # and every other running program as a profile. It ends the block.
+        if lowered.startswith("processes are in"):
+            section = None
+            continue
+        if section is None:
+            continue
+        # A profile line is "<name>// <flags>"; the name is what identifies it.
+        name = line.split("//", 1)[0].strip()
+        if not name:
+            continue
+        out[section].append(name)
+    if not (out["enforce"] or out["complain"]):
+        out["problem"] = ("aa-status printed no profile names - either none are "
+                          "loaded, or this build cannot read them")
+        return out
+    out["ok"] = True
+    return out
+
+
+# --- firmware: fwupd, which no settings app drives --------------------------
+#
+# fwupdmgr has --json on every subcommand, so this is the one reader on the
+# page that gets real structured data rather than prose. get-devices is
+# **unprivileged** and works without a password (verified); get-updates needs
+# the daemon and is also unprivileged but slower, because it asks LVFS.
+
+def firmware_devices(done: Callable[[dict, str], None]) -> None:
+    """Every device fwupd knows about, and which of them can be updated.
+
+    `fwupdmgr get-devices --json` is unprivileged on 1.9.x and answers without
+    a polkit prompt - verified on fwupd 2.0.20 - so this runs on page load
+    rather than behind a button. A machine with no fwupd daemon gets the tool's
+    own error through the problem channel, which is the honest answer.
+    """
+    def finish(payload, error: str) -> None:
+        if not isinstance(payload, dict):
+            done({"ok": False, "problem": error or "fwupdmgr did not answer",
+                  "devices": []}, error)
+            return
+        devices = payload.get("Devices")
+        if not isinstance(devices, list):
+            done({"ok": False, "problem": "fwupdmgr get-devices --json has no "
+                                          "Devices list", "devices": []}, error)
+            return
+        rows = []
+        for device in devices:
+            if not isinstance(device, dict):
+                continue
+            flags = device.get("Flags")
+            flags = flags if isinstance(flags, list) else []
+            rows.append({
+                "name": str(device.get("Name") or ""),
+                "vendor": str(device.get("Vendor") or ""),
+                "version": str(device.get("Version") or ""),
+                "version_format": str(device.get("VersionFormat") or ""),
+                "plugin": str(device.get("Plugin") or ""),
+                "updatable": "updatable" in [str(f).lower() for f in flags],
+                "internal": "internal" in [str(f).lower() for f in flags],
+                "guid": (device.get("Guid") or [""])[0]
+                        if isinstance(device.get("Guid"), list) else "",
+            })
+        done({"ok": True, "problem": "", "devices": rows}, "")
+
+    run_json([tool_path_or_self("fwupdmgr"), "get-devices", "--json"], finish)
+
+
+def firmware_updates(done: Callable[[dict, str], None]) -> None:
+    """Firmware updates LVFS is offering, as a list.
+
+    Ask, never volunteer: `get-updates` reaches out to lvfs.lvfs.org, so it is
+    behind a button like the backup listing. The empty list is a real answer and
+    renders as "nothing to install" - which is what a current machine should
+    say, and is not the same as the read having failed.
+    """
+    def finish(payload, error: str) -> None:
+        if not isinstance(payload, dict):
+            done({"ok": False, "problem": error or "fwupdmgr did not answer",
+                  "updates": []}, error)
+            return
+        updates = payload.get("Devices")
+        if not isinstance(updates, list):
+            done({"ok": False, "problem": "fwupdmgr get-updates --json has no "
+                                          "Devices list", "updates": []}, error)
+            return
+        rows = []
+        for device in updates:
+            if not isinstance(device, dict):
+                continue
+            flags = device.get("Flags")
+            rows.append({
+                "name": str(device.get("Name") or ""),
+                "version": str(device.get("Version") or ""),
+                "release": str(device.get("Release") or ""),
+                "description": str(device.get("Description") or ""),
+                "severity": str(device.get("Severity") or ""),
+                "flags": [str(f) for f in flags] if isinstance(flags, list) else [],
+            })
+        done({"ok": True, "problem": "", "updates": rows}, "")
+
+    run_json([tool_path_or_self("fwupdmgr"), "get-updates", "--json"], finish)
+
+
+# --- kernel modules ---------------------------------------------------------
+#
+# Read from /proc/modules and /sys/module rather than by running lsmod: the
+# file is the kernel's own list, it is what `lsmod` prints, and reading it
+# means this reader needs no tool and no privilege at all.
+
+PROC_MODULES: Final = "/proc/modules"
+
+# A module constant rather than a hardcoded path, for the same reason
+# PROC_MODULES and HWMON_ROOT are: a test cannot create entries in the real
+# /sys, so the root has to be reachable without patching os.path.join globally.
+SYS_MODULE_ROOT: Final = "/sys/module"
+
+
+def _module_rows() -> list[dict]:
+    """Loaded modules out of /proc/modules, with their parameters and deps.
+
+    A real line, verbatim from a 5.x /proc/modules:
+
+        rdma_cm 155648 1 rpcrdma, Live 0x0000000000000000
+
+    which is **space-separated, not tab-separated** - the format is
+    `<name> <size> <refcount> <deps> <state> <address>`, with the dependency
+    list comma-separated and a bare `-` when there are none. The first version
+    of this parser split on tabs, on the strength of a docstring that said so,
+    and returned **zero rows on a machine with 242 modules loaded** - which is
+    the "invent nothing, report nothing" failure wearing the costume of a
+    careful parser.
+
+    Split on whitespace with maxsplit, keeping the trailing state and address
+    together, because the dependency field is the only one that can contain a
+    comma and the state is not worth separating from its address.
+    """
+    rows: list[dict] = []
+    try:
+        with open(PROC_MODULES, encoding="utf-8", errors="replace") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return rows
+    for line in lines:
+        if not line.strip():
+            continue
+        parts = line.split(None, 4)
+        if len(parts) < 3:
+            continue
+        name = parts[0].strip()
+        if not name:
+            continue
+        deps_field = parts[3] if len(parts) > 3 else "-"
+        deps = [d.strip() for d in deps_field.split(",") if d.strip() not in ("", "-")]
+        rows.append({"name": name,
+                     "size": int(parts[1]) if parts[1].strip().isdigit() else 0,
+                     "count": parts[2].strip(),
+                     "deps": deps,
+                     "state": parts[4].split()[0] if len(parts) > 4
+                              and parts[4].split() else "",
+                     "params": module_parameters(name)})
+    return rows
+
+
+def module_parameters(name: str) -> list[dict]:
+    """A module's runtime parameters, read from /sys/module/<name>/parameters.
+
+    Each file there is one parameter and its current value, which is the
+    authoritative source: `modinfo -p` reports what the module *accepts*, not
+    what it is *set to*, and a page that showed only that would answer a
+    different question from the one a user with a loaded module is asking.
+    """
+    base = os.path.join(SYS_MODULE_ROOT, name, "parameters")
+    out: list[dict] = []
+    try:
+        names = sorted(os.listdir(base))
+    except OSError:
+        return out
+    for param in names:
+        try:
+            with open(os.path.join(base, param), encoding="utf-8",
+                      errors="replace") as handle:
+                value = handle.read().strip()
+        except OSError:
+            continue
+        out.append({"name": param, "value": value})
+    return out
+
+
+def loaded_modules(done: Callable[[list[dict], str], None]) -> None:
+    """Every loaded kernel module, with its size, dependencies and parameters.
+
+    Synchronous on purpose, like the /proc and /sys reads in hardware_card(): it
+    is two directory walks answering in microseconds, and moving them to a
+    thread to read a file the kernel keeps in memory would buy nothing.
+    """
+    rows = _module_rows()
+    done(rows, "" if rows else "no modules are listed in /proc/modules")
+
+
+# --- journal: a boot log, which is not a settings panel ---------------------
+
+def journal_boots(done: Callable[[list[dict], str], None]) -> None:
+    """done(rows, error) - the same two-argument shape every reader here uses.
+
+    Worth stating because three of these readers were first written with a
+    one-argument callback, and a page calling `def done(payload)` then failed
+    with a TypeError **inside a GTK callback** - which GLib swallows into a page
+    that silently renders nothing. Same failure shape as the fleet page's
+    runner-signature mismatch.
+    """
+    def on_text(text: Optional[str], err: str) -> None:
+        done([] if text is None else _parse_list_boots(text, err), "")
+
+    run_text(["journalctl", "--list-boots", "--no-pager"], on_text)
+
+
+def _parse_list_boots(text: str, error: str = "") -> list[dict]:
+    """`journalctl --list-boots` into rows, split on **two** spaces.
+
+    The table is fixed-width with columns separated by runs of spaces:
+
+        IDX BOOT ID                          FIRST ENTRY                 LAST ENTRY
+         -8 aa4a6a128a734f44b94d97a81607acf9 Sun 2026-09-20 14:21:35 IST Mon 2026-09-21 03:43:07 IST
+
+    so the boot id's column is padded and every date is *one* field containing
+    spaces of its own. Splitting on single whitespace gives seven columns where
+    the table has four, and "Sun" lands where the date should be - which is what
+    the first version did, and why it reported a boot's first entry as the word
+    "Sun". The IDX and BOOT-ID boundaries are taken from the header's own column
+    offsets, so the parse follows the header rather than counting on.
+    """
+    lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return []
+    header = lines[0]
+    try:
+        id_idx = header.index("IDX")
+        boot_idx = header.index("BOOT ID")
+        first_idx = header.index("FIRST ENTRY")
+        last_idx = header.index("LAST ENTRY")
+    except ValueError:
+        return []
+    rows: list[dict] = []
+
+    def field(line: str, start: int, end: int) -> str:
+        if start >= len(line):
+            return ""
+        return line[start:min(end, len(line))].strip()
+
+    for line in lines[1:]:
+        rows.append({
+            "idx": field(line, id_idx, boot_idx),
+            "id": field(line, boot_idx, first_idx),
+            "first": field(line, first_idx, last_idx),
+            "last": field(line, last_idx, len(line)),
+        })
+    return rows
+
+
+def journal_disk_usage(done: Callable[[Optional[str], str], None]) -> None:
+    """How much disk the journal occupies, in the tool's own words.
+
+    `--disk-usage` prints "Archived and active journals take up 2.2G in the file
+    system." The figure is taken as the tool wrote it rather than reparsed into
+    bytes: a page that showed "2.2 GB" and a tool that said "2.2G" would be
+    making two claims about the same number, and only one of them is the
+    tool's.
+    """
+    def on_text(text: Optional[str], err: str) -> None:
+        if text is None:
+            done(None, err)
+            return
+        match = re.search(r"take up\s+(.+?)\s+in the file system",
+                          _strip_ansi(text))
+        size = ""
+        if match:
+            size = match.group(1)
+        elif text.strip():
+            size = text.strip().splitlines()[0]
+        done(size or None, "")
+
+    run_text(["journalctl", "--disk-usage"], on_text)
+
+
+# --- audio: the PipeWire graph, beyond a volume slider ----------------------
+#
+# wpctl status is a tree with three levels and box-drawing characters. Parsed
+# by the tree's own structure rather than by splitting on " │" or "├─", because
+# the box characters are what a *human* reads and they are what a renderer has
+# to strip - so the name, the [id] and the flags are read off each line
+# independently and the hierarchy is not guessed at.
+
+WP_NODE = re.compile(
+    r"(?P<marker>\*)?\s*"
+    r"(?P<id>\d+)\.\s*"
+    r"(?P<name>.*?)"
+    r"(?:\s*\[(?P<flags>[^\]]*)\])?\s*$")
+
+WP_SECTIONS = ("Audio", "Video", "Camera")
+
+# A node line begins with an optional `*` then the id. Used to tell a node from
+# a heading, because a *name* may end in a colon.
+WP_ID = re.compile(r"^\*?\s*\d+\.")
+
+# The heading line that starts "Clients:". A client under it names a *program*;
+# a node under Devices/Sinks/Sources names hardware or an endpoint. There is no
+# other way to tell them apart from the line itself, so the heading decides -
+# and this is the reason getting it wrong turns the user's running programs into
+# audio hardware.
+WP_CLIENTS = "clients"
+
+# The sub-headings wpctl prints, taken from real `wpctl status` output on 1.0.5:
+# "Devices:", "Sinks:", "Sink endpoints:", "Sources:", "Source endpoints:",
+# "Clients:", and under Video the same minus the endpoint pair. Named with
+# underscores because a row title cannot contain a colon without libadwaita
+# trying to parse the rest of it as markup.
+WP_HEADINGS: Final = {
+    "devices": "devices",
+    "sinks": "sinks",
+    "sink endpoints": "sink_endpoints",
+    "sources": "sources",
+    "source endpoints": "source_endpoints",
+    "clients": "clients",
+    "streams": "streams",
+}
+
+# wpctl draws the tree with box characters, so every line is prefixed with some
+# of "│ ├ └ ─". Stripped before anything is parsed: a heading line arrives as
+# " ├─ Devices:" and, left unstripped, matched no heading at all - which is
+# exactly what happened on the first version of this parser, and why it reported
+# zero sinks on a machine with four.
+#
+# **`*` is deliberately NOT in this class.** The star marks a section's default
+# node and appears *after* the tree characters (" │  *   54. Speaker"), so
+# stripping it here ate the one marker that says which output is in use - and
+# every node came back with `default: False`, on a machine whose default sink
+# was plainly marked.
+_WP_TREE = re.compile(r"^[\s│├└─]+")
+
+
+def pipewire_status(done: Callable[[dict, str], None]) -> None:
+    """Sinks, sources and stream clients, as the graph reports them.
+
+    Shape always safe to render: `ok=False` means the read did not happen, which
+    is different from a session with no audio hardware - and the two must not
+    look alike, because "your machine has no sound card" is a hardware claim
+    and "wpctl did not answer" is not.
+    """
+    empty = {"ok": False, "problem": "", "server": "", "default": {},
+             "default_sink": "", "default_source": "", "default_camera": "",
+             "devices": [], "sinks": [], "sink_endpoints": [], "sources": [],
+             "source_endpoints": [], "streams": [], "clients": [],
+             "programs": [], "playing": [],
+             "audio_devices": [], "audio_sinks": [], "audio_sources": [],
+             "video_devices": [], "video_sinks": [], "video_sources": [],
+             "camera_devices": [], "camera_sinks": [], "camera_sources": []}
+
+    def on_text(text: Optional[str], err: str) -> None:
+        if text is None:
+            done({**empty, "problem": err or "wpctl did not answer"}, "")
+            return
+        done(_parse_wpctl(text), "")
+
+    run_text([tool_path_or_self("wpctl"), "status"], on_text)
+
+
+def _parse_wpctl(text: str) -> dict:
+    """`wpctl status` into the graph's own sections.
+
+    The default device is the one line in each section marked `*`, and it is
+    recorded as an id rather than as a name: the name is already in the list, and
+    copying it would let the two disagree.
+    """
+    out: dict = {"ok": True, "problem": "", "server": "", "default": {}}
+    for key in WP_HEADINGS.values():
+        out[key] = []
+    section = ""
+    heading = ""
+    for raw in text.splitlines():
+        if not raw.strip():
+            continue
+        stripped = _WP_TREE.sub("", raw).strip()
+        if not stripped:
+            continue
+        if stripped.startswith("PipeWire "):
+            match = re.search(r"PipeWire\s+'([^']+)'", stripped)
+            out["server"] = match.group(1) if match else stripped
+            continue
+        # A top-level section: "Audio", "Video", "Camera".
+        if stripped in WP_SECTIONS:
+            section = stripped.lower()
+            heading = ""
+            continue
+        # A sub-heading, e.g. "Devices:" or "Sink endpoints:".
+        #
+        # The `WP_ID` guard is **defensive and deliberately untested**: no line
+        # in real `wpctl status` output has been found that needs it. A node
+        # always carries `[flags]`, so its line ends in `]`; a heading ends in
+        # `:`. A test for it was written and then deleted — it used
+        # `Speaker: Built-in`, whose colon is *internal*, so the branch was never
+        # reached and the test passed against a parser with the guard removed.
+        # That is the untestable-defence shape this repo has removed twice
+        # before (the fleet page's row-identity check, and an earlier version of
+        # this file's own AST gate). It stays because it is correct and costs
+        # nothing, but it is recorded here so nobody reads it as covered.
+        if stripped.endswith(":") and not WP_ID.match(stripped):
+            name = stripped[:-1].strip().lower()
+            if name in WP_HEADINGS:
+                heading = WP_HEADINGS[name]
+                continue
+            # An unrecognised heading ends the current one rather than leaving
+            # its nodes filed under the last heading that *was* recognised -
+            # which is how a "Video Streams:" list would show up as audio sinks.
+            heading = ""
+            continue
+        match = WP_NODE.match(stripped)
+        if not match:
+            continue
+        entry = {"id": match.group("id"),
+                 "name": match.group("name").strip(),
+                 "flags": (match.group("flags") or "").strip(),
+                 "section": section, "heading": heading,
+                 "default": bool(match.group("marker"))}
+        if match.group("marker") == "*":
+            # Keyed on **section and heading together**, because wpctl reuses the
+            # heading names across sections: Video has its own "Sources:", so a
+            # default keyed on the heading alone made the camera overwrite the
+            # microphone and the page reported the wrong default input - with
+            # *two* starred sources on screen and one of them silently winning.
+            # The keys are what a row needs to ask "is this the default?".
+            out["default"][f"{section}/{heading}" if heading else section] = \
+                match.group("id")
+        if heading:
+            out[heading].append(entry)
+    # A user asking "what is playing" means the running programs, which wpctl
+    # files under Clients. They are surfaced under `programs` as well so the page
+    # does not have to know wpctl's own heading for them.
+    out["programs"] = out["clients"]
+    out["playing"] = out["streams"] + out["clients"]
+    # The per-section lists the page actually renders. wpctl reuses the heading
+    # names across sections, so `sources` alone holds the audio microphone *and*
+    # the camera, and a page reading that would put a webcam in the microphone
+    # list. Resolved here rather than in the page so there is one place that
+    # knows the heading names.
+    for heading in ("sinks", "sources", "devices"):
+        for sect in ("audio", "video", "camera"):
+            out[f"{sect}_{heading}"] = [e for e in out[heading]
+                                        if e["section"] == sect]
+    out["default_sink"] = out["default"].get("audio/sinks", "")
+    out["default_source"] = out["default"].get("audio/sources", "")
+    out["default_camera"] = out["default"].get("video/sources", "")
+    return out
+
+
+# --- graphics: the driver matrix, per machine ------------------------------
+#
+# Built from the same `lspci -k` the Drivers page already runs, so it is one
+# tool answering two questions and not a second source for PCI devices. The
+# point of the page is the *userspace* half - Mesa, Vulkan, the render node -
+# which no lspci line carries.
+
+GPU_CLASSES = ("VGA compatible controller", "3D controller", "Display controller")
+
+
+def gpu_report(done: Callable[[dict, str], None]) -> None:
+    """Graphics hardware, the driver bound to it, and the render node.
+
+    `ls /dev/dri/render*` is read directly: it is the kernel's own list of
+    render nodes, needs no tool, and is the only way to answer "is there a GPU
+    this session could actually use" rather than "is there a GPU".
+    """
+    render_nodes: list[str] = []
+    try:
+        render_nodes = sorted(
+            os.path.join("/dev/dri", name) for name in os.listdir("/dev/dri")
+            if name.startswith("render"))
+    except OSError:
+        render_nodes = []
+
+    def on_text(text: Optional[str], err: str) -> None:
+        if text is None:
+            done({"ok": False, "problem": err or "lspci did not answer",
+                  "gpus": [], "render_nodes": render_nodes}, err)
+            return
+        gpus = _parse_gpus(text)
+        done({"ok": True, "problem": "", "gpus": gpus,
+              "render_nodes": render_nodes}, "")
+
+    run_text(["lspci", "-k"], on_text)
+
+
+def _parse_gpus(text: str) -> list[dict]:
+    """The graphics devices out of `lspci -k`, with the driver bound to each.
+
+    An entry is a slot line mentioning one of the GPU classes, plus the
+    indented `Kernel driver in use:` that follows it. **A slot with no driver
+    line is reported with an empty driver**, not omitted: an unbound GPU is the
+    single most useful thing this page can say, and dropping it would leave a
+    machine with no working graphics looking like a machine with none.
+    """
+    gpus: list[dict] = []
+    current: dict | None = None
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+        if not line.startswith((" ", "\t")):
+            head = line.split(":", 1)
+            is_gpu = any(c in head[-1] for c in GPU_CLASSES)
+            current = {"slot": head[0].strip(), "device": head[-1].strip(),
+                       "driver": "", "modules": ""} if is_gpu and \
+                len(head) > 1 else None
+            if current:
+                gpus.append(current)
+            continue
+        if current is None:
+            continue
+        body = line.strip()
+        if body.startswith("Kernel driver in use:"):
+            current["driver"] = body.split(":", 1)[1].strip()
+        elif body.startswith("Kernel modules:") or body.startswith("Kernel driver:"):
+            current["modules"] = body.split(":", 1)[1].strip()
+    return gpus
+
+
+# --- hybrid graphics: what PRIME would let a user choose ---------------------
+#
+# `switcheroo-control` is a **system** D-Bus service (net.hadess.
+# SwitcherooControl) and is **read-only**. Verified by introspecting the live
+# service on this machine: the only interface is `org.freedesktop.DBus.Properties`
+# plus Introspect/Ping, and GetAll returns exactly
+#
+#     HasDualGpu : bool
+#     NumGPUs   : uint32
+#     GPUs      : [ { Name: str, Environment: [str], Default: bool } ]
+#
+# There is **no ListDevices, no SetDefault, no ListProperties** - those answer
+# UnknownMethod / InvalidArgs. `switcherooctl list` is a pretty-printer over
+# those same properties, which is why this page reads them directly instead of
+# parsing its output.
+#
+# So a page can *report* which GPU is the default and what DRI_PRIME value
+# addresses each one, and it can *launch* something on a chosen GPU - which is
+# per-application and needs no privilege. It **cannot switch the session
+# default**, because the service that would answer that does not implement it.
+# Any control that appeared to would be a second manager built on a guess.
+#
+# The Environment array is flat and positional - ["DRI_PRIME",
+# "pci-0000_00_02_0"] - because it is meant to be handed to `env`. It is
+# paired up here, and a trailing odd element is dropped rather than paired with
+# an empty value, which would produce a variable set to "" and an application
+# that silently renders on the wrong GPU.
+
+SWITCHEROO_BUS: Final = "net.hadess.SwitcherooControl"
+SWITCHEROO_PATH: Final = "/net/hadess/SwitcherooControl"
+
+
+def switcheroo_gpus(done: Callable[[dict, str], None]) -> None:
+    """Every GPU switcheroo-control knows about, and which one is default.
+
+    Always safe to render: `ok=False` means the service did not answer, which is
+    different from a machine with one GPU - a container with no system bus says
+    so, and a desktop with a single integrated GPU says `HasDualGpu: false` with
+    its one entry listed. Those two must not look alike, because the first is an
+    environment and the second is a machine.
+    """
+    empty = {"ok": False, "problem": "", "has_dual": False, "num": 0,
+             "gpus": [], "default": ""}
+
+    def failed(message: str) -> None:
+        done({**empty, "problem": message}, "")
+
+    try:
+        proxy = Gio.DBusProxy.new_for_bus_sync(
+            Gio.BusType.SYSTEM, Gio.DBusProxyFlags.DO_NOT_LOAD_PROPERTIES,
+            None, SWITCHEROO_BUS, SWITCHEROO_PATH, SWITCHEROO_BUS, None)
+    except GLib.Error as e:
+        # No system bus at all: a container or a chroot, not a broken machine.
+        failed(e.message)
+        return
+
+    def got(source, res):
+        try:
+            reply = source.call_finish(res)
+        except GLib.Error as e:
+            failed(e.message)
+            return
+        try:
+            payload = reply.unpack()[0]
+        except (IndexError, TypeError, AttributeError) as exc:
+            failed(f"switcheroo-control sent something unreadable: {exc}")
+            return
+        done(_parse_switcheroo(payload), "")
+
+    proxy.call("org.freedesktop.DBus.Properties.GetAll",
+               GLib.Variant("(s)", (SWITCHEROO_BUS,)),
+               Gio.DBusCallFlags.NONE, 5000, None, got)
+
+
+def _parse_switcheroo(payload: dict) -> dict:
+    """`Properties.GetAll` output into the shape the page renders.
+
+    Defaults are recorded as the GPU's **index** within the returned list, which
+    is what `switcherooctl launch -g N` takes. Recording the name instead would
+    be a second way of naming a GPU that could drift from the tool's own
+    numbering, and the tool's numbering is the one a user pastes into a command.
+    """
+    out = {"ok": True, "problem": "", "has_dual": False, "num": 0,
+           "gpus": [], "default": ""}
+    out["has_dual"] = payload.get("HasDualGpu") is True
+    num = payload.get("NumGPUs")
+    out["num"] = int(num) if isinstance(num, int) else 0
+    raw = payload.get("GPUs")
+    if not isinstance(raw, list):
+        # The service answered but with no GPU list. That is not "no GPUs" - it
+        # is a service this build cannot read, and saying zero would be a claim
+        # about the machine.
+        out["ok"] = False
+        out["problem"] = ("switcheroo-control sent no GPU list this build "
+                          "understands")
+        return out
+    default_index = -1
+    for index, gpu in enumerate(raw):
+        if not isinstance(gpu, dict):
+            continue
+        env = gpu.get("Environment")
+        pairs: dict[str, str] = {}
+        if isinstance(env, list):
+            # Flat and positional, meant for `env`: NAME, value, NAME, value.
+            # A trailing odd element is dropped rather than paired with "".
+            for i in range(0, len(env) - 1, 2):
+                key, value = str(env[i]), str(env[i + 1])
+                if key:
+                    pairs[key] = value
+        is_default = gpu.get("Default") is True
+        if is_default:
+            default_index = index
+        out["gpus"].append({
+            "index": index,
+            "name": str(gpu.get("Name") or ""),
+            "environment": pairs,
+            "default": is_default,
+        })
+    # The service's own count is trusted over len(gpus) only where it agrees; a
+    # disagreement is reported rather than silently corrected either way.
+    if out["num"] and out["num"] != len(out["gpus"]):
+        logger.warning("switcheroo-control says NumGPUs=%s but sent %d entries",
+                       out["num"], len(out["gpus"]))
+    out["default"] = str(default_index) if default_index >= 0 else ""
+    return out
+
+
+def switcheroo_launch_command(gpu_index: str, command: str) -> list[str]:
+    """The argv that runs `command` on `gpu_index`, for the page to show.
+
+    A *displayed* command rather than a spawned one. Running somebody else's
+    application is not a system-settings action, and `switcherooctl launch` would
+    also block this page's main loop for as long as that application lives.
+    The user copies it, or the desktop's own right-click integration does the
+    same thing without a terminal.
+
+    Uses `switcherooctl` rather than a bare `DRI_PRIME=` prefix because the
+    switcheroo form also sets the NVIDIA variables (`__NV_PRIME_RENDER_OFFLOAD`,
+    `__GLX_VENDOR_LIBRARY_NAME`) when the chosen GPU is an NVIDIA one, which is
+    what makes GLX applications work rather than only Vulkan ones.
+    """
+    argv = ["switcherooctl", "launch"]
+    if str(gpu_index).strip():
+        argv.append(f"-g={gpu_index}")
+    argv.append(command)
+    return argv

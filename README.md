@@ -4,17 +4,20 @@ A native GUI client for managing Shanios systems, built with GTK 4 and Python.
 
 ## Features
 
-32 pages, grouped in the sidebar. Every page reads a real interface — the tool
+39 pages, grouped in the sidebar. Every page reads a real interface — the tool
 that owns the setting, or the kernel/systemd — and nothing is invented. Several
 pages are deliberately **read-only reporters** rather than second managers, so
 there is only ever one place a setting is edited; those say so, and name the
 command to use when you want to change something.
 
 **System** — Overview, Health, Storage, Disk Health, System Info, Drivers,
-Btrfs, Persistence, Timers & Background Tasks.
+Btrfs, Persistence, Timers & Background Tasks, Cron.
 Health and storage run `shani-health`; the disk page is what `smartctl` reports
 per disk. Btrfs shows subvolumes, space and scrub status. Timers lists the
-systemd timers *and* your crontab. System Info is the one page assembled from
+systemd timers *and* your crontab; **Cron** covers the other half — the
+machine's own `/etc/cron.d` and `cron.{hourly,daily,weekly,monthly}` jobs,
+which `crontab -l` cannot show you, plus whether the cron daemon is even
+running. System Info is the one page assembled from
 three modules — hardware, storage, sensors and the kernel read together — and it
 additionally reports the active power profile with the drivers behind it
 (`powerprofilesctl get` + `list`) and every temperature and fan the kernel
@@ -22,8 +25,9 @@ exposes through `/sys/class/hwmon`. Both are read-only: switching a profile is a
 state change that belongs to GNOME Settings, so the row reports and Cassini does
 not offer the switch.
 
-**Security** — Secure Boot, Encryption, LSM, Audit, Firewall, Fingerprint,
-Smartcard, Security Keys, SSH Keys, Kerberos, Directory, Access, Remote Access.
+**Security** — Secure Boot, Encryption, LSM, AppArmor, Audit, Firewall,
+Fingerprint, Smartcard, Security Keys, SSH Keys, Kerberos, Directory, Access,
+Remote Access.
 Fingerprint talks to `fprintd` over D-Bus, the same interface `pam_fprintd`
 uses, so what the page says is what a login attempt would see. Encryption covers
 LUKS and TPM2 enrolment, and carries one read-only advisory: systemd 261 measures
@@ -37,18 +41,39 @@ searches the kernel audit trail behind an explicit click, because reading it
 costs an administrator password. Access edits a sudoers drop-in, Remote Access an
 `sshd_config.d` drop-in — both through a
 helper that proposes the change and lets the owning tool validate it, rather
-than keeping a second parser that can drift.
+than keeping a second parser that can drift. **AppArmor** lists the confinement
+profiles this machine is enforcing and which of them are enforcing rather than
+complaining — `aa-status` needs root, so it runs when you press the button rather
+than when the page opens.
 
 **Updates** — Boot & Recovery, Updates & Rollback. Blue/green A/B slots, per-slot
 versions, and the markers a boot left behind. Rollback is `shani-deploy`'s job,
 invoked with authorisation rather than performed by this app.
 
 **Manage** — Services, Containers, Virtualization, Sharing, Backup,
-Maintenance. Containers and Virtualization are inventories and start nothing:
+Maintenance, Kernel Modules, Firmware, Graphics, Audio, Journal. Containers and
+Virtualization are inventories and start nothing:
 `podman` and `distrobox list` under Containers, and `virsh`, `lxc-ls -f`,
 `lxc list` (the LXD client — a different binary that happens to share the name)
 and `machinectl list` under Virtualization. Maintenance covers cleanup, optimise,
 log export and reset.
+
+The last four fill gaps neither desktop settings app has a panel for. **Kernel
+Modules** reads `/proc/modules` and `/sys/module` directly — every loaded
+module, its dependencies, and each parameter's *current* value. **Firmware**
+reports what `fwupd` knows about the hardware and what the Linux Vendor Firmware
+Service is offering; it installs nothing, and says so, because a firmware update
+changes TPM2 PCR 0 and will invalidate a disk set up for automatic unlock.
+**Graphics** pairs the `lspci -k` driver binding with the kernel's render nodes,
+so a card that is present but unbound is visible, and reports hybrid-graphics
+state from `switcheroo-control`: how many GPUs, which is the default, and the
+`DRI_PRIME` value that addresses each. It does not switch the session default —
+that service exposes no call that does — and names `switcherooctl launch -g N`
+instead. **Audio** reports the PipeWire
+graph — devices, outputs, inputs, which is the default, and which programs are
+connected — rather than a volume slider, and deliberately sets none.
+**Journal** lists every boot still on disk and searches the entries, reading a
+bounded window rather than letting `journalctl --grep` scan the whole journal.
 
 **Apps** — Chronoa, Fleet. The
 [Chronoa](https://github.com/shani8dev/shani-chronoa) tab binds the assistant's
@@ -165,10 +190,17 @@ the sidebar is generated from; a `REQUIRES` entry there swaps a page for an "is
 not installed" status page when its app is missing, rather than failing. The
 narrow layout (below 640sp) is an `Adw.Breakpoint` set up in `main_window.py`.
 
-- **Pages** (`tabs/`): one module per section, 32 in total, in the five groups
+- **Pages** (`tabs/`): one module per section, 39 in total, in the five groups
   listed under Features above. Three of those modules — `system.py`, `device.py`
   and `kernel.py` — are composed into the single **System Info** page rather than
-  registered on their own, so `tabs/` holds 34 modules for 32 sections.
+  registered on their own, so `tabs/` holds 41 modules for 39 sections.
+- **Every reader hands its callback `done(value, error)`** — one shape for the
+  whole of `system_status.py`, enforced by an AST gate in
+  `tests/test_new_gap_pages.py`. A reader that calls `done(payload)` while its
+  page expects two arguments raises a `TypeError` *inside a GTK callback*, and
+  GLib swallows that into a page that renders nothing at all with no error
+  logged; that has happened four times in this repo, which is what the gate is
+  for.
 - **`system_status.py`**: the shared reader for every real interface the pages
   report on. It runs tools through `Gio.Subprocess` and returns plain data, so a
   page renders what it is handed instead of shelling out itself — which is also

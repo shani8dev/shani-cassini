@@ -45,7 +45,7 @@ for an "is not installed" status page when its app is missing.
 
 | Page | Interface |
 |---|---|
-| Overview, Updates & Rollback | `shani-deploy --status [--check] --json` (no root); `pkexec shani-deploy` / `--rollback` / `--set-channel X`, streamed, wrapped in `systemd-inhibit` (sleep, not shutdown) |
+| Overview, Updates & Rollback | `shani-deploy --status [--check] --json` (no root); `pkexec shani-deploy` / `--rollback` / `--set-channel X`, streamed, wrapped in `systemd-inhibit` (sleep, not shutdown). The page also **parses the deploy script's own stderr** for a stage bar: `parse_deploy_line()` recovers the phase from `log_section`'s three-line rule and the severity from `<date> [TAG]`, so no change to a safety-critical script is needed. Returns a **list** per line because a downloader's `\r` redraw coalesces its own frames *and the next log line* into one string — one event per line silently dropped every message from the download phase. A percentage may only move the bar during `Download Phase`, and a phase not in `DEPLOY_PHASES` gets no fraction at all: both would be numbers Cassini invented. A finished deploy awaiting a reboot is shown as its own group **above** everything (gated on `reboot_needed` alone, never on `candidate_boot`, which the deploy script's own comment forbids inferring), and `current_slot` gets its own "Will start next from" row because it is not `booted_slot` after a failed boot |
 | Health | `pkexec shani-health --verify --json` / `--security --json` (JSON even on exit 1); `journalctl -b -p 3 -o json`; `coredumpctl list --json` |
 | Storage | `shani-health --storage-info --json` (read-only, unprivileged) via `storage_info()`; `--verify --json` uses a *different* builder and is not interchangeable with it |
 | Disk Health | `smartctl --scan` (unprivileged) to enumerate disks, then `pkexec smartctl -j -H` and `-j -a` per disk. SMART READ DATA is privileged, so the per-disk reads are. **Reads only — it cannot start a self-test, which writes to the disk.** `smartctl` lives in `/usr/sbin`, so it is resolved like `fprintd`'s tools, not with a bare `which()` |
@@ -55,7 +55,7 @@ for an "is not installed" status page when its app is missing.
 | Maintenance | Gio filesystem info; `pkexec shani-deploy --cleanup/--optimize`, `shani-health --export-logs ~`, `shani-reset --yes [--home] [--keep-downloads]` (typed confirmation) |
 | Chronoa | its GSettings (`org.shani.chronoa`, bound with `Gio.Settings.bind`), Ollama `/api/tags` |
 | Backup | `org.shani.backup` GSettings; opens Shani Backup |
-| Fleet | `pkexec shani-fleet-agent status` |
+| Fleet | `pkexec shani-fleet-agent status`, plus `enroll` / `uninstall --yes` behind explicit clicks — the enrollment token goes on the child's **stdin** (never argv: `/proc/<pid>/cmdline` is world-readable), and `--yes` is used rather than a typed `y` because `cmd_uninstall` `return 0`s on a declined prompt, so a typed answer cannot be distinguished from a completed removal by exit status. A second `enroll` needs `--force`, which is the **agent's** refusal; the page decides its wording from the `enrolled:` line in `status`. The button says a token comes from the organisation because the server generates the device key — a device cannot self-enroll without one |
 | Fingerprint | `fprintd` over D-Bus (`net.reactivated.fprint`), the same interface `pam_fprintd` talks to, so what the page says is what a login attempt would see; no `pkexec` and no helper, because `99-shani.rules` already grants `fprintd.device.enroll`/`.delete` as `AUTH_SELF` and Cassini ships no policy of its own. **The picker offers only fingers fprintd has not stored** — offering an enrolled one is a re-scan nobody asked for — and all ten enrolled is reported as such rather than leaving an empty picker. **The reader row says "N readers attached" when `GetDevices` returns more than one**; the page still drives the first, which is where a scan lands. Enrolment shows a `Gtk.ProgressBar` over `num-enroll-stages` (absent, so no bar rather than an invented total) alongside the live `finger-present`/`finger-needed` properties, and a 120s deadline releases a reader a walked-away-from user left claimed. `pam_fprintd`'s own PAM wiring renders in **"Where a Fingerprint Works"**, not in "Other ways to sign in": `hardware_auth_status()` has always reported it, but `PAGE_BACKED_MODULES` dropped only the modules that have pages of their own, so it landed beside face/iris/voice on the page that *is* the fingerprint page |
 | Smartcard | `pcsc_scan -n` (unprivileged); reads and edits `/etc/pam_pkcs11/subject_mapping` via `config_io` — `pam_pkcs11_state()`, `subject_mappings()`, `set_mapping()`, `remove_mapping()` |
 | Security Keys | reads/edits `~/.config/Yubico/pam_u2f.conf` (per-user, **never** privileged) and `/etc/security/pam_yubico.conf`; `u2f_config()`, `pam_yubico_config()`, `set_config_value()` |
@@ -75,6 +75,13 @@ for an "is not installed" status page when its app is missing.
 | Boot & Recovery | `shani-deploy --status --json` and `shani-deploy --list-backups --json` (B1: per-slot versions, and an unmount that refuses to touch subvolid 5). The markers a boot left behind are read from the deploy state, never inferred from a slot's mere existence. Rollback is `pkexec shani-deploy --rollback`, which this app does not perform itself |
 | Containers | `podman` and `distrobox list`, as an **inventory** — what exists right now. It is not a second container manager and starts, stops and removes nothing |
 | Virtualization | `virsh`, `lxc list` (the LXD client), `lxc-ls -f` (the lxc package's own listing tool) and `machinectl list`. Four different tools for four different runtimes, kept under their own headings because they share nothing. **Read-only** |
+| Cron | The system crontabs, read straight from `/etc/cron.d` and `/etc/cron.{hourly,daily,weekly,monthly}` — **no tool can list these**, and `crontab -l` means only the calling user's table. `systemctl is-active cron` for whether the daemon is running at all: a crontab on disk does nothing until it is. **`crontab -l` exits 1 with empty stdout and says `no crontab for <user>`**, so "you have no jobs" is an answer and must not be reported as a failure — the shared `run_text` reader's default is wrong for this tool, and the reader overrides it. A file's leading `NAME=value` lines are environment, not a job: a correct `/etc/cron.d/anacron` is nine lines of `SHELL=`/`PATH=`/`START_` before any schedule exists |
+| AppArmor | `aa-status` through `pkexec`, which **needs root** — without it the tool prints the module line, then `You do not have enough privilege to read the profile set.`, and exits 4. So this is a button, never a page load, for the reason `--list-backups` is. AppArmor ships no JSON, so both the counts and the profile names are parsed from one run's prose. **The profile list ends at `Processes are in …`**: the lines under it look like profile lines and are running programs, and reading them as profiles named the user's browser and sshd as security profiles. A refusal, or wording this build does not recognise, is reported as a refusal — never as zero profiles |
+| Kernel Modules | `/proc/modules` and `/sys/module`, read directly — the kernel's own list, which is what `lsmod` prints, so no tool and no password. **It is space-separated, not tab-separated**: `<name> <size> <refcount> <deps> <state> <address>`, with a bare `-` for no dependencies. Parameters come from `/sys/module/<name>/parameters` because that is the *current* value; `modinfo -p` would show what a module accepts |
+| Firmware | `fwupdmgr get-devices --json` (unprivileged, verified on 2.0.20) on page load, and `get-updates --json` behind a button because it asks lvfs.lvfs.org. A device with no `updatable` flag is shown as carried-not-updatable rather than hidden: `Internal SPI Controller`, `KEK CA` and `Option ROM UEFI CA` all appear on a current machine. An empty update list is the **good** answer and is drawn differently from the read having failed. It installs nothing, and says why: **a firmware update changes TPM2 PCR 0 and invalidates a TPM2-sealed LUKS key** — the same consequence the Encryption page warns about |
+| Graphics | `lspci -k`, the same command the Drivers page already runs, plus `/dev/dri/render*` read directly. One tool, two questions, and no second opinion about how many cards the machine has. A GPU with **no driver bound is shown with an empty driver**, not omitted: that is what "my second monitor is black" looks like from underneath. The render nodes are the part only the kernel knows — a card with none is present and unusable, which is not the same as absent. Plus **hybrid graphics** from `switcheroo-control`, see below |
+| Audio | `wpctl status`. The `*` default marker sits **after** the tree characters, so the tree-stripper must not eat it, and every default is keyed on **section *and* heading together** because wpctl reuses `Sources:` under Video — keyed on the heading alone, the camera overwrote the microphone. Clients are listed apart from devices, because nothing in the line itself says which it is. Sets no volumes: GNOME and Plasma own that |
+| Journal | `journalctl --list-boots` (a **fixed-width** table whose dates contain spaces, so it is split by column offsets taken from the header, never by whitespace), `--disk-usage`, and a search that reads the **last 500 entries** at the chosen priority and matches in Python. `--grep` is deliberately unused: it filters after scanning, measured at over 60 s for zero matches on a 2.2 GiB journal against 0.25 s for the bounded read. Boot list is newest-first with the current boot ticked by default, because journalctl prints oldest first. Reads only — `--vacuum-*` and `--rotate` are named in the page |
 
 The three sign-in pages share a contract worth knowing before editing them:
 
@@ -131,6 +138,52 @@ correct." It is verified by observing the actual behavior of the real
 thing in the real environment — built, served, deployed, signed, running.
 If you haven't seen it work (or fail) for real, it isn't verified.
 
+## Test harness: shani-testbed (use it - and improve it, never invent around it)
+
+The ecosystem's real test harness is the sibling repo **`../shani-testbed`**
+(read its `README.md` and `AGENTS.md`). It installs a real ShaniOS image with
+the real installer, boots its slots (`systemd-nspawn`, and UEFI + TPM VMs),
+runs real deploys and rollbacks, drives GUI apps through their accessibility
+tree, and checks web pages in a real headless browser. Every command runs from
+`../shani-install-media`, which provides the builder container:
+
+```bash
+cd ../shani-install-media
+./run_in_container.sh build.sh test <command> ...   # `... test help` lists them all
+```
+
+**If the check you need does not exist, add it to shani-testbed - do not invent
+around it.** A one-off script in this repo, a scratchpad, or a heredoc piped
+into a container is lost when the session ends, and the next agent re-derives
+it. Extend the harness instead (see "Extend the harness" in its AGENTS.md):
+
+- an in-slot check -> `shani-testbed/slot-tests/<name>.sh` (`# slot-test-mode: boot`,
+  prints `RESULT <name> PASS|FAIL|SKIP` lines), run by `slot-test <slot> <name>`;
+- a GUI interaction or assertion -> an `app` action in `lib/app.sh`, or a walk
+  through a real app as `app-scripts/<app>.actions`;
+- a web check -> `lib/web_client.py`;
+- a new way to boot, drive or observe -> a command or option in `lib/`;
+
+each with a negative control (a check that cannot fail is not a check), its
+self-test (`tests/run-app-actions.sh`, `tests/run-web-client.sh`, ...), and the
+`usage` + README updated. One harness run at a time: disk-touching commands
+take `disk/.testbed.lock` and a second run is refused. Plain nspawn boots see
+the image's whole `/var`; real boots have an empty tmpfs `/var`
+(`systemd.volatile=state`) - use `slot-test --volatile`, or a real UEFI boot
+with `iso-install --boot-only --console-exec=CMD`, for anything touching `/var`.
+
+### What to run for this repo
+
+- `app <slot> --run=shani-cassini --strict --script=/opt/shani-testbed/app-scripts/cassini-tour.actions`
+  opens every page like a user, and requires each to render a change and pass
+  the accessibility lint, then a clean log and 40 seeded random clicks.
+  Extend that script when a page is added.
+- `slot-test <slot> repo-pytest` runs this repo's suite on the image's
+  GTK/libadwaita (CI's Ubuntu 1.5 is not ShaniOS's Arch 1.9).
+- `update-check` exercises the `shani-deploy --status --check --json`
+  contract the Updates page reads.
+- An unpublished build: `--local-pkg=<file>`.
+
 ## Required verification for a change
 
 1. `python3 -m pytest tests/ -q` — with PyGObject/GTK4/libadwaita (a venv
@@ -153,7 +206,222 @@ If you haven't seen it work (or fail) for real, it isn't verified.
    compatibility shim for the old `update` test-command name: it is
    read-only and does not install, switch slots, or run the agent.
 
-## Known issues (current state, 2026-09-29)
+## Known issues (current state, 2026-10-01)
+
+- **Hybrid graphics is reported, never switched — because `switcheroo-control`
+  implements no call that changes anything.** Added to the Graphics page
+  2026-10-01, and the limit is the load-bearing part. Live introspection of
+  `net.hadess.SwitcherooControl` on this machine shows the **only** interface
+  is `org.freedesktop.DBus.Properties` plus Introspect/Ping, and `GetAll`
+  returns exactly `HasDualGpu`, `NumGPUs` and `GPUs[{Name, Environment,
+  Default}]`. `ListDevices`, `SetDefault` and `ListProperties` all answer
+  `UnknownMethod`/`InvalidArgs` — **`switcherooctl list` is a pretty-printer
+  over those same properties**, which is why the reader calls D-Bus directly
+  instead of parsing its output. So the page can say which GPU is the default
+  and which `DRI_PRIME` value addresses each, and can *launch* something on a
+  chosen GPU; it **cannot switch the session default**, and any control that
+  appeared to would be a second manager built on a guess. The page names the
+  commands instead: `switcherooctl launch -g N APP` (which also sets the
+  NVIDIA variables, so GLX works and not just Vulkan), `prime-run` from
+  `nvidia-prime`, and the desktops' own right-click integration.
+  The `Environment` array is **flat and positional** — `["DRI_PRIME",
+  "pci-0000_00_02_0"]` — because it is meant to be handed to `env`; it is
+  paired by position, and a **trailing odd element is dropped rather than paired
+  with `""`**, which would set the variable empty and silently render on the
+  wrong GPU. The default is recorded as the GPU's **index**, which is what
+  `launch -g` takes; recording the name would be a second numbering that could
+  drift from the tool's.
+  `shani-pkgbuilds/shani-video` gained `switcheroo-control` to `depends`
+  (`pkgrel` 6 → 7, **built for real**: `shani-video-1.2-7-any.pkg.tar.zst`, and
+  its `.PKGINFO` confirms `depend = switcheroo-control`). It is there rather
+  than only in `shani-desktop-*` because it is a graphics fact, not a shell
+  feature, and the page would otherwise have no answer on a core install.
+  Four negative controls run and all four fail the suite.
+  **Unverified on a hybrid machine.** This host has one GPU
+  (`HasDualGpu: false`, `NumGPUs: 1`, Intel TigerLake-LP), so the two-GPU
+  branch is covered by the dual payload NVIDIA's own Optimus guide shows, never
+  by a real dGPU. `lspci`'s `Kernel modules: i915, xe` line here is also worth
+  noting: the driver *in use* is `i915` while `xe` is listed as a module, and
+  the page reports both without reconciling them.
+  A container has no system bus at all, which renders as
+  `Could not connect: No such file or directory` — correct, and the reason the
+  refusal is worded as an environment fact rather than a machine one.
+
+- **Seven pages exist because neither GNOME Control Center nor KDE System
+  Settings has a panel for their subject — all read-only reporters.** Added
+  2026-10-01 from a survey of the 100 `shani-docs` pages under
+  `networking/ security/ software/ system/ updates/`. The gap was measured, not
+  assumed: GNOME's 28 panels were enumerated from the **installed package**
+  (`dpkg -L gnome-control-center`), and the apps that are genuinely its
+  neighbours — `gnome-disks`, `seahorse`, `gnome-logs` — are separate programs
+  with no settings panel, so Cassini is not a duplicate of them.
+  `| Cron |` reads `/etc/cron.d` and the four run-part directories directly,
+  because **`crontab -l` means the calling user's table only** and no tool lists
+  the system crontabs. `| AppArmor |` is `aa-status`, which **needs root**, so
+  it runs from a button and never on page load. `| Firmware |` is `fwupdmgr`,
+  whose `get-devices --json` is unprivileged (verified on 2.0.20) while
+  `get-updates` asks lvfs and is therefore behind a button. `| Kernel Modules |`
+  reads `/proc/modules` and `/sys/module` — no tool, no password.
+  `| Graphics |` reuses the `lspci -k` the Drivers page already runs, so one
+  tool answers two questions rather than two tools disagreeing.
+  `| Audio |` is `wpctl status`. `| Journal |` is `journalctl`, and its search
+  reads a **bounded window** and matches in Python: `journalctl --grep` filters
+  *after* scanning, measured at **over 60 s for zero matches** against a 2.2 GiB
+  journal versus **0.25 s** to read the last 500 entries — a settings panel that
+  appears to hang on an empty result is indistinguishable from a broken one.
+  Nothing on any of the seven changes anything, and each ends with a group naming
+  the commands instead. Suite **1107 passed** (was 1028).
+  **Each parser was wrong once, in a way a plausible fixture would have hidden,
+  and each is now pinned by the tool's real output** — the seven are listed in
+  `tests/test_new_gap_pages.py`'s docstring. The two that cost the most:
+  `/proc/modules` is **space**-separated (splitting it on tabs, as a docstring
+  confidently said, returned **zero rows on a machine with 242 modules
+  loaded**), and `wpctl status` draws a tree whose `*` default marker sits
+  *after* the box characters, so a tree-stripper that ate it reported every node
+  as "not the default".
+  **Two defects were found only by rendering, not by the suite**, which is the
+  argument for rendering: a `del error` standing in for "read below" made
+  cron's *third* branch raise `UnboundLocalError` inside a GTK callback, so the
+  page said "Reading…" for ever — and no test drove that branch. And an AppArmor
+  branch read `payload["problem"]` on a payload without the key, which is a
+  `KeyError` in a callback and therefore a blank page.
+  **One test was deleted rather than kept.** A guard against a wpctl *heading*
+  being mistaken for a node was "covered" by a fixture using
+  `Speaker: Built-in` — whose colon is internal, so the branch was never
+  reached and the test passed with the guard removed. The guard is still there
+  and correct; its docstring now records that no real `wpctl` line has been found
+  that needs it, so nobody reads it as covered. That is the untestable-defence
+  shape this repo has removed twice before.
+  **Not verified:** none of the seven has run against a real Shanios slot. Every
+  interface was checked on a live Ubuntu 24.04 host (real `/proc/modules`,
+  real `wpctl`, real `journalctl`, real `fwupdmgr` answering on this machine)
+  and rendered in Arch under GTK 4.22.5 / libadwaita 1.9.4 under `xvfb-run`
+  in-container, which is also where the two rendering-only defects came from.
+  On a real image the **populated** branches differ: `/etc/cron.d` there holds
+  Shanios' own jobs, hwmon and `fwupd` see image hardware, and `aa-status` will
+  need the privileged path this host cannot reach.
+
+- **Every reader in `system_status.py` hands its callback `done(value, error)`
+  — now enforced, because a mismatch blanks a page with no error logged.** Four
+  times now a reader has called `done(payload)` while its page expected
+  `done(payload, error)` (or the reverse), and the result is a `TypeError`
+  *inside a GTK callback*, which GLib swallows: the page renders nothing, no
+  exception reaches the log, and the suite is green because the reader is
+  exercised without the page. `test_every_reader_hands_its_callback_a_payload_and_an_error`
+  reads each reader's **body** for its `done(` calls and fails on any arity
+  other than 2 — reading the body rather than the annotation, because an
+  annotation can say one thing while the body does another. It also reports a
+  reader that never calls `done` at all, which has the same symptom. Two
+  related failures in the same family, both found and fixed here:
+  `tabs/apparmor.py` indexed `payload["problem"]` on a payload that had no such
+  key, and `tests/test_tabs.py`'s fprintd gate sliced the module text from
+  `FPRINTD_CLI` onward — a stand-in for "the fprintd readers" that quietly
+  became "the rest of the module", so it failed and blamed fprintd when an
+  unrelated reader (`aa-status`, which needs root) legitimately used `pkexec`.
+  That gate now walks the AST for fprintd functions by name, and **asserts it
+  found some** — its control renames them away and the gate fails rather than
+  passing while inspecting nothing.
+
+- **Updates & Rollback never showed two of its own rows, and no test noticed —
+  the `sysg.add(r)` was outside the loop that built them.** Found 2026-10-01 by
+  writing a test that read the page's row *titles* back out of the widget tree
+  and compared them against the page's intent. `for row in (version, slot,
+  prev): row.set_subtitle_selectable(True)` was followed by a **dedented**
+  `sysg.add(r)`, so only the last row was ever added to the group: **Version
+  and Running from were constructed, stored on `self`, and updated on every
+  single status read — and never displayed.** The code reads correctly, the row
+  objects exist, `get_subtitle()` returns the right string; there was simply no
+  parent. Note the tell, which is the same one as every other vacuous test in
+  this repo's history: an *absence*. Nothing warned, nothing crashed, and the
+  page rendered a plausible-looking "This System" group with two of its four
+  rows missing. `test_every_row_this_page_builds_is_actually_shown` now asserts
+  the title list, and its control (moving the `add()` back out of the loop)
+  fails it. **When adding a row here, assert its title appears in the tree** —
+  a test that reaches a row by attribute is reading the object, not the screen.
+
+- **Fleet can enroll and unenroll a device, and the token never reaches argv —
+  added 2026-10-01, and this reverses a "read-only by policy" decision.** The
+  page previously only ran `shani-fleet-agent status` and told the user
+  "enrollment is done by the organisation". That is true of the *token* — an
+  organisation issues those, and only its administrator can issue one — and was
+  being read as "this machine cannot be enrolled from its own desktop". The
+  agent has supported `enroll` since it existed; nothing in Cassini drove it.
+  `run_streaming_stdin()` (new, in `system_status.py`) writes the token to the
+  child's **stdin** and leaves stderr merged into the same stream, which is what
+  drives bash's `read -rp "Enrollment token: "` from a GUI. **argv is
+  world-readable in `/proc/<pid>/cmdline` for the life of the process**, so a
+  token in it would be in every process listing on the machine; that is the
+  whole reason this is a pipe rather than a shell string.
+  `cmd_uninstall` is driven with **`--yes`, not a typed `y`**: it answers its
+  own `Continue? [y/N]` and then `return 0`s for anything else, so a declined
+  confirmation exits **0**, identical to a completed removal — the exit status
+  could not tell the user whether their device was removed. The page asks
+  first, in its own dialog, and the flag skips the tool's.
+  A second `enroll` is refused by the **agent**, not the page: `cmd_enroll`
+  dies without `--force` because re-enrolling orphans the record the server
+  holds. The page reads the real `enrolled:` line out of `status` and offers
+  "Enroll again…" only when it says the machine *is* enrolled, so the page's
+  wording and the tool's refusal cannot drift apart.
+  Suite **1072 passed** (was 1028; 44 new). **Nine negative controls run, and
+  four of them did not fail the suite on the first attempt** — each of those
+  four exposed a real weakness, recorded at the test that now covers it:
+  the token-in-argv control failed the *stdin* assertion first, so the leak
+  check had never actually run (now its own test); the
+  percentage-outside-download control passed because the fixture line was
+  `[INFO] 42%`, which parses as a **message**, not as progress, so the guard was
+  never reached (now a real `\r` redraw); the unknown-phase control passed
+  because the parser never emits an unknown phase, making the page's own guard
+  unreachable from that path (now both layers asserted); and the
+  banner-yields-to-pending control passed because with `_busy` false the
+  catch-all at the end of `_render_health` hid the banner anyway (now `_busy`
+  is set, which is the state a status arriving mid-deploy lands in).
+  **Two defects the screenshots caught that no unit test did**, which is the
+  argument for rendering rather than trusting a green suite: the failure banner
+  and the pending-reboot group were both claiming the same reboot in two
+  places (a boot failure outranks the pending group; the group outranks
+  everything else), and the `destructive-action` "Remove…" button sat
+  insensitive-but-visible next to an enabled "Enroll…" — same size and shape,
+  only dimmer, so it read as live. It is now **hidden** until a read says the
+  machine is enrolled, and the two are separated by a `Gtk.Separator`.
+  Verified in **Arch under GTK 4.22.5 / libadwaita 1.9.4** under
+  `xvfb-run` in-container, against fakes emitting the real `log_section` /
+  `log_*` output and the real `read -rp` prompts: both pages render, zero
+  tracebacks. **Not verified against a live fleet server** — the enrolled branch
+  has only ever run against a stand-in, so whether a real
+  `POST /fleet/enroll` accepts what this sends is unproven.
+
+- **A progress bar is now driven by parsing shani-deploy's own output, and the
+  parser threw away every log line printed during a download.** `log_section` is
+  a rule, the phase name indented two spaces, and the rule again, all on stderr;
+  `log`/`log_success`/`log_warn`/`log_error` are `<date> [TAG] message`. That is
+  enough to recover which phase a line belongs to **from the text alone**, with
+  no second channel and nothing added to the deploy script — which matters
+  because the alternative is editing a safety-critical file whose whole
+  contract is that this app reads it. `DEPLOY_PHASES` is `main()`'s own call
+  order (validate_boot, fetch_update, check_space, download_update,
+  deploy_update, finalize_update), read from the script.
+  The parser returns a **list** per line, not one event, and that is not
+  pedantry: aria2c and wget redraw with `\r` and **no `\n`**, so a pipe hands
+  over `##### 12%\r##### 88%\r` *plus whatever the script logged next* as a
+  single string. The first version returned one event per line and classified
+  the whole string as a progress frame — silently discarding every log line
+  from the download phase, and a missing log line reads as a tool that said
+  nothing rather than as a reader that threw it away.
+  Two refusals the page makes on purpose, both because the alternative is a
+  number Cassini invented: a download **percentage** may only move the bar
+  while the current phase is `Download Phase` (btrfs balance and `cp` also
+  print percentages), and a phase **not in the table** gets no fraction at all —
+  it is named in the log and the bar stays where it was, because the deploy
+  script gains phases and a build's table will lag behind it.
+  **The whole reader is a pure function of one line**, so a test holds it
+  against a reproduction of the real output without spawning anything. The
+  fake in `tests/test_updates_fleet_actions.py` emits `log_section`/`log_*`
+  verbatim for that reason; this repo has already shipped a test that passed
+  against a format the tool never emits.
+  **Still open:** never run against a real `shani-deploy` update. The fakes
+  reproduce the log format, not the phases' actual behaviour — in particular
+  whether a real download emits one coalesced line or many, and whether
+  `--rollback`'s single `System Rollback` phase is the only one it logs.
 
 - **Encryption warns about a TPM2 seal that systemd 261's PCR separator can
   break — the warning is proven, the staleness it describes is not, and never
