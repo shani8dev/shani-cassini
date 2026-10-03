@@ -112,7 +112,7 @@ class TestNotebook:
         "Smartcard",
         "Security Keys",
         "SSH Keys",
-        "Kerberos", "Directory", "Access", "Remote Access", "AppArmor",
+        "Kerberos", "Directory", "Access", "Inbound Access", "Remote Access", "AppArmor",
         "Boot & Recovery", "Updates & Rollback", "Services",
         "Containers", "Virtualization", "Sharing", "Backup", "Maintenance",
         "Kernel Modules", "Firmware", "Graphics", "Audio", "Journal", "DNS",
@@ -394,7 +394,7 @@ class TestBiometricsNoPrivilegeEscalation:
                                                     "smartcard", "securitykeys",
                                                     "sshkeys", "kerberos",
                                                     "directory", "access",
-                                                    "remoteaccess", "apparmor"]
+                                                    "inbound-access", "remoteaccess", "apparmor"]
         # By id, not by position: inserting a section used to move this assertion
         # silently onto a different page, which is how the wrong icon passes.
         assert next(p[3] for p in security if p[1] == "biometrics") == \

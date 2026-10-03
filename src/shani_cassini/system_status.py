@@ -4244,3 +4244,99 @@ def _points_at_local_proxy(nmcli_output: str) -> Optional[bool]:
             if addr.startswith("127.") or addr in ("::1", "[::1]"):
                 return True
     return False if seen else None
+
+
+# Every shipped package that can let traffic *reach* this machine, whether it
+# is on or not. Verified present in the built image's package list; verified
+# **not enabled and not configured** by the same rootfs (no unit symlinked into
+# any target, no tunnel/config file). That is the correct default for an inbound
+# path, so the page's job is to report the switch, not to justify the service.
+#
+# Cassini has a Remote Access page, which covers `openssh` and nothing else.
+_REACHABILITY: Final = (
+    # (label, tool, unit, config path, what turning it on would do)
+    ("Cloudflare Tunnel", "cloudflared", "cloudflared.service", "/etc/cloudflared",
+     "publishes a local port through Cloudflare, so it is reachable from the "
+     "internet with no port forward and no static address"),
+    ("Tailscale", "tailscaled", "tailscaled.service", "/var/lib/tailscale",
+     "joins a mesh VPN; other devices in your tailnet can reach this machine"),
+    ("WireGuard", "wg", "", "/etc/wireguard",
+     "a peer-to-peer tunnel that needs a reachable address, which is the "
+     "problem a dynamic address causes in the first place"),
+    ("OpenSSH", "sshd", "sshd.service", "/etc/ssh/sshd_config",
+     "remote shell and port forwarding; see Remote Access"),
+    ("Caddy", "caddy", "caddy.service", "/etc/caddy/Caddyfile",
+     "listens on a port and serves or reverse-proxies local services"),
+    ("rclone", "rclone", "rclone.service", "/etc/rclone/rclone.conf",
+     "its `serve` modes listen on a port and can expose local files"),
+)
+
+
+def inbound_access_state(done: Callable[[dict, str], None]) -> None:
+    """Which shipped mechanisms could expose this machine, and are any of them on.
+
+    The reason most people need one of these is that a home or mobile connection
+    has a dynamic address behind carrier-grade NAT: there is nothing to point a
+    DNS record at, and no port forward to open. That is a real problem, and the
+    honest answer is that these tools solve it. It is also the reason the
+    defaults matter - each one is a deliberate decision to let traffic in.
+
+    **No secret is read or shown.** A Cloudflare tunnel token and a Tailscale
+    auth key are credentials; their presence is reported, their value is not.
+
+    Read-only, and deliberately not offering to switch anything on. Enabling an
+    inbound path is not a decision a settings panel should make on the user's
+    behalf, and the configuration each of these needs (a tunnel token, a tailnet
+    login, a peer key) does not belong in a generic settings window either.
+    """
+    rows: list[dict] = []
+    for label, tool, unit, cfg, effect in _REACHABILITY:
+        rows.append({
+            "label": label,
+            "installed": have_tool(tool),
+            "unit": unit,
+            "config": cfg,
+            "config_present": bool(cfg) and os.path.exists(cfg),
+            "effect": effect,
+            "service": None,
+        })
+
+    errors: list[str] = []
+
+    def fill(index: int, text: Optional[str], err: str) -> None:
+        if index >= len(rows):
+            done({"rows": rows, "inbound": sum(
+                1 for r in rows if r.get("service") in ("active", "activating")),
+                "errors": errors}, "; ".join(errors))
+            return
+        row = rows[index]
+        if text is not None:
+            state = text.strip().lower()
+            row["service"] = state if state in (
+                "active", "activating", "inactive", "failed",
+                "deactivating", "unknown") else None
+        elif err:
+            errors.append(f"{row['label']}: {err}")
+        if index + 1 < len(rows):
+            _probe(index + 1, fill)
+        else:
+            fill(index + 1, None, "")
+
+    def _probe(index: int, sink) -> None:
+        unit = rows[index]["unit"]
+        # A package with no service of its own (WireGuard's `wg-quick@.service`
+        # is per-interface and needs a peer config to mean anything) is
+        # reported from its configuration instead of a systemctl that cannot
+        # answer "is this on?".
+        if not unit:
+            row = rows[index]
+            row["service"] = "configured" if row["config_present"] else None
+            sink(index, None, "")
+            return
+        run_text(["systemctl", "is-active", unit],
+                 lambda text, err, i=index: sink(i, text, err))
+
+    if rows:
+        _probe(0, fill)
+    else:
+        done({"rows": [], "inbound": 0, "errors": []}, "")

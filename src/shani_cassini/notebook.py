@@ -56,6 +56,7 @@ from shani_cassini.tabs.audio import AudioTab
 from shani_cassini.tabs.cron import CronTab
 from shani_cassini.tabs.firmware import FirmwareTab
 from shani_cassini.tabs.graphics import GraphicsTab
+from shani_cassini.tabs.inbound_access import InboundAccessTab
 from shani_cassini.tabs.journal import JournalTab
 from shani_cassini.tabs.outbound_mail import OutboundMailTab
 from shani_cassini.tabs.ups import UpsTab
@@ -128,6 +129,10 @@ SECTIONS = [
         (AccessTab, "access", "Access", "dialog-password-symbolic",
          "Accounts allowed to run sudo without a password, as a drop-in "
          "visudo checks before it is installed"),
+        (InboundAccessTab, "inbound-access", "Inbound Access",
+         "network-server-symbolic",
+         "What could let traffic reach this machine - six shipped packages can, "
+         "and none is on by default. Reports only; switches up nothing"),
         (RemoteAccessTab, "remoteaccess", "Remote Access", "network-server-symbolic",
          "The sshd settings Cassini keeps in its own drop-in, and the ones "
          "sshd's main file decides. These govern the daemon GNOME's Remote "

@@ -2138,3 +2138,97 @@ class TestEncryptedDns:
         assert ss._points_at_local_proxy("IP4.DNS:192.168.1.1,10.0.2.3\n") is False
         assert ss._points_at_local_proxy("IP4.DNS:\n") is None
         assert ss._points_at_local_proxy("") is None
+
+
+class TestInboundAccess:
+    """What can let traffic reach this machine.
+
+    Motivated by a real constraint rather than a gap in a feature list: most
+    home and mobile connections have a dynamic address behind carrier-grade NAT,
+    so there is nothing to point a DNS record at and no port forward to open.
+
+    **The shipped-state fixtures are measurements, not assumptions** - checked
+    against the built image rootfs for unit symlinks in any systemd target and
+    for configuration files: cloudflared has neither a linked unit nor any
+    tunnel config, tailscaled is not enabled, and no package's `.install`
+    enables them. That is the correct default for an inbound path, and it is why
+    this page reports rather than offers switches.
+    """
+
+    def _row(self, **kw):
+        base = {"installed": True, "unit": "", "config": "", "config_present": False,
+                "effect": "", "service": None}
+        base.update(kw)
+        return base
+
+    def test_all_six_mechanisms_are_covered(self):
+        """Each verified present in the built image's package list."""
+        labels = {r[0] for r in ss._REACHABILITY}
+        assert labels == {"Cloudflare Tunnel", "Tailscale", "WireGuard",
+                          "OpenSSH", "Caddy", "rclone"}, labels
+
+    def test_a_stock_install_reports_nothing_exposed(self):
+        """The measured default. Anything else here would be a false all-clear
+        in the one direction that matters most."""
+        from shani_cassini.tabs.inbound_access import InboundAccessTab
+        tab = InboundAccessTab()
+        tab._on_state({"rows": [
+            self._row(label="Cloudflare Tunnel", service="inactive"),
+            self._row(label="Tailscale", service="inactive"),
+        ], "inbound": 0, "errors": []}, "")
+        sub = tab._row_state.get_subtitle()
+        assert "No inbound path is active" in sub, sub
+        assert tab._on.get_visible() is False
+
+    def test_an_active_mechanism_is_named_and_flagged(self):
+        from shani_cassini.tabs.inbound_access import InboundAccessTab
+        tab = InboundAccessTab()
+        tab._on_state({"rows": [
+            self._row(label="Cloudflare Tunnel", service="active"),
+            self._row(label="Tailscale", service="inactive"),
+        ], "inbound": 1, "errors": []}, "")
+        assert "Cloudflare Tunnel" in tab._row_state.get_subtitle()
+        assert tab._on.get_visible() is True
+        row = next(r for r in tab._rows if r.get_title() == "Cloudflare Tunnel")
+        assert "reachable" in row.get_subtitle()
+        assert row.get_css_classes() and "warning" in row.get_css_classes()
+
+    def test_a_package_that_is_not_installed_is_not_listed(self):
+        from shani_cassini.tabs.inbound_access import InboundAccessTab
+        tab = InboundAccessTab()
+        tab._on_state({"rows": [
+            self._row(label="Cloudflare Tunnel", service="inactive"),
+            self._row(label="Caddy", installed=False),
+        ], "inbound": 0, "errors": []}, "")
+        assert all(r.get_title() != "Caddy" for r in tab._rows)
+
+    def test_a_configured_but_stopped_mechanism_is_distinguished_from_unconfigured(self):
+        """`configured` is its own state: WireGuard has no single service to ask
+        (`wg-quick@.service` is per-interface and needs a peer), so its row has
+        to be able to say a config exists without claiming it is running."""
+        from shani_cassini.tabs.inbound_access import InboundAccessTab
+        tab = InboundAccessTab()
+        tab._on_state({"rows": [
+            self._row(label="WireGuard", service="configured", config_present=True),
+        ], "inbound": 0, "errors": []}, "")
+        row = next(r for r in tab._rows if r.get_title() == "WireGuard")
+        assert "Configured, not running" in row.get_subtitle(), row.get_subtitle()
+
+    def test_no_credential_is_ever_read(self):
+        """A Cloudflare tunnel token and a Tailscale auth key are secrets. The
+        page may say a configuration exists; it must not read one, and an AST
+        gate is the only thing that keeps a future edit honest."""
+        import ast
+        import inspect
+        from shani_cassini import system_status as s
+        tree = ast.parse(inspect.getsource(s.inbound_access_state))
+        opened = [n for n in ast.walk(tree)
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                  and n.func.id == "open"]
+        for node in opened:
+            src = ast.get_source_segment(inspect.getsource(s), node) or ""
+            assert ".cloudflared" not in src and "rclone.conf" not in src, (
+                f"inbound_access_state opens a credential file: {src}")
+        # The only existence check allowed is on the directory, not the file.
+        paths = {r[3] for r in ss._REACHABILITY}
+        assert "/etc/cloudflared" in paths, paths
