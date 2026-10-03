@@ -521,3 +521,44 @@ def test_every_section_has_an_icon_and_it_exists_in_the_theme():
     theme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default())
     missing = [(sid, icon) for sid, icon in sections if not theme.has_icon(icon)]
     assert not missing, f"section icons not in the theme: {missing}"
+
+
+class TestSiblingTestModuleIsIntact:
+    """A truncated test file takes its guards with it, and the suite stays green.
+
+    While adding the DNS page, an edit to `tests/test_new_gap_pages.py` wrote
+    `t[:i] + new` at an anchor in the middle of the file and silently deleted
+    everything after it - including `TestDescriptionsAreValidMarkup`, a guard
+    added earlier the same session for two descriptions that Pango had been
+    rejecting. Nothing failed: deleting tests cannot fail a test run. The guard
+    was only noticed because a later `-k` selector matched nothing and that
+    absence was worth a look.
+
+    So the check that the file is intact cannot live inside the file. This one
+    is in a different module, so the truncation cannot reach it.
+    """
+
+    def test_the_gap_page_guards_are_all_present(self):
+        import tests.test_new_gap_pages as m
+        for cls in ("TestDescriptionsAreValidMarkup", "TestDns",
+                    "TestOutboundMail", "TestUps"):
+            assert hasattr(m, cls), (
+                f"tests/test_new_gap_pages.py has lost {cls} - if a test file "
+                f"was edited with a truncating write, the guards went with it "
+                f"and nothing failed")
+
+    def test_its_test_count_has_not_shrunk(self):
+        import types
+        import tests.test_new_gap_pages as m
+        n = sum(1 for obj in vars(m).values()
+                if isinstance(obj, type) and obj.__module__ == m.__name__
+                and any(isinstance(c, types.FunctionType)
+                        and c.__name__.startswith("test_")
+                        for c in obj.__dict__.values()))
+        # 9 is the measured count, not a guess: an earlier floor of 12 was
+        # invented and failed on a healthy file, which is the same failure mode
+        # as a vacuous assertion in the other direction - a check that cries wolf
+        # gets deleted rather than fixed.
+        assert n >= 9, (
+            f"only {n} test classes left in test_new_gap_pages.py (expected at "
+            f"least 9) - that file has almost certainly been truncated")

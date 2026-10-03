@@ -2,35 +2,38 @@
 
 Four resolver implementations ship in every image - `systemd-resolved`,
 `dnsmasq`, BIND and `dnscrypt-proxy` - and **neither desktop's network panel can
-tell you which one is in charge**, or that three of them are inert. GNOME's
-`network` panel and Plasma's `networksettings` are NetworkManager panels: they
-configure a *connection*, and the resolver that ends up being asked is a
-different layer that neither of them shows.
+tell you which one is in charge**, or that the other three are doing nothing.
+GNOME's `network` panel and Plasma's `networksettings` are NetworkManager
+panels: they configure a *connection*, and which resolver ends up answering is
+a separate layer neither of them shows.
 
-What the built image actually contains, read from its own rootfs rather than
-assumed:
+**This page was written from the image's file tree and was wrong.** That tree
+carries `/etc/resolv.conf` as a symlink to
+`/run/systemd/resolve/stub-resolv.conf`, `/etc/systemd/resolved.conf` pinning
+`DNS=8.8.8.8 8.8.4.4`, and no `named.conf` or `dnsmasq.conf` - which reads like
+a machine where systemd-resolved is in charge in stub mode. Booting a real
+installed system (`iso-install --boot-only --console-exec`, 2026-10-03) says
+otherwise:
 
-- `/etc/resolv.conf` is a **symlink to `/run/systemd/resolve/stub-resolv.conf`**,
-  so systemd-resolved is in stub mode and everything on the machine asks
-  `127.0.0.53`. The target is under `/run`, so it is *not in the image at all* -
-  it is written at boot. A dangling `resolv.conf` is therefore normal before
-  first boot and a real fault afterwards, and this page says which.
-- The image ships `/etc/systemd/resolved.conf` with `DNS=8.8.8.8 8.8.4.4`.
-  This does **not** override your network's resolvers. systemd 262's own
-  `resolved.conf(5)` says requests "are sent to one of the listed DNS servers
-  **in parallel to** suitable per-link DNS servers acquired from
-  `systemd-networkd.service(8) **or set at runtime by external applications**",
-  and NetworkManager is one of those. So the accurate statement is that **every
-  lookup also goes to Google**, not that your configured resolver is ignored -
-  which is the opposite conclusion, and the one an earlier note in this repo's
-  AGENTS.md drew.
-- `named.conf`, `dnsmasq.conf` and `dnscrypt-proxy.conf` are all absent, so those
-  three packages are installed and doing nothing. Starting any of them would
-  contend for port 53 with the stub listener. That is a *possible* future
-  conflict, not a present fault, and the page does not present it as one.
+- `/etc/resolv.conf` is a **regular file written by NetworkManager**;
+- `systemd-resolved` is **disabled and inactive**, and `resolvectl` does not
+  answer;
+- `named.conf` and `dnsmasq.conf` **are present**, though both services are
+  inactive;
+- **nothing listens on port 53** - there is no local resolver at all, and
+  NetworkManager writes the upstream nameserver straight into the file.
+
+The tree where the symlink *is* real is the **live installer environment**, and
+reading it as evidence about an installed machine is the mistake that produced
+the first version of this page.
+
+So nothing here decides in advance which daemon is in charge. The page reports
+what wrote `resolv.conf`, what is listening on port 53, and each resolver's
+real service state, and draws its conclusions from those - which also means a
+machine where the user *has* enabled `systemd-resolved` is described correctly.
 
 Read-only, and with no live query: `resolvectl status` needs a running daemon,
-so the per-link view is named as a command rather than invented.
+and on a stock Shanios install there is not one.
 """
 
 from __future__ import annotations
@@ -67,10 +70,14 @@ PARALLEL_NOTE = (
 )
 
 CONFLICT_NOTE = (
-    "The other three are installed but unconfigured, so they are doing "
-    "nothing. Enabling any of them would contend for port 53 with the stub "
-    "listener systemd-resolved already holds - a conflict that would surface "
-    "as intermittent resolution failures rather than as an error."
+    "Three other resolvers ship as packages, and each row below reports "
+    "whether its service is actually running - which is the question that "
+    "matters, not whether a config file exists. On a stock Shanios install "
+    "their services are inactive and nothing is listening on port 53, so there "
+    "is no conflict.\n"
+    "Starting a second resolver while one is already answering would contend "
+    "for port 53, and that surfaces as intermittent resolution failures rather "
+    "than as a clean error."
 )
 
 READ_NOTE = (
@@ -108,6 +115,8 @@ class DnsTab(Gtk.Box):
         self._summary.add(self._row_resolv)
         self._row_global = _row("Global servers", "Reading…")
         self._summary.add(self._row_global)
+        self._row_port53 = _row("Listening on port 53", "Reading…")
+        self._summary.add(self._row_port53)
         self._page.append(self._summary)
 
         self._stub_group = Adw.PreferencesGroup(
@@ -140,16 +149,38 @@ class DnsTab(Gtk.Box):
         resolvers = state.get("resolvers") or []
         active = [r["label"] for r in resolvers
                   if r.get("service") in ("active", "activating")]
+        owner = state.get("resolv_conf_owner") or ""
+        listeners = state.get("listeners_53") or []
         if active:
             self._row_active.set_subtitle(
-                f"{' and '.join(active)} is answering")
+                f"{' and '.join(active)}" +
+                (f", and {owner} writes resolv.conf" if owner else ""))
+        elif owner:
+            # The stock Shanios case, verified on a real boot: no local resolver
+            # runs at all, and NetworkManager writes the upstream nameserver
+            # into resolv.conf. Saying "no resolver is active" here would read
+            # as a fault on a machine whose DNS works perfectly.
+            self._row_active.set_subtitle(
+                f"{owner} - no local resolver; the nameserver is used directly")
         else:
             self._row_active.set_subtitle(
                 "No resolver service is active - nothing will resolve")
 
+        # Port 53 decides whether two resolvers could ever contend, so it is
+        # shown as a measurement rather than left to be inferred from which
+        # config files exist.
+        if listeners:
+            self._row_port53.set_subtitle(
+                f"{_joined(listeners)} - a local resolver accepts queries here")
+        else:
+            self._row_port53.set_subtitle(
+                "Nothing - queries go straight to the nameserver in resolv.conf")
+
         target = state.get("resolv_conf_target") or ""
         if state.get("resolv_conf_missing"):
-            # The dangling-symlink case, which has two very different meanings.
+            # The dangling-symlink case, which has two very different meanings:
+            # normal in a live environment before the resolver starts, a real
+            # fault on an installed machine afterwards.
             self._row_resolv.set_subtitle(
                 f"Points at {target}, which does not exist"
                 if target else "Missing")
@@ -158,8 +189,14 @@ class DnsTab(Gtk.Box):
             servers = _joined((state.get("resolv_conf") or {}).get("nameserver"))
             search = _joined((state.get("resolv_conf") or {}).get("search"))
             bits = [b for b in (servers, f"search {search}" if search else "") if b]
+            owner = state.get("resolv_conf_owner") or ""
+            if owner:
+                bits.insert(0, f"written by {owner}")
             self._row_resolv.set_subtitle(" · ".join(bits) or "Empty")
-            self._stub_group.set_visible(True)
+            # Only explain the stub when the file actually is one. On a stock
+            # Shanios install it is not, and a paragraph about 127.0.0.53 on a
+            # machine that never uses it is noise.
+            self._stub_group.set_visible(bool(state.get("resolv_conf_is_symlink")))
 
         conf = state.get("resolved_conf") or {}
         servers = conf.get("DNS", "")
@@ -188,11 +225,12 @@ class DnsTab(Gtk.Box):
                 continue  # already reported as the one answering, if it is
             service = r.get("service")
             if service in ("active", "activating"):
-                sub = "Running - and contending for port 53"
+                sub = ("Running" if not listeners
+                       else f"Running, alongside {', '.join(listeners)}")
             elif r.get("config_present"):
-                sub = f"Installed, configured, not running ({r['unit']})"
+                sub = f"Not running; config present ({r['config']})"
             else:
-                sub = f"Installed, not configured ({r['unit']})"
+                sub = f"Not running; no config ({r['unit']})"
             row = _row(r["label"], sub)
             self._conflict_group.add(row)
             self._resolvers.append(row)
