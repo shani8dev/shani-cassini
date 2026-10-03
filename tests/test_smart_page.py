@@ -538,7 +538,13 @@ def test_the_status_row_settles_when_the_scan_itself_failed(tmp_path, monkeypatc
     fake_bin(tmp_path, monkeypatch, scan="", scan_rc=1)
     tab = sp.SmartTab()
     assert spin(lambda: "exited 1" in all_text(tab)), all_text(tab)
-    assert "Reading" not in all_text(tab), all_text(tab)
+    # Spun, not asserted immediately. The invariant is "once the page has
+    # settled, nothing still reads Reading" - and the page grew a "Test schedule"
+    # row that answers from `systemctl show`/`is-enabled` on its own clock,
+    # later than the scan status this line waits for above. Asserting without
+    # waiting tested the relative speed of two independent reads, and failed only
+    # in a full run, where the main loop is busier.
+    assert spin(lambda: "Reading" not in all_text(tab)), all_text(tab)
 
 
 # --- 5. the self-test log ---------------------------------------------------

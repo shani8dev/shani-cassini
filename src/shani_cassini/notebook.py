@@ -57,6 +57,10 @@ from shani_cassini.tabs.cron import CronTab
 from shani_cassini.tabs.firmware import FirmwareTab
 from shani_cassini.tabs.graphics import GraphicsTab
 from shani_cassini.tabs.inbound_access import InboundAccessTab
+from shani_cassini.tabs.raid import RaidTab
+from shani_cassini.tabs.totp import TotpTab
+from shani_cassini.tabs.kvm import KvmTab
+from shani_cassini.tabs.boot_entries import BootEntriesTab
 from shani_cassini.tabs.journal import JournalTab
 from shani_cassini.tabs.outbound_mail import OutboundMailTab
 from shani_cassini.tabs.ups import UpsTab
@@ -74,130 +78,178 @@ class SystemInfoPage(Gtk.Box):
         self.append(SystemTab(state=state, auth_manager=auth_manager))
         self.append(KernelTab(state=state, auth_manager=auth_manager))
 
-# (group, [(tab class, id, title, icon, subtitle)]) - icons are symbolic
+# (group, [(sub-group, [(tab class, id, title, icon, subtitle)])])
+#
+# Three levels, because two were not enough. At two, "Security" carried fifteen
+# rows and "Manage" fourteen, which is a wall rather than a list. Every group is
+# now a few named subjects, and a sub-heading says which subject a page belongs
+# to - so "Secure Boot" reads as being about boot and disk rather than floating
+# beside "Access", which is the ambiguity a flat list of security pages creates.
+#
+# **`id` is the `--section=<id>` contract** and is also what `REQUIRES` and every
+# test match on, so every id below is carried over verbatim. Icons are symbolic
+# names that exist in the Adwaita theme (checked against the Arch package).
+# (group, [(sub-group, [(tab class, id, title, icon, subtitle)])])
+#
+# Three levels, because two were not enough. At two, "Security" carried fifteen
+# rows and "Manage" fourteen, which is a wall rather than a list. Every group is
+# now a few named subjects, and a sub-heading says which subject a page belongs
+# to - so "Secure Boot" reads as being about boot and disk rather than floating
+# beside "Access", which is the ambiguity a flat list of security pages creates.
+#
+# **`id` is the `--section=<id>` contract** and is also what `REQUIRES` and every
+# test match on, so every id below is carried over verbatim. Icons are symbolic
 # names that exist in the Adwaita theme (checked against the Arch package).
 SECTIONS = [
     ("System", [
-        (OverviewTab, "overview", "Overview", "computer-symbolic", "This machine at a glance"),
-        (HealthTab, "health", "Health", "object-select-symbolic", "Checks and diagnostics"),
-        (StorageTab, "storage", "Storage", "drive-harddisk-symbolic",
-         "Btrfs subvolumes, space and the checks that keep a filesystem healthy"),
-        (SmartTab, "smart", "Disk Health", "drive-harddisk-symbolic",
-         "What smartctl reports for each disk - the overall verdict, and the "
-         "attributes it actually returned"),
-        (SystemInfoPage, "system", "System Info", "dialog-information-symbolic", "Hardware, software and kernel"),
-        (DriversTab, "drivers", "Drivers", "drive-harddisk-symbolic", "PCI devices and kernel drivers"),
-        (BtrfsTab, "btrfs", "Btrfs", "drive-harddisk-symbolic",
-         "What btrfs reports for this filesystem - the subvolumes, the space, "
-         "and whether the last scrub found anything wrong"),
-        (PersistenceTab, "persistence", "Persistence", "media-flash-symbolic",
-         "What a blue/green switch keeps and what it discards, and why a "
-         "stopped service can still remember things"),
-        (TimersTab, "timers", "Timers & Background Tasks", "preferences-system-time-symbolic",
-         "The systemd timers on this machine, and your own crontab - the whole "
-         "scheduler is listed, not just the calendar-based part of it"),
-        (CronTab, "cron", "Cron", "clock-symbolic",
-         "The system's own scheduled jobs, read from /etc/cron.d and the "
-         "cron.{hourly,daily,weekly,monthly} directories - which crontab -l "
-         "cannot show you. Read-only: no job is installed or edited here"),
+        ("Overview & Health", [
+            (OverviewTab, "overview", "Overview", "computer-symbolic",
+             "This machine at a glance"),
+            (HealthTab, "health", "Health", "object-select-symbolic",
+             "Checks and diagnostics"),
+        ]),
+        ("Storage", [
+            (StorageTab, "storage", "Storage", "drive-harddisk-symbolic",
+             "What is mounted and how full it is"),
+            (SmartTab, "smart", "Disk Health", "drive-harddisk-solidstate-symbolic",
+             "SMART attributes per disk, and whether anything is scheduled to test them"),
+            (BtrfsTab, "btrfs", "Btrfs", "drive-harddisk-symbolic",
+             "Subvolumes, allocation, scrub status, and whether the monthly maintenance ever succeeded"),
+            (RaidTab, "raid", "Software RAID", "drive-multidisk-symbolic",
+             "mdadm arrays, their members, and which slot is degraded or failed"),
+            (PersistenceTab, "persistence", "Persistence", "folder-symbolic",
+             "The bind mounts this image ships, and which are present now"),
+        ]),
+        ("Hardware", [
+            (SystemInfoPage, "system", "System Info", "computer-symbolic",
+             "Hardware, kernel, power profile and every sensor"),
+            (DriversTab, "drivers", "Drivers", "network-wired-symbolic",
+             "PCI devices and the kernel drivers bound to them"),
+            (GraphicsTab, "graphics", "Graphics", "video-display-symbolic",
+             "Graphics hardware, render nodes, and hybrid-graphics state"),
+            (AudioTab, "audio", "Audio", "audio-speakers-symbolic",
+             "The PipeWire graph: devices, inputs, outputs and defaults"),
+            (ModulesTab, "modules", "Kernel Modules", "application-x-addon-symbolic",
+             "Every loaded module, its dependencies and each parameter's value"),
+            (FirmwareTab, "firmware", "Firmware", "preferences-system-devices-symbolic",
+             "Device firmware from LVFS, and the CPU microcode revision"),
+        ]),
+        ("Tasks & Logs", [
+            (TimersTab, "timers", "Timers & Background Tasks", "preferences-system-time-symbolic",
+             "systemd timers, their next and last elapse, and what they activate"),
+            (CronTab, "cron", "Cron", "clock-symbolic",
+             "The system crontabs, read directly because no tool lists them"),
+            (JournalTab, "journal", "Journal", "text-x-generic-symbolic",
+             "Every boot still on disk, a search across entries, and the cap in force"),
+        ]),
+    ]),
+    ("Network", [
+        ("Name Resolution", [
+            (DnsTab, "dns", "DNS", "network-transmit-receive-symbolic",
+             "Which of the four installed resolvers answers, and what is on port 53"),
+        ]),
+        ("Reachability", [
+            (InboundAccessTab, "inbound-access", "Inbound Access", "network-server-symbolic",
+             "What could let traffic reach this machine - six packages can, none is on"),
+            (RemoteAccessTab, "remoteaccess", "Remote Access", "preferences-system-network-symbolic",
+             "The sshd directives this drop-in records"),
+        ]),
+        ("Sharing", [
+            (SharingTab, "sharing", "Sharing", "folder-publicshare-symbolic",
+             "NFS exports and the options they are given"),
+        ]),
     ]),
     ("Security", [
-        (SecureBootTab, "secureboot", "Secure Boot", "security-high-symbolic", "Secure Boot and MOK keys"),
-        (EncryptionTab, "encryption", "Encryption", "channel-secure-symbolic", "Disk encryption and TPM unlock"),
-        (LsmTab, "lsm", "LSM", "security-high-symbolic",
-         "The kernel security modules actually active here, and what Lynis "
-         "and rkhunter last reported"),
-        (AuditTab, "audit", "Audit", "view-list-symbolic",
-         "The kernel audit trail - search it behind a click, because reading "
-         "it costs an administrator password"),
-        (FirewallTab, "firewall", "Firewall", "security-high-symbolic",
-         "What firewalld and fail2ban report - zones, services, ports, jails "
-         "and bans, read-only"),
-        (BiometricsTab, "biometrics", "Fingerprint", "auth-fingerprint-symbolic",
-         "Fingerprint reader, and the fingers enrolled on it"),
-        (SmartcardTab, "smartcard", "Smartcard", "auth-smartcard-symbolic",
-         "Point a certificate at an account, so a card can sign you in"),
-        (SecurityKeysTab, "securitykeys", "Security Keys", "dialog-password-symbolic",
-         "FIDO2 security keys and Yubico one-time passwords"),
-        (SshKeysTab, "sshkeys", "SSH Keys", "dialog-password-symbolic",
-         "The public keys allowed to sign in to this account over SSH"),
-        (KerberosTab, "kerberos", "Kerberos", "network-vpn-symbolic",
-         "Realm, domain mapping and credential cache"),
-        (DirectoryTab, "directory", "Directory", "network-workgroup-symbolic",
-         "SSSD and OpenLDAP as shani-health reports them, and whether "
-         "name resolution is wired to a directory at all"),
-        (AccessTab, "access", "Access", "dialog-password-symbolic",
-         "Accounts allowed to run sudo without a password, as a drop-in "
-         "visudo checks before it is installed"),
-        (InboundAccessTab, "inbound-access", "Inbound Access",
-         "network-server-symbolic",
-         "What could let traffic reach this machine - six shipped packages can, "
-         "and none is on by default. Reports only; switches up nothing"),
-        (RemoteAccessTab, "remoteaccess", "Remote Access", "network-server-symbolic",
-         "The sshd settings Cassini keeps in its own drop-in, and the ones "
-         "sshd's main file decides. These govern the daemon GNOME's Remote "
-         "Login starts"),
-        (AppArmorTab, "apparmor", "AppArmor", "security-high-symbolic",
-         "The confinement profiles this machine is enforcing, and which of "
-         "them are enforcing rather than complaining. Needs your password to "
-         "read, so it runs when you ask"),
+        ("Boot & Disk", [
+            (SecureBootTab, "secureboot", "Secure Boot", "security-high-symbolic",
+             "Secure Boot state and MOK enrolment"),
+            (EncryptionTab, "encryption", "Encryption", "network-wireless-encrypted-symbolic",
+             "LUKS, TPM2 sealing, and what a firmware update costs you"),
+            (BootEntriesTab, "boot-entries", "Boot Entries", "emblem-system-symbolic",
+             "What the firmware will boot, and where the slot is really decided"),
+        ]),
+        ("Sign-in", [
+            (BiometricsTab, "biometrics", "Fingerprint", "auth-fingerprint-symbolic",
+             "Fingers fprintd has stored, and which readers are attached"),
+            (SmartcardTab, "smartcard", "Smartcard", "auth-smartcard-symbolic",
+             "Readers, cards, and the subject mappings pam_pkcs11 reads"),
+            (SecurityKeysTab, "securitykeys", "Security Keys", "media-flash-symbolic",
+             "FIDO keys, their PIN and touch policy, and what ykman owns"),
+            (TotpTab, "totp", "TOTP Tokens", "dialog-password-symbolic",
+             "One-time password tokens, and whether any login stack loads one"),
+            (SshKeysTab, "sshkeys", "SSH Keys", "preferences-system-network-symbolic",
+             "authorized_keys and the fingerprints sshd will see"),
+            (KerberosTab, "kerberos", "Kerberos", "network-server-symbolic",
+             "krb5.conf, and whether any PAM stack loads pam_krb5"),
+        ]),
+        ("Confinement & Audit", [
+            (LsmTab, "lsm", "LSM", "security-high-symbolic",
+             "Which confinement modules are loaded, and which are enforcing"),
+            (AppArmorTab, "apparmor", "AppArmor", "security-high-symbolic",
+             "The confinement profiles loaded, and which are enforcing"),
+            (AuditTab, "audit", "Audit", "document-open-recent-symbolic",
+             "auditd's own state, and a search over the events it recorded"),
+        ]),
+        ("Firewall", [
+            (FirewallTab, "firewall", "Firewall", "network-server-symbolic",
+             "firewalld zones, their services and ports, and fail2ban's jails"),
+        ]),
+        ("Access & Directory", [
+            (AccessTab, "access", "Access", "system-users-symbolic",
+             "The sudoers rules this drop-in grants, and nothing else"),
+            (DirectoryTab, "directory", "Directory", "folder-symbolic",
+             "The name-service clients shani-health already parses"),
+        ]),
     ]),
     ("Updates", [
-        (BootRecoveryTab, "boot", "Boot & Recovery", "media-removable-symbolic",
-         "The blue and green slots, the markers left by a boot that did not "
-         "come up, and the deployments you can roll back to"),
-        (UpdatesTab, "updates", "Updates & Rollback", "view-refresh-symbolic",
-         "Update channel, updates and going back to the previous system"),
+        ("Deployment", [
+            (BootRecoveryTab, "boot", "Boot & Recovery", "system-reboot-symbolic",
+             "The slots, the markers a boot left behind, and rollback"),
+            (UpdatesTab, "updates", "Updates & Rollback", "software-update-available-symbolic",
+             "The deployed release, the candidate, and the deploy itself"),
+        ]),
+    ]),
+    ("Power & Virtualization", [
+        ("Power", [
+            (UpsTab, "ups", "UPS", "battery-symbolic",
+             "Whether a UPS is configured, whether the daemon runs, and what it reports"),
+        ]),
+        ("Virtualization", [
+            (VirtualizationTab, "virtualization", "Virtualization", "computer-symbolic",
+             "virsh, LXC, LXD and machined: what exists right now"),
+            (KvmTab, "kvm", "Acceleration", "system-run-symbolic",
+             "Whether VMs are hardware-accelerated, and why they are not if they are not"),
+        ]),
     ]),
     ("Manage", [
-        (ServicesTab, "services", "Services", "system-run-symbolic", "System services"),
-        (ContainersTab, "containers", "Containers", "package-x-generic-symbolic",
-         "Podman and Distrobox as they are right now - an inventory, not a "
-         "second container manager"),
-        (VirtualizationTab, "virtualization", "Virtualization", "computer-symbolic",
-         "libvirt, LXC, LXD and nspawn as they are right now - three different "
-         "tools, three different clients"),
-        (SharingTab, "sharing", "Sharing", "folder-publicshare-symbolic",
-         "NFS exports from a drop-in, and only what exportfs accepted - not "
-         "proof that a client can mount them"),
-        (BackupTab, "backup", "Backup", "drive-multidisk-symbolic", "Snapshots and backups"),
-        (MaintenanceTab, "maintenance", "Maintenance", "applications-utilities-symbolic",
-         "Disk space, diagnostic report, reset"),
-        (ModulesTab, "modules", "Kernel Modules", "application-x-addon-symbolic",
-         "Every module the kernel has loaded, what depends on what, and each "
-         "parameter's current value. Read from the kernel's own files"),
-        (FirmwareTab, "firmware", "Firmware", "computer-symbolic",
-         "The hardware firmware this machine carries, and what the Linux "
-         "Vendor Firmware Service is offering it. Reports; installs nothing"),
-        (GraphicsTab, "graphics", "Graphics", "video-display-symbolic",
-         "The graphics hardware, the kernel driver bound to each, and the "
-         "render nodes this session can actually draw through"),
-        (AudioTab, "audio", "Audio", "audio-speakers-symbolic",
-         "The PipeWire graph itself - devices, outputs, inputs and which "
-         "program is connected - rather than a volume slider"),
-        (JournalTab, "journal", "Journal", "text-x-generic-symbolic",
-         "Every boot the journal still holds, and a search across the entries. "
-         "Reads logs; never rotates or vacuums them"),
-        (DnsTab, "dns", "DNS", "network-transmit-receive-symbolic",
-         "Which of the four installed resolvers actually answers, what the "
-         "machine's resolver configuration says, and why the other three do "
-         "nothing. Neither desktop's network panel covers this. Read-only"),
-        (UpsTab, "ups", "UPS", "battery-symbolic",
-         "Whether the machine will survive losing power - the apcupsd "
-         "configuration, whether the daemon runs, and what it reports. "
-         "Neither desktop has a panel for this. Read-only"),
-        (OutboundMailTab, "outbound-mail", "Outbound Mail",
-         "mail-send-symbolic",
-         "Whether mail this machine sends will actually leave it - the exim "
-         "relay setup, and anything stuck in the queue. Reports; never sends, "
-         "retries or deletes"),
-    ]),
-    ("Apps", [
-        (ChronoaTab, "chronoa", "Chronoa", "audio-input-microphone-symbolic", "The Chronoa assistant"),
-        (FleetTab, "fleet", "Fleet", "network-workgroup-symbolic", "Fleet enrollment"),
+        ("Services", [
+            (ServicesTab, "services", "Services", "preferences-system-symbolic",
+             "Enabled and running units, and what the image turned on"),
+        ]),
+        ("Containers", [
+            (ContainersTab, "containers", "Containers", "package-x-generic-symbolic",
+             "What podman and distrobox have right now"),
+        ]),
+        ("Mail", [
+            (OutboundMailTab, "outbound-mail", "Outbound Mail", "mail-send-symbolic",
+             "Whether mail this machine sends will leave it, and what is stuck"),
+        ]),
+        ("Backup & Maintenance", [
+            (BackupTab, "backup", "Backup", "document-save-symbolic",
+             "Snapshot settings, and the rest lives in Shani Backup"),
+            (MaintenanceTab, "maintenance", "Maintenance", "applications-system-symbolic",
+             "Cleanup, optimization, log export and the reset"),
+        ]),
+        ("Apps", [
+            (ChronoaTab, "chronoa", "Chronoa", "audio-input-microphone-symbolic",
+             "The Chronoa assistant"),
+            (FleetTab, "fleet", "Fleet", "network-workgroup-symbolic",
+             "Fleet enrollment"),
+        ]),
     ]),
 ]
-PAGES = [p for _group, pages in SECTIONS for p in pages]
+
+PAGES = [p for _g, subs in SECTIONS for _s, pages in subs for p in pages]
 
 # sections that front another app: its command must exist, else the page
 # explains that instead of showing a form that cannot work
@@ -277,30 +329,49 @@ class ShaniosNotebook(Adw.Bin):
     def _build_sidebar(self) -> Adw.NavigationPage:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self._lists = []
-        for group, pages in SECTIONS:
+        first_group = True
+        for group, sub_groups in SECTIONS:
             heading = Gtk.Label(label=group, xalign=0)
             heading.add_css_class("heading")
             heading.add_css_class("dim-label")
             heading.set_margin_start(18)
-            heading.set_margin_top(12 if self._lists else 6)
+            heading.set_margin_top(12 if not first_group else 6)
             heading.set_margin_bottom(4)
             box.append(heading)
-            lb = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
-            lb.add_css_class("navigation-sidebar")
-            for _cls, pid, title, icon, _sub in pages:
-                row = Gtk.ListBoxRow()
-                row.page_id = pid
-                row.set_tooltip_text(_sub)
-                inner = Gtk.Box(spacing=12, margin_start=6, margin_end=6, margin_top=4, margin_bottom=4)
-                inner.append(Gtk.Image.new_from_icon_name(icon))
-                inner.append(Gtk.Label(label=title, xalign=0, hexpand=True))
-                row.set_child(inner)
-                row.update_property([Gtk.AccessibleProperty.LABEL], [title])
-                lb.append(row)
-                self._rows[pid] = row
-            lb.connect("row-activated", self._on_row_activated)
-            self._lists.append(lb)
-            box.append(lb)
+            first_group = False
+            first_sub = True
+            for _sub_name, pages in sub_groups:
+                # A sub-heading per subject, indented under its group and only
+                # drawn when the group has more than one - a lone subject reads
+                # fine as "System / Storage" and a label saying "Storage" under
+                # a single item is noise.
+                if len(sub_groups) > 1:
+                    sub_heading = Gtk.Label(label=_sub_name, xalign=0)
+                    sub_heading.add_css_class("dim-label")
+                    sub_heading.set_margin_start(30)
+                    sub_heading.set_margin_top(2 if first_sub else 8)
+                    sub_heading.set_margin_bottom(2)
+                    box.append(sub_heading)
+                first_sub = False
+                lb = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
+                lb.add_css_class("navigation-sidebar")
+                if len(sub_groups) > 1:
+                    lb.set_margin_start(18)
+                for _cls, pid, title, icon, _sub in pages:
+                    row = Gtk.ListBoxRow()
+                    row.page_id = pid
+                    row.set_tooltip_text(_sub)
+                    inner = Gtk.Box(spacing=12, margin_start=6, margin_end=6,
+                                    margin_top=4, margin_bottom=4)
+                    inner.append(Gtk.Image.new_from_icon_name(icon))
+                    inner.append(Gtk.Label(label=title, xalign=0, hexpand=True))
+                    row.set_child(inner)
+                    row.update_property([Gtk.AccessibleProperty.LABEL], [title])
+                    lb.append(row)
+                    self._rows[pid] = row
+                lb.connect("row-activated", self._on_row_activated)
+                self._lists.append(lb)
+                box.append(lb)
 
         scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
         scroller.set_child(box)

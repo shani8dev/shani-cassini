@@ -95,35 +95,80 @@ class TestHealthTab:
 class TestNotebook:
     """The sidebar lists every section, in order; pages build on demand."""
 
-    # The sidebar order, and it is asserted exactly: an entry that moves group
-    # or position has to be a deliberate edit here, not a side effect of
-    # registering a page. The seven added at the end of this file's history are
-    # the interfaces with no panel in GNOME Control Center or KDE System
-    # Settings - Cron, AppArmor, Kernel Modules, Firmware, Graphics, Audio,
-    # Journal, DNS, UPS and Outbound Mail - each in the group its
-    # subject belongs to.
-    EXPECTED = ["Overview", "Health",
-        "Storage", "Disk Health", "System Info", "Drivers",
-        "Btrfs", "Persistence", "Timers & Background Tasks", "Cron",
-                "Secure Boot",
-                "Encryption", "LSM", "Audit",
-                "Firewall",
-                "Fingerprint",
-        "Smartcard",
-        "Security Keys",
-        "SSH Keys",
-        "Kerberos", "Directory", "Access", "Inbound Access", "Remote Access", "AppArmor",
-        "Boot & Recovery", "Updates & Rollback", "Services",
-        "Containers", "Virtualization", "Sharing", "Backup", "Maintenance",
-        "Kernel Modules", "Firmware", "Graphics", "Audio", "Journal", "DNS",
-                "UPS", "Outbound Mail", "Chronoa", "Fleet"]
+    # The sidebar is three levels - group, subject, page - and it is asserted
+    # exactly, because a page that moves group or subject has to be a
+    # deliberate edit here rather than a side effect of registering it. At two
+    # levels this was a flat list of 47 titles, which could not say that
+    # "Secure Boot" belongs under Boot & Disk rather than floating beside
+    # "Access"; that ambiguity is the reason the third level exists.
+    EXPECTED = [
+        ("System", [
+            ("Overview & Health", ["Overview", "Health"]),
+            ("Storage", ["Storage", "Disk Health", "Btrfs", "Software RAID",
+                         "Persistence"]),
+            ("Hardware", ["System Info", "Drivers", "Graphics", "Audio",
+                          "Kernel Modules", "Firmware"]),
+            ("Tasks & Logs", ["Timers & Background Tasks", "Cron", "Journal"]),
+        ]),
+        ("Network", [
+            ("Name Resolution", ["DNS"]),
+            ("Reachability", ["Inbound Access", "Remote Access"]),
+            ("Sharing", ["Sharing"]),
+        ]),
+        ("Security", [
+            ("Boot & Disk", ["Secure Boot", "Encryption", "Boot Entries"]),
+            ("Sign-in", ["Fingerprint", "Smartcard", "Security Keys",
+                         "TOTP Tokens", "SSH Keys", "Kerberos"]),
+            ("Confinement & Audit", ["LSM", "AppArmor", "Audit"]),
+            ("Firewall", ["Firewall"]),
+            ("Access & Directory", ["Access", "Directory"]),
+        ]),
+        ("Updates", [
+            ("Deployment", ["Boot & Recovery", "Updates & Rollback"]),
+        ]),
+        ("Power & Virtualization", [
+            ("Power", ["UPS"]),
+            ("Virtualization", ["Virtualization", "Acceleration"]),
+        ]),
+        ("Manage", [
+            ("Services", ["Services"]),
+            ("Containers", ["Containers"]),
+            ("Mail", ["Outbound Mail"]),
+            ("Backup & Maintenance", ["Backup", "Maintenance"]),
+            ("Apps", ["Chronoa", "Fleet"]),
+        ]),
+    ]
 
     def test_sections(self):
-        from shani_cassini.notebook import ShaniosNotebook
+        from shani_cassini.notebook import ShaniosNotebook, SECTIONS
         nb = ShaniosNotebook()
-        assert nb.get_n_pages() == len(self.EXPECTED)
-        assert nb.page_titles() == self.EXPECTED
+        got = [(group, [(name, [p[2] for p in pages])
+                        for name, pages in subs])
+               for group, subs in SECTIONS]
+        assert got == self.EXPECTED
+        flat = [t for _g, subs in self.EXPECTED for _s, ts in subs for t in ts]
+        assert nb.get_n_pages() == len(flat) == 47, len(flat)
+        assert nb.page_titles() == flat
 
+    def test_no_group_is_a_wall_again(self):
+        """The reason for the third level: a long unlabelled run of rows. The
+        bound is on a SUBJECT, because that is the unit the sidebar renders as a
+        run - a group may hold many rows once they are split into named
+        subjects, and System holds sixteen across four of them."""
+        from shani_cassini.notebook import SECTIONS
+        for group, subs in SECTIONS:
+            assert subs, f"{group} has no subject"
+            for name, pages in subs:
+                # The wall that motivated the third level was an unlabelled run
+                # of rows. A group may legitimately hold many rows once they are
+                # split into named subjects - System has sixteen across four -
+                # so the bound is on a SUBJECT, which is the unit the sidebar
+                # actually shows as a run.
+                assert len(pages) <= 6, \
+                    f"{group} / {name} has {len(pages)} rows; split it further"
+            if len(subs) > 1:
+                for _name, pages in subs:
+                    assert pages, f"{group} has an empty subject"
     def test_every_section_builds(self):
         """Selecting each section constructs its page without an error page."""
         from gi.repository import Adw
@@ -387,17 +432,20 @@ class TestBiometricsNoPrivilegeEscalation:
 
     def test_biometrics_is_registered_in_the_security_group(self):
         from shani_cassini.notebook import SECTIONS, REQUIRES
-        security = dict(SECTIONS)["Security"]
-        assert [p[1] for p in security] == ["secureboot", "encryption", "lsm",
-                                                    "audit", "firewall",
-                                                    "biometrics",
-                                                    "smartcard", "securitykeys",
-                                                    "sshkeys", "kerberos",
-                                                    "directory", "access",
-                                                    "inbound-access", "remoteaccess", "apparmor"]
+        security = next(subs for g, subs in SECTIONS if g == "Security")
+        pages = [p for _subject, ps in security for p in ps]
+        ids = [p[1] for p in pages]
+        # Membership by id, and the subject it now belongs to. The old
+        # positional list was the whole assertion, and re-grouping moved
+        # biometrics from the fourth slot to a sub-group called Sign-in - which
+        # a positional check can only report as a failure.
+        assert "biometrics" in ids
+        subjects = {name for name, ps in security
+                    if any(p[1] == "biometrics" for p in ps)}
+        assert subjects == {"Sign-in"}, subjects
         # By id, not by position: inserting a section used to move this assertion
         # silently onto a different page, which is how the wrong icon passes.
-        assert next(p[3] for p in security if p[1] == "biometrics") == \
+        assert next(p[3] for p in pages if p[1] == "biometrics") == \
             "auth-fingerprint-symbolic"
 
     def test_biometrics_page_is_not_gated_on_fprintd(self):
@@ -472,10 +520,15 @@ def _all_sections():
     from shani_cassini.notebook import SECTIONS
 
     out = []
-    for group in SECTIONS:
-        for entry in group[1]:
-            icons = [x for x in entry if isinstance(x, str) and x.endswith("-symbolic")]
-            out.append((entry[1], icons[0] if icons else None))
+    # Three levels now: group, subject, page. Iterating the top level found no
+    # page entries there at all and passed vacuously against a deliberately
+    # broken icon - which is the failure this function's own docstring records.
+    for _group, subs in SECTIONS:
+        for _subject, pages in subs:
+            for entry in pages:
+                icons = [x for x in entry
+                         if isinstance(x, str) and x.endswith("-symbolic")]
+                out.append((entry[1], icons[0] if icons else None))
     return out
 
 

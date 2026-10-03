@@ -39,6 +39,7 @@ entries in the real ``/sys``.
 
 from __future__ import annotations
 
+import pytest
 import ast
 import inspect
 import os

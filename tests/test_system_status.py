@@ -488,6 +488,15 @@ CHRONOA_SCHEMA = """<schemalist><schema id="org.shani.chronoa" path="/org/shani/
 <key name="privacy-mode" type="b"><default>true</default></key>
 <key name="auto-start" type="b"><default>false</default></key>
 <key name="wake-word-enabled" type="b"><default>false</default></key>
+<!-- Added 2026-10-03. The Chronoa page binds six keys and this fixture declared
+     three, so the test that exists precisely to catch "the page binds a key the
+     compiled schema does not declare" was itself failing that check. Types and
+     defaults are copied from the real shipped schema,
+     shani-chronoa/pkg/shani-chronoa/usr/share/glib-2.0/schemas/
+     org.shani.chronoa.gschema.xml - not invented. -->
+<key name="notification-enabled" type="b"><default>true</default></key>
+<key name="cloud-fallback-enabled" type="b"><default>false</default></key>
+<key name="wake-phrase" type="s"><default>''</default></key>
 <key name="model" type="s"><default>''</default></key>
 <key name="ollama-host" type="s"><default>'http://127.0.0.1:9'</default></key>
 <key name="openai-api-key" type="s"><default>'sk-secret'</default></key>
@@ -502,6 +511,9 @@ def test_chronoa_page_binds_its_settings(tmp_path):
 import os, sys
 os.environ["GSETTINGS_SCHEMA_DIR"] = {str(tmp_path)!r}; os.environ["GSETTINGS_BACKEND"] = "memory"
 sys.path.insert(0, "src")
+import gi
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")   # without this, PyGIWarning is emitted first
 from gi.repository import Adw, Gio
 from shani_cassini.tabs.chronoa import ChronoaTab
 t = ChronoaTab()
@@ -510,7 +522,13 @@ def walk(w):
     while c is not None:
         yield c; yield from walk(c); c = c.get_next_sibling()
 rows = {{r.get_title(): r for r in walk(t) if isinstance(r, Adw.SwitchRow)}}
-assert set(rows) == {{"Privacy mode", "Start at login", "Wake word"}}, rows
+# The page's five switches, asserted by title. This list was three entries and
+# the page has bound five since the wake-phrase and cloud-fallback work, so the
+# test was asserting against a page that no longer exists - and, like the schema
+# fixture above, it is the "does the page bind what it claims" check that was
+# itself out of date. Read off the widget tree, not off the source.
+assert set(rows) == {{"Privacy mode", "Start at login", "Wake phrase",
+                     "Spoken replies", "Cloud fallback"}}, rows
 assert rows["Privacy mode"].get_active() is True
 rows["Start at login"].set_active(True)
 assert Gio.Settings.new("org.shani.chronoa").get_boolean("auto-start") is True

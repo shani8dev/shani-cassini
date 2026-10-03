@@ -163,7 +163,12 @@ def apply_amoled_theme() -> None:
     if _theme_applied:
         return
     css_provider = Gtk.CssProvider()
-    css_provider.load_from_data(AMOLED_CSS.encode("utf-8"))
+    # `load_from_string`, not `load_from_data`: the latter has been deprecated
+    # since GTK 4.10 and PyGI's override emits a DeprecationWarning from inside
+    # the binding, which surfaced in the suite as a warning attributed to
+    # whichever test happened to trigger the theme first. Same provider, same
+    # CSS, no deprecated call.
+    css_provider.load_from_string(AMOLED_CSS)
     display = Gdk.Display.get_default()
     if display is not None:
         Gtk.StyleContext.add_provider_for_display(
