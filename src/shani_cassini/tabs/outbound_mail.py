@@ -62,7 +62,7 @@ CONFIG_NOTE = (
     "Nothing on this page sends, retries or deletes mail.\n"
     "  exim -bp                   list the queue\n"
     "  exim -bvv                  send now, showing every step\n"
-    "  sudo exim -Mf <msgid>      forget one stuck message\n"
+    "  sudo exim -Mf MESSAGE-ID   forget one stuck message\n"
     "  sudo exim4-config          set up a relay"
 )
 

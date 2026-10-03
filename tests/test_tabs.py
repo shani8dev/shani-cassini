@@ -100,7 +100,8 @@ class TestNotebook:
     # registering a page. The seven added at the end of this file's history are
     # the interfaces with no panel in GNOME Control Center or KDE System
     # Settings - Cron, AppArmor, Kernel Modules, Firmware, Graphics, Audio,
-    # Journal and Outbound Mail - each in the group its subject belongs to.
+    # Journal, UPS and Outbound Mail - each in the group its subject
+    # belongs to.
     EXPECTED = ["Overview", "Health",
         "Storage", "Disk Health", "System Info", "Drivers",
         "Btrfs", "Persistence", "Timers & Background Tasks", "Cron",
@@ -115,7 +116,7 @@ class TestNotebook:
         "Boot & Recovery", "Updates & Rollback", "Services",
         "Containers", "Virtualization", "Sharing", "Backup", "Maintenance",
         "Kernel Modules", "Firmware", "Graphics", "Audio", "Journal",
-                "Outbound Mail", "Chronoa", "Fleet"]
+                "UPS", "Outbound Mail", "Chronoa", "Fleet"]
 
     def test_sections(self):
         from shani_cassini.notebook import ShaniosNotebook

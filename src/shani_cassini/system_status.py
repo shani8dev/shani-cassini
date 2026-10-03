@@ -3780,3 +3780,106 @@ def _parse_exim_queue(text: str) -> list[dict]:
             "recipient": recipient,
         })
     return rows
+
+
+APCUPSD_CONF: Final = "/etc/apcupsd/apcupsd.conf"
+# The directives whose value is worth showing, in the order they are asked
+# about. Only UPSNAME, DEVICE, LISTEN/HOSTPORT and MONITOR are read: the rest
+# of the shipped file is template text, and none of the remaining directives
+# describe anything about the machine rather than about the daemon.
+_UPS_DIRECTIVES: Final = ("UPSNAME", "DEVICE", "LISTEN", "HOSTPORT", "MONITOR")
+
+
+def _parse_apcupsd_conf(text: str) -> dict[str, str]:
+    """The uncommented apcupsd.conf directives, as {name: value}.
+
+    A commented line is not a setting, and this file is mostly comments: the
+    Arch 4.15.2 package ships three `#UPSNAME` lines and **every one of them
+    is commented**, while `DEVICE /dev/usb/hid/hiddev[0-9]` at line 92 is not.
+    So out of the box there is a device pattern to watch and nothing to call
+    it, and the honest report of that is "no UPS configured" - which is a
+    different thing from apcupsd being broken or absent, and a different thing
+    again from a UPS that is present and reporting.
+
+    The last occurrence of a directive wins, which is how apcupsd itself reads
+    the file: a later line replaces an earlier one rather than both applying.
+    """
+    found: dict[str, str] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        # apcupsd's own syntax allows whitespace around '=' as well as spaces.
+        name, _, value = line.partition(" ")
+        if not value:
+            continue
+        value = value.strip()
+        if value and name.upper() in _UPS_DIRECTIVES:
+            found[name.upper()] = value
+    return found
+
+
+def ups_state(done: Callable[[dict, str], None]) -> None:
+    """What the machine knows about a UPS, from its own files and daemon.
+
+    Read-only, and deliberately not a status parser. `apcaccess status` prints
+    a block of `KEY : VALUE` lines whose exact shape could not be observed
+    here - there is no UPS on this host and apcupsd cannot be made to answer
+    without one - and a settings panel that guessed the format would be
+    reporting numbers no tool produced. So the live figures are shown as the
+    tool's own words, and this function parses only what it has read: the
+    shipped config file, and systemd's answer about the daemon.
+
+    `apcaccess` lives in /usr/sbin, so it is resolved with tool_path_or_self()
+    rather than handed a bare name - the same trap as `smartctl`, and getting
+    it wrong makes a working daemon read as missing.
+    """
+    conf: dict[str, str] = {}
+    conf_error = ""
+    try:
+        with open(APCUPSD_CONF, encoding="utf-8", errors="replace") as fh:
+            conf = _parse_apcupsd_conf(fh.read())
+    except FileNotFoundError:
+        conf_error = "apcupsd is not installed (no %s)" % APCUPSD_CONF
+    except OSError as e:
+        conf_error = f"could not read {APCUPSD_CONF}: {e}"
+
+    name = conf.get("UPSNAME", "")
+    configured = bool(name)
+
+    def on_service(text: Optional[str], err: str) -> None:
+        service: Optional[bool] = None
+        if text is not None:
+            state = text.strip().lower()
+            if state in ("active", "activating"):
+                service = True
+            elif state in ("inactive", "failed", "deactivating", "unknown"):
+                service = False
+
+        payload: dict = {
+            "installed": not conf_error,
+            "configured": configured,
+            "name": name,
+            "device": conf.get("DEVICE", ""),
+            "listen": conf.get("LISTEN") or conf.get("HOSTPORT", ""),
+            "monitor": conf.get("MONITOR", ""),
+            "service": service,
+            "status": "",
+            "error": conf_error,
+        }
+
+        # The status read is only worth attempting when there is something to
+        # ask about. Running it with no UPSNAME configured produces a
+        # connection error that says more about the absence than about any
+        # fault, and would render as a failure on a machine that is fine.
+        if not configured or not have_tool("apcaccess"):
+            done(payload, conf_error)
+            return
+
+        def on_status(text: Optional[str], err: str) -> None:
+            payload["status"] = (text or "").strip()
+            done(payload, conf_error)
+
+        run_text([tool_path_or_self("apcaccess"), "status"], on_status)
+
+    run_text(["systemctl", "is-active", "apcupsd"], on_service)

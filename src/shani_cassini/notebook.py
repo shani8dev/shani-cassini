@@ -57,6 +57,7 @@ from shani_cassini.tabs.firmware import FirmwareTab
 from shani_cassini.tabs.graphics import GraphicsTab
 from shani_cassini.tabs.journal import JournalTab
 from shani_cassini.tabs.outbound_mail import OutboundMailTab
+from shani_cassini.tabs.ups import UpsTab
 from shani_cassini.tabs.modules import ModulesTab
 logger = logging.getLogger(__name__)
 
@@ -171,6 +172,10 @@ SECTIONS = [
         (JournalTab, "journal", "Journal", "text-x-generic-symbolic",
          "Every boot the journal still holds, and a search across the entries. "
          "Reads logs; never rotates or vacuums them"),
+        (UpsTab, "ups", "UPS", "battery-symbolic",
+         "Whether the machine will survive losing power - the apcupsd "
+         "configuration, whether the daemon runs, and what it reports. "
+         "Neither desktop has a panel for this. Read-only"),
         (OutboundMailTab, "outbound-mail", "Outbound Mail",
          "mail-send-symbolic",
          "Whether mail this machine sends will actually leave it - the exim "

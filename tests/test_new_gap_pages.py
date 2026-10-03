@@ -1547,11 +1547,65 @@ class TestOutboundMail:
         assert any("FROZEN" in str(x) for x in texts), texts
         assert any("discarded" in str(x) for x in texts), texts
 
-    def test_the_page_never_sends_or_deletes(self):
-        """It reports; it does not act. Nothing here may appear in its argv."""
+    def test_the_reader_can_only_ever_run_the_two_read_only_exim_commands(self):
+        """The real invariant, and it lives in the reader rather than the page.
+
+        An earlier version of this test asserted the *page module's source*
+        did not mention an acting exim flag. That could not work: the page
+        documents `exim -Mf` for the user to run by hand, so the flag is
+        legitimately present, and the test then had to exclude the
+        documentation by string surgery - which broke the moment that text was
+        reworded, and had already broken once when `<msgid>` became
+        `MESSAGE-ID` to satisfy Pango.
+
+        What matters is which argv the reader can build, so that is what is
+        asserted: exactly the two read-only commands, by AST, over every list
+        literal in the module that is handed to a runner. `exim -Mf`, `-bs` and
+        `-odf` would all send, retry or delete mail, and none of them can be
+        constructed by this reader without failing this test.
+        """
+        import ast
         import inspect
-        from shani_cassini.tabs import outbound_mail as om
-        src = inspect.getsource(om)
-        for banned in ("-Mf", "--force", "exim -bs", "exim -odf", "rm "):
-            assert banned not in src.replace("sudo exim -Mf <msgid>", ""), \
-                f"the page references {banned!r}, which would act on mail"
+        from shani_cassini import system_status as ss
+        tree = ast.parse(inspect.getsource(ss))
+        # The binary is the module constant EXIM, resolved through
+        # tool_path_or_self(), so the argv is [Call, Constant, ...] rather than
+        # a list of literals - matching on a literal "exim" first element finds
+        # nothing and the guard passes while inspecting nothing, which is
+        # exactly what the first version of this test did.
+        def _is_exim_argv_head(node) -> bool:
+            """Does this AST node name the exim binary?
+
+            The real shape is `tool_path_or_self(EXIM)` - a Call wrapping a
+            module constant - so neither "the head is a string" nor "the head
+            is a Name" identifies it. Both were tried, and both made this guard
+            inspect nothing while reporting success.
+            """
+            if isinstance(node, ast.Name):
+                return node.id == "EXIM"
+            if isinstance(node, ast.Constant):
+                return node.value == "exim"
+            if isinstance(node, ast.Call):
+                args = [a for a in node.args
+                        if isinstance(a, (ast.Name, ast.Constant))]
+                return any(_is_exim_argv_head(a) for a in args)
+            return False
+
+        argvs = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.List) or not node.elts:
+                continue
+            if not _is_exim_argv_head(node.elts[0]):
+                continue
+            flags = tuple(e.value for e in node.elts[1:]
+                          if isinstance(e, ast.Constant))
+            argvs.add(flags)
+        assert argvs, "no exim argv found - the guard would inspect nothing"
+        assert argvs == {("-bp",), ("-bP", "transports")}, argvs
+        # And nothing anywhere in the module builds one dynamically.
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                for acting in ("-Mf", "-bs", "-odf", "-odi", "-drop"):
+                    assert acting not in node.value, (
+                        f"an exim flag that acts on mail appears in "
+                        f"system_status.py: {node.value!r}")

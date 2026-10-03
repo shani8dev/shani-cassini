@@ -206,6 +206,60 @@ with `iso-install --boot-only --console-exec=CMD`, for anything touching `/var`.
    compatibility shim for the old `update` test-command name: it is
    read-only and does not install, switch slots, or run the agent.
 
+## The measured panel gap (re-derived 2026-10-03; do not re-derive from memory)
+
+A page is only worth adding if **neither** desktop has a panel for its subject.
+Both panel sets were enumerated from the installed packages rather than
+recalled, and they are the ground truth for every "no panel exists" claim here:
+
+| Set | Count | Source |
+|---|---|---|
+| GNOME Control Center 46.7 | **28 panels** | `dpkg -L gnome-control-center` → `gnome-*-panel.desktop` |
+| Plasma 6.7 System Settings | **62 modules** | every cached package's `usr/lib/qt6/plugins/plasma/kcms/systemsettings/kcm_*.so` |
+
+Two findings from the Plasma sweep that are worth keeping, because both are
+wrong from memory:
+
+- **`systemsettings` ships no KCM plugins at all.** Its package contains one
+  `.so` (`krunner_systemsettings.so`) and 23 category `.desktop` files; the
+  modules live in `plasma-workspace`, `kwin` and friends. Enumerating that one
+  package yields zero panels and reads as "Plasma has no settings".
+- **Plasma 6.7 ships no printer or scanner module.** `grep -i 'print|cups|paper'`
+  over all 62 matches only `wallpaper`, and no cached package contains a printer
+  KCM. GNOME *does* have `gnome-printers-panel`. So CUPS administration is a
+  real Cassini gap for Plasma users and a duplicate for GNOME users.
+
+Shipped-but-unrepresented, checked against both sets (verified present in the
+built image's package list, and absent from GNOME's 28 and Plasma's 62):
+
+| Subsystem | Shipped as | Cassini |
+|---|---|---|
+| UPS | `apcupsd` | **page added 2026-10-03** |
+| Outbound mail | `exim` | **page added 2026-10-03** |
+| Local DNS resolver | `bind`, `dnsmasq`, `openresolv`, `dnscrypt-proxy`, `systemd-resolved` | none — **highest-value remaining gap** |
+| Software RAID | `mdadm` | none |
+| TOTP / 2FA | `oath-toolkit` | none |
+| Password quality | `libpwquality`, `cracklib` | none |
+| zram | `zram-generator` | none |
+| Userspace fs encryption | `fscrypt`, `gocryptfs`, `ecryptfs-utils` | Encryption covers LUKS/TPM only |
+| CPU microcode | `amd-ucode`, `intel-ucode` | Firmware is `fwupd` only |
+| EFI boot entries | `efibootmgr` | none (`bootctl` still unshown) |
+| IRQ balancing | `irqbalance` | none |
+| Process priority | `ananicy-cpp` | none |
+| polkit policies | `polkit` | none |
+| Camera | `libcamera`, `v4l-utils` | none |
+| mDNS | `avahi` | none |
+| Third-party app versions | `flatpak`, `snapd`, `ostree` | none |
+| Printers / CUPS | `cups`, `cups-browsed` | none (Plasma has no panel either) |
+| btrfs compression | `compsize` | Btrfs page, not this |
+| SMART test schedule | `smartmontools`'s `smartd` | Disk Health reads only, cannot schedule |
+
+**Not gaps, despite looking like them:** `systemd-resolved`/`openresolv` are
+files rather than panels, and GNOME's `network` panel plus Plasma's
+`networksettings` are NetworkManager panels — they configure a *connection*,
+not a resolver, so the DNS row above is real. `bind` shipping on a workstation
+image is itself worth a look.
+
 ## Known issues (current state, 2026-10-01)
 
 - **Four fixes from reading all 204 `shani-docs` pages as a spec. Each was
