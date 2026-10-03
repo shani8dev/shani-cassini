@@ -22,6 +22,7 @@ from shani_cassini.tabs.fleet import FleetTab
 from shani_cassini.tabs.health import HealthTab
 from shani_cassini.tabs.backup import BackupTab
 from shani_cassini.tabs.chronoa import ChronoaTab
+from shani_cassini.tabs.dns import DnsTab
 from shani_cassini.tabs.secureboot import SecureBootTab
 from shani_cassini.tabs.drivers import DriversTab
 from shani_cassini.tabs.encryption import EncryptionTab
@@ -172,6 +173,10 @@ SECTIONS = [
         (JournalTab, "journal", "Journal", "text-x-generic-symbolic",
          "Every boot the journal still holds, and a search across the entries. "
          "Reads logs; never rotates or vacuums them"),
+        (DnsTab, "dns", "DNS", "network-transmit-receive-symbolic",
+         "Which of the four installed resolvers actually answers, what the "
+         "machine's resolver configuration says, and why the other three do "
+         "nothing. Neither desktop's network panel covers this. Read-only"),
         (UpsTab, "ups", "UPS", "battery-symbolic",
          "Whether the machine will survive losing power - the apcupsd "
          "configuration, whether the daemon runs, and what it reports. "

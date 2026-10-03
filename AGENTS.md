@@ -236,7 +236,7 @@ built image's package list, and absent from GNOME's 28 and Plasma's 62):
 |---|---|---|
 | UPS | `apcupsd` | **page added 2026-10-03** |
 | Outbound mail | `exim` | **page added 2026-10-03** |
-| Local DNS resolver | `bind`, `dnsmasq`, `openresolv`, `dnscrypt-proxy`, `systemd-resolved` | none — **highest-value remaining gap** |
+| Local DNS resolver | `bind`, `dnsmasq`, `openresolv`, `dnscrypt-proxy`, `systemd-resolved` | **page added 2026-10-03** |
 | Software RAID | `mdadm` | none |
 | TOTP / 2FA | `oath-toolkit` | none |
 | Password quality | `libpwquality`, `cracklib` | none |
@@ -261,6 +261,50 @@ not a resolver, so the DNS row above is real. `bind` shipping on a workstation
 image is itself worth a look.
 
 ## Known issues (current state, 2026-10-01)
+
+- **The DNS page exists because four resolvers ship and one answers, and the
+  obvious reading of the image's own config is the wrong one.** Added
+  2026-10-03. `systemd-resolved`, `dnsmasq`, BIND and `dnscrypt-proxy` are all
+  in the package list; neither desktop's network panel says which is in charge,
+  because GNOME's `network` panel and Plasma's `networksettings` are
+  NetworkManager panels and the resolver is a different layer.
+
+  **Everything below was read out of the built image rootfs**
+  (`shani-install-media/cache/temp/gnome/x86_64/airootfs`), not from
+  documentation, and the first reading was wrong:
+
+  - `/etc/resolv.conf` is a **symlink to
+    `/run/systemd/resolve/stub-resolv.conf`**, so resolved runs in stub mode
+    and everything asks `127.0.0.53`. The target is under `/run` and is
+    **absent from the image** - written at boot. So a dangling `resolv.conf` is
+    the normal pre-first-boot state and a real fault afterwards; the page reads
+    the symlink and the file separately and says which case it is, rather than
+    reporting an empty parse as "no nameservers configured".
+  - `systemd-resolved.service` is enabled and not masked.
+  - `/etc/systemd/resolved.conf` ships **`DNS=8.8.8.8 8.8.4.4`**. This looks
+    like "the network's DNS settings are overridden", and an earlier note in
+    this file said so. systemd 262's own `resolved.conf(5)` says the opposite:
+    requests "are sent to one of the listed DNS servers **in parallel to**
+    suitable per-link DNS servers acquired from systemd-networkd.service(8) **or
+    set at runtime by external applications**" - NetworkManager being one of
+    those. So the defensible claim is that **every lookup also reaches Google**,
+    not that the user's resolver is ignored. The page's row says "queried in
+    parallel, not instead of yours", and
+    `test_the_global_dns_is_described_as_parallel_not_as_an_override` fails if
+    the word "override" comes back.
+  - `named.conf`, `dnsmasq.conf` and `dnscrypt-proxy.conf` are **all absent**, so
+    three of the four packages are installed and inert. The port-53 conflict
+    with the stub listener is therefore a *possible* future fault, and the page
+    does not present it as a present one.
+
+  **No live query, deliberately.** `resolvectl status` needs a running daemon,
+  so the per-link view is named as a command rather than guessed at - the same
+  call the UPS and Firewall pages make. Rendered in Arch under GTK 4.22.5 /
+  libadwaita 1.9.4 against this host's **real** `/etc/resolv.conf`
+  (`192.168.31.1`, `search lan` - a plain file, not the image's stub symlink),
+  with "No resolver service is active" which is the truth in a container with no
+  systemd. Two negative controls run, both fail the suite.
+
 
 - **Four fixes from reading all 204 `shani-docs` pages as a spec. Each was
   verified against the image repos before being believed — three of the four
@@ -340,9 +384,11 @@ image is itself worth a look.
 
   **Not done, and why.** A survey of all 204 docs also proposed: an `/etc`
   customisation browser with per-file revert on Persistence; `shani-deploy
-  --dry-run` before the one irreversible button; a DNS page (three shipped
-  resolvers, one switch, a documented port-53 conflict); SMB in Sharing; firewall
-  write access; the keyring trust-root report; `pam_pwquality` posture. All are
+  --dry-run` before the one irreversible button; SMB in Sharing; firewall
+  write access; the keyring trust-root report; `pam_pwquality` posture. (A DNS
+  page was on that list and is **built** - see below. Its "three shipped
+  resolvers, one switch" premise turned out to be wrong on measurement: one is
+  wired up and three are inert.) All are
   real, and all are **not** in this commit. They need their own verification,
   and the three doc-side corrections they depend on are the ones worth having
   landed first.

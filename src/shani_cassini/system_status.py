@@ -3883,3 +3883,179 @@ def ups_state(done: Callable[[dict, str], None]) -> None:
         run_text([tool_path_or_self("apcaccess"), "status"], on_status)
 
     run_text(["systemctl", "is-active", "apcupsd"], on_service)
+
+
+RESOLVED_CONF: Final = "/etc/systemd/resolved.conf"
+RESOLVED_DROPIN_DIR: Final = "/etc/systemd/resolved.conf.d"
+RESOLV_CONF: Final = "/etc/resolv.conf"
+
+# The four resolver implementations the image ships, and the file that would
+# have to exist for one to be doing anything. All four verified present as
+# *packages* in the built image; only the first has its config, and only it is
+# enabled - see dns_state()'s docstring.
+_DNS_RESOLVERS: Final = (
+    # (label, tool, config file, systemd unit)
+    ("systemd-resolved", "resolvectl", RESOLVED_CONF, "systemd-resolved.service"),
+    ("dnsmasq", "dnsmasq", "/etc/dnsmasq.conf", "dnsmasq.service"),
+    ("BIND (named)", "named", "/etc/named.conf", "named.service"),
+    ("dnscrypt-proxy", "dnscrypt-proxy", "/etc/dnscrypt-proxy/dnscrypt-proxy.conf",
+     "dnscrypt-proxy.service"),
+)
+
+
+def _parse_resolv_conf(text: str) -> dict:
+    """A resolv.conf's directives, as {keyword: [values]}.
+
+    Only `nameserver`, `search` and `options` are read, and only because those
+    are the three a user would want to see. resolv.conf(5) allows comments after
+    a value and blank lines between entries, and a `#`-prefixed line is not a
+    directive - the shipped file is mostly those.
+    """
+    out: dict[str, list[str]] = {"nameserver": [], "search": [], "options": []}
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        key = parts[0]
+        if key in out:
+            out[key].extend(parts[1:])
+    return out
+
+
+def _parse_resolved_conf(text: str) -> dict[str, str]:
+    """The uncommented `key=value` pairs from a resolved.conf.
+
+    Section headers are skipped rather than tracked, because every setting the
+    page shows lives in [Resolve] and a conf.d drop-in may legally omit the
+    header. A later file overriding an earlier one is resolved by the caller,
+    which reads drop-ins in order - the same precedence systemd uses.
+    """
+    found: dict[str, str] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", ";")) or line.startswith("["):
+            continue
+        key, sep, value = line.partition("=")
+        if not sep:
+            continue
+        found[key.strip()] = value.strip()
+    return found
+
+
+def dns_state(done: Callable[[dict, str], None]) -> None:
+    """Which resolver actually answers on this machine, and who else is installed.
+
+    Four resolver implementations ship as packages - systemd-resolved, dnsmasq,
+    BIND and dnscrypt-proxy - and this exists because **neither desktop's
+    network panel can tell you which one is in charge**, or that three of them
+    are inert. What is wired up, verified against the built image rootfs rather
+    than assumed:
+
+    - `/etc/resolv.conf` is a **symlink to
+      `/run/systemd/resolve/stub-resolv.conf`**, so systemd-resolved is in stub
+      mode and everything on the machine talks to 127.0.0.53. That target is
+      under `/run`, so **it does not exist in the image at all** - it is made at
+      boot. A dangling `resolv.conf` is therefore the normal state of an image
+      before first boot and a real fault afterwards, and those are not the same
+      thing.
+    - `systemd-resolved.service` is enabled, and not masked.
+    - The image ships `/etc/systemd/resolved.conf` with `DNS=8.8.8.8 8.8.4.4`.
+      This does **not** override the network's own resolvers: systemd 262's own
+      `resolved.conf(5)` says requests "are sent to one of the listed DNS
+      servers **in parallel to** suitable per-link DNS servers acquired from
+      systemd-networkd.service(8) **or set at runtime by external
+      applications**" - NetworkManager being one. So the honest reading is that
+      every lookup also goes to Google, not that the user's configured resolver
+      is ignored. An earlier note in this file claimed the opposite.
+    - `named.conf`, `dnsmasq.conf` and `dnscrypt-proxy.conf` are all **absent**
+      from the built image, so those three packages are installed and doing
+      nothing. Enabling any of them would contend for port 53 with the stub
+      listener, which is the conflict worth naming - and it is a future
+      possibility here, not a present fault.
+
+    Read-only, and deliberately without a live query. `resolvectl status` needs
+    a running daemon, so the per-link view a container cannot produce is named
+    as a command rather than guessed at.
+    """
+    payload: dict = {
+        "resolv_conf": {},
+        "resolv_conf_target": "",
+        "resolv_conf_missing": False,
+        "resolved_conf": {},
+        "resolved_dropins": [],
+        "resolvers": [],
+        "errors": [],
+    }
+
+    # /etc/resolv.conf: the symlink and what it points at are the whole answer.
+    try:
+        payload["resolv_conf_target"] = os.readlink(RESOLV_CONF)
+    except OSError:
+        payload["resolv_conf_target"] = ""
+    try:
+        with open(RESOLV_CONF, encoding="utf-8", errors="replace") as fh:
+            payload["resolv_conf"] = _parse_resolv_conf(fh.read())
+    except FileNotFoundError:
+        # Expected whenever the stub file has not been written yet, which on a
+        # booted image means systemd-resolved is not running. Reported as its
+        # own state rather than as an error, because it is also the state of
+        # every image before its first boot.
+        payload["resolv_conf_missing"] = True
+    except OSError as e:
+        payload["errors"].append(f"could not read {RESOLV_CONF}: {e}")
+
+    # resolved.conf, then any drop-ins, which take precedence in order.
+    conf: dict[str, str] = {}
+    if os.path.exists(RESOLVED_CONF):
+        try:
+            with open(RESOLVED_CONF, encoding="utf-8", errors="replace") as fh:
+                conf = _parse_resolved_conf(fh.read())
+        except OSError as e:
+            payload["errors"].append(f"could not read {RESOLVED_CONF}: {e}")
+    if os.path.isdir(RESOLVED_DROPIN_DIR):
+        for name in sorted(os.listdir(RESOLVED_DROPIN_DIR)):
+            if not name.endswith(".conf"):
+                continue
+            path = os.path.join(RESOLVED_DROPIN_DIR, name)
+            try:
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    conf.update(_parse_resolved_conf(fh.read()))
+                payload["resolved_dropins"].append(name)
+            except OSError as e:
+                payload["errors"].append(f"could not read {path}: {e}")
+    payload["resolved_conf"] = conf
+
+    for label, tool, cfg, unit in _DNS_RESOLVERS:
+        payload["resolvers"].append({
+            "label": label,
+            "installed": have_tool(tool),
+            "config": cfg,
+            "config_present": os.path.exists(cfg),
+            "unit": unit,
+            "service": None,
+        })
+
+    def fill(index: int, text: Optional[str], err: str) -> None:
+        if index >= len(payload["resolvers"]):
+            done(payload, "; ".join(payload["errors"]))
+            return
+        row = payload["resolvers"][index]
+        if text is not None:
+            state = text.strip().lower()
+            row["service"] = state if state in (
+                "active", "activating", "inactive", "failed",
+                "deactivating", "unknown") else None
+        if index + 1 < len(_DNS_RESOLVERS):
+            _probe(index + 1, fill)
+        else:
+            done(payload, "; ".join(payload["errors"]))
+
+    def _probe(index: int, sink) -> None:
+        run_text(["systemctl", "is-active", _DNS_RESOLVERS[index][3]],
+                 lambda text, err, i=index: sink(i, text, err))
+
+    if payload["resolvers"]:
+        _probe(0, fill)
+    else:
+        done(payload, "")
