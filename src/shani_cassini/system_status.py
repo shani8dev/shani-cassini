@@ -4340,3 +4340,173 @@ def inbound_access_state(done: Callable[[dict, str], None]) -> None:
         _probe(0, fill)
     else:
         done({"rows": [], "inbound": 0, "errors": []}, "")
+
+
+MICROCODE_SYSFS: Final = "/sys/devices/system/cpu/cpu0/microcode/version"
+SMARTD_CONF: Final = "/etc/smartd.conf"
+SMARTD_RUNNER: Final = "/usr/share/smartmontools/smartd-runner"
+
+
+def cpu_microcode() -> dict:
+    """The CPU microcode revision, read from sysfs - no tool and no privilege.
+
+    Distinct from the Firmware page's `fwupdmgr` devices, and worth its own row
+    because the two update by different mechanisms and mean different things:
+    `fwupdmgr` manages device firmware (SSDs, NICs, the embedded controller),
+    while CPU microcode is applied by the boot chain - and Shanios builds UKIs
+    with dracut, so the microcode is embedded in the image itself and only
+    changes on a rebuild, which no firmware updater can influence. A machine can be fully
+    up-to-date per LVFS and still be running old microcode, and nothing in a
+    desktop's firmware panel shows that.
+
+    Reported per CPU, not once: a mixed or hotplugged machine can have more than
+    one revision, and a single value would hide that. `None` means the kernel
+    does not expose the file, which is a real answer about this kernel rather
+    than a failure.
+    """
+    revisions: dict[str, str] = {}
+    base = "/sys/devices/system/cpu"
+    try:
+        cpus = sorted(d for d in os.listdir(base) if d.startswith("cpu")
+                      and d[3:].isdigit())
+    except OSError:
+        return {"revisions": {}, "count": 0}
+    for cpu in cpus:
+        path = os.path.join(base, cpu, "microcode", "version")
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                value = fh.read().strip()
+        except OSError:
+            continue
+        if value:
+            revisions.setdefault(value, []).append(cpu)
+    return {"revisions": revisions, "count": len(cpus)}
+
+
+def zram_state() -> dict:
+    """Compressed swap, from the kernel's own sysfs - no tool and no privilege.
+
+    `zram-generator` ships in the image and creates a zram device at boot if it
+    is configured to. **`/sys/class/zram-control` being empty is the normal state
+    on a machine with no zram device**, and it is the answer worth reporting: it
+    is not an error, and reporting "no information" would hide that the feature
+    is simply not in use. Sizes come from the kernel's `disksize` and the
+    configured `mem_limit`, which are in different units (bytes and bytes) and
+    are both read rather than derived.
+    """
+    devices: list[dict] = []
+    ctl = "/sys/class/zram-control"
+    try:
+        names = sorted(d for d in os.listdir(ctl) if d.startswith("zram"))
+    except OSError:
+        return {"present": False, "devices": [], "note": "zram-control absent"}
+    for name in names:
+        base = os.path.join("/sys/block", name)
+        entry = {"name": name, "size": 0, "disksize": 0, "mem_limit": 0,
+                 "used": 0, "algorithm": ""}
+        for key, attr in (("disksize", "disksize"), ("mem_limit", "mem_limit"),
+                          ("used", "orig_data_size"), ("algorithm", "comp_algorithm")):
+            try:
+                with open(os.path.join(base, attr), encoding="utf-8",
+                          errors="replace") as fh:
+                    text = fh.read().strip()
+            except OSError:
+                continue
+            if attr == "comp_algorithm":
+                entry[key] = text
+            elif text.isdigit():
+                entry[key] = int(text)
+        devices.append(entry)
+    return {"present": bool(devices), "devices": devices,
+            "note": "" if devices else "no zram device is active"}
+
+
+def _parse_smartd_conf(text: str) -> dict:
+    """What smartd.conf actually schedules, from the file's own directives.
+
+    Only the directives that decide *whether and when* a test runs are read:
+    `DEVICESCAN` (scan for disks), `DIRECTORY` (a scan include), and the
+    `-n`/`-s` schedule flags. `-n standby` defers a test until the disk is not in
+    standby and `-n never` declines to test that disk at all, so the two mean
+    opposite things and must not be collapsed into "scheduled".
+    """
+    out: dict = {"scan": False, "directory": "", "line": "",
+                "per_disk": 0, "never": 0, "deferred": 0, "scan_never": False}
+    for raw in text.splitlines():
+        line = raw.split("#")[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        head = parts[0].upper()
+        # `-n` matters on DEVICESCAN as well as on DEVICE: the shipped config is
+        # a single `DEVICESCAN ... -n standby` line, so reading `-n` only from
+        # DEVICE lines reported the shipped schedule as *nothing scheduled* -
+        # the exact opposite of what the file asks for.
+        if head in ("DEVICESCAN", "DEVICE") and "-n" in parts:
+            idx = parts.index("-n") + 1
+            value = parts[idx].lower() if idx < len(parts) else ""
+            if value == "never":
+                if head == "DEVICESCAN":
+                    out["scan_never"] = True
+                else:
+                    out["never"] += 1
+            elif head == "DEVICESCAN":
+                out["deferred"] += 1
+        if head == "DEVICESCAN":
+            out["scan"] = True
+            out["line"] = line
+        elif head == "DIRECTORY":
+            if len(parts) > 1:
+                out["directory"] = parts[1]
+                out["scan"] = True
+                out["line"] = line
+        elif head == "DEVICE":
+            # Only the disk count here. The `-n` schedule was counted above, for
+            # DEVICE as well as DEVICESCAN; leaving the original per-line `-n`
+            # handling in place counted every DEVICE line twice, so one
+            # `DEVICE /dev/sda -n never` reported `never: 2`.
+            out["per_disk"] += 1
+            out["line"] = out["line"] or line
+    return out
+
+
+def smartd_schedule(done: Callable[[dict, str], None]) -> None:
+    """Whether SMART tests are actually scheduled - which nothing else reports.
+
+    The Disk Health page reads each disk's attributes on demand and deliberately
+    cannot *start* a self-test, because that writes to the disk. What it could
+    not say is whether anything was ever going to run one: `smartd` is the
+    daemon that schedules them, it is a separate unit from `smartmontools`, and
+    on a default install it is stopped. A disk whose SMART data is read on
+    demand is a disk that is never tested.
+
+    Read-only. It reports the schedule the shipped config asks for and the
+    daemon's real state; it never writes to a disk or starts a test.
+    """
+    conf: dict = {}
+    err = ""
+    if os.path.exists(SMARTD_CONF):
+        try:
+            with open(SMARTD_CONF, encoding="utf-8", errors="replace") as fh:
+                conf = _parse_smartd_conf(fh.read())
+        except OSError as e:
+            err = f"could not read {SMARTD_CONF}: {e}"
+    else:
+        conf = {"scan": False, "directory": "", "line": "",
+                "per_disk": 0, "never": 0, "deferred": 0}
+        err = f"no {SMARTD_CONF}"
+
+    def on_service(text: Optional[str], err2: str) -> None:
+        service: Optional[bool] = None
+        if text is not None:
+            state = text.strip().lower()
+            if state in ("active", "activating"):
+                service = True
+            elif state in ("inactive", "failed", "deactivating", "unknown"):
+                service = False
+        done({"config_present": os.path.exists(SMARTD_CONF),
+              "schedule": conf, "service": service,
+              "runner_present": os.path.exists(SMARTD_RUNNER),
+              "error": err}, err)
+
+    run_text(["systemctl", "is-active", "smartd.service"], on_service)

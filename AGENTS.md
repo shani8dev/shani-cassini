@@ -251,7 +251,7 @@ built image's package list, and absent from GNOME's 28 and Plasma's 62):
 | mDNS | `avahi` | none |
 | Third-party app versions | `flatpak`, `snapd`, `ostree` | none |
 | Printers / CUPS | `cups`, `cups-browsed` | none (Plasma has no panel either) |
-| btrfs compression | `compsize` | Btrfs page, not this |
+| btrfs compression | `compsize` (its own package, like `bees` and `duperemove` - **not** in `btrfs-progs`) | Btrfs page, not this |
 | SMART test schedule | `smartmontools`'s `smartd` | Disk Health reads only, cannot schedule |
 
 **Not gaps, despite looking like them:** `systemd-resolved`/`openresolv` are

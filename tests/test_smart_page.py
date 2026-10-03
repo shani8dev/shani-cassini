@@ -496,7 +496,12 @@ def test_no_disk_found_says_so_and_invents_no_path(tmp_path, monkeypatch) -> Non
     assert spin(lambda: "no disk" in all_text(tab).lower()), rows(tab)
     assert "/dev/" not in all_text(tab), \
         "no device path may be invented: %s" % (all_text(tab),)
-    assert len(walk(tab)) <= 2, rows(tab)
+    # The substantive claim is the /dev/ check above: no device path may be
+    # invented when smartctl found nothing. The row count is a secondary guard
+    # against a fabricated per-disk row, and it moved from 2 to 3 when the page
+    # gained a permanent "Test schedule" row (smartd), which is about whether
+    # anything tests these disks rather than about any disk.
+    assert len(walk(tab)) <= 3, rows(tab)
 
 
 def test_a_refused_authorization_is_reported_as_it_arrived(tmp_path, monkeypatch) -> None:
@@ -579,8 +584,12 @@ def test_repeated_refresh_neither_duplicates_rows_nor_crashes(tmp_path, monkeypa
         assert spin(lambda: len(walk(tab)) == first), \
             f"a refresh left {len(walk(tab))} rows, not {first}: {rows(tab)}"
     assert len(walk(tab)) == first, (len(walk(tab)), first)
-    # Every row but the notice one, which is permanent and so is not tracked.
-    assert len(tab._added) == first - 1, (len(tab._added), first)
+    # Every row but the permanent ones, which are not tracked because nothing
+    # refills them: the notice row, and the "Test schedule" row this page gained
+    # for smartd (whether anything is scheduled to test these disks - a
+    # different question from reading them, and one the page could not answer).
+    # Two untracked rows, not one, since that group was added.
+    assert len(tab._added) == first - 2, (len(tab._added), first)
 
 
 def test_the_page_says_it_only_reads_and_why_it_asks_for_authorisation(tmp_path, monkeypatch) -> None:

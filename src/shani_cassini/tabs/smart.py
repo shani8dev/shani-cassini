@@ -237,6 +237,19 @@ class SmartTab(Gtk.Box):
         # The rows this page added to each group, so a refill can take exactly
         # those back out.
         self._added: list[tuple[Adw.PreferencesGroup, Adw.ActionRow]] = []
+
+        # --- test schedule (smartd), which nothing else on this page covers
+        self._sched = Adw.PreferencesGroup(
+            title="Test schedule",
+            description=(
+                "This page reads each disk's SMART data when you ask, and "
+                "cannot start a self-test - that writes to the disk. Whether "
+                "anything is scheduled to test these disks at all is "
+                "`smartd`'s job, and it is a separate service that is stopped "
+                "by default. Read-only: nothing here runs a test."))
+        self._row_sched = _row("Scheduled tests", "Reading…")
+        self._sched.add(self._row_sched)
+        page.append(self._sched)
         self._devices: list[dict] = []
         self._lines: list[str] = []
         self._scan_error = ""
@@ -286,6 +299,12 @@ class SmartTab(Gtk.Box):
             self._btn_refresh.set_sensitive(True)
             self._render()
             return
+        # Ask whether anything is *going to* test these disks, before reading
+        # them. This page reads SMART attributes on demand and deliberately
+        # cannot start a self-test, because that writes to the disk - so without
+        # this, a disk whose data is only ever read looks identical to a disk
+        # that is being tested nightly, and it is not.
+        ss.smartd_schedule(self._on_smartd)
         self._set(self._row_notice, SMARTCTL,
                   f"Asking {SMARTCTL} --scan which disks this machine has…",
                   "info")
@@ -296,6 +315,35 @@ class SmartTab(Gtk.Box):
         # output is set up. So it is read as lines, the way pcsc_scan is.
         ss.run_streaming([_smartctl_path(), "--scan"], self._lines.append,
                          self._on_scan)
+
+    def _on_smartd(self, state: dict, err: str) -> None:
+        service = state.get("service")
+        sched = state.get("schedule") or {}
+        if not state.get("config_present"):
+            self._row_sched.set_subtitle(
+                err or f"no {ss.SMARTD_CONF}, so nothing schedules tests")
+            return
+        if sched.get("scan_never"):
+            bits = ["configured to skip every disk"]
+        elif sched.get("scan"):
+            bits = ["scans disks"]
+            if sched.get("deferred"):
+                bits.append("tests deferred until a disk leaves standby")
+        elif sched.get("per_disk"):
+            bits = [f"{sched['per_disk']} disk(s) listed individually"]
+        else:
+            bits = ["configured, but no scan directive found"]
+        if sched.get("never"):
+            bits.append(f"{sched['never']} disk(s) excluded with -n never")
+        if service is True:
+            running = "smartd is running"
+        elif service is False:
+            # The state that matters: attributes get read on demand here, and
+            # nothing else will ever test these disks.
+            running = "smartd is NOT running"
+        else:
+            running = "smartd's state is unknown"
+        self._row_sched.set_subtitle(f"{running} - " + ", ".join(bits))
 
     def _on_scan(self, status: int) -> None:
         if status != 0:

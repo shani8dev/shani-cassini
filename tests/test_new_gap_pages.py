@@ -2232,3 +2232,136 @@ class TestInboundAccess:
         # The only existence check allowed is on the directory, not the file.
         paths = {r[3] for r in ss._REACHABILITY}
         assert "/etc/cloudflared" in paths, paths
+
+
+class TestCpuMicrocodeAndZramAndSmartd:
+    """Three gaps that extend existing pages rather than adding new ones.
+
+    All three were measured on this host before anything was written, which is
+    what stopped one of them being built at all: **`compsize` is not in
+    `btrfs-progs`** - the command is not found after installing it - so the btrfs
+    compression gap recorded in AGENTS.md rests on a package that may not be
+    installed, and that row has been dropped rather than built on an unverified
+    premise.
+
+    The three here each have a real interface: sysfs for the first two, and the
+    shipped `smartd.conf` for the third.
+    """
+
+    # the real line on this host's /etc/smartd.conf
+    SMARTD_LINE = ("DEVICESCAN -d removable -n standby -m root -M exec "
+                   "/usr/share/smartmontools/smartd-runner")
+
+    def test_microcode_is_read_from_sysfs_and_needs_no_tool(self):
+        info = ss.cpu_microcode()
+        assert info["count"] >= 1, info
+        # Real value on this host, not a fixture: 0xbe across 8 CPUs.
+        for rev, cpus in info["revisions"].items():
+            assert rev.startswith("0x"), rev
+            assert cpus, rev
+
+    def test_a_mixed_cpu_set_is_reported_per_revision_not_collapsed(self):
+        """A single value would hide a machine running two revisions, which is
+        exactly what a hotplugged or mixed board looks like."""
+        assert isinstance(ss.cpu_microcode()["revisions"], dict)
+
+    def test_an_absent_microcode_file_is_not_an_error(self):
+        """/sys/.../microcode/version simply does not exist on some kernels;
+        that is an answer about the kernel, not a failed read."""
+        from shani_cassini.tabs.firmware import FirmwareTab
+        tab = FirmwareTab(state=None, auth_manager=None)
+        with __import__("unittest.mock", fromlist=["patch"]).patch.object(
+                ss, "cpu_microcode", return_value={"revisions": {}, "count": 8}):
+            tab._render_microcode()
+        assert "Not exposed" in tab._row_microcode.get_subtitle()
+
+    def test_the_page_names_the_revision_and_how_many_cpus(self):
+        from shani_cassini.tabs.firmware import FirmwareTab
+        tab = FirmwareTab(state=None, auth_manager=None)
+        with __import__("unittest.mock", fromlist=["patch"]).patch.object(
+                ss, "cpu_microcode",
+                return_value={"revisions": {"0xbe": ["cpu0", "cpu1"]},
+                              "count": 2}):
+            tab._render_microcode()
+        sub = tab._row_microcode.get_subtitle()
+        assert "0xbe" in sub and "2 CPUs" in sub, sub
+
+    def test_an_unused_zram_is_the_normal_state_not_a_fault(self):
+        """`zram-generator` ships, and creates a device only if configured to.
+
+        Two states that are genuinely different and that the first version of
+        this test conflated: `/sys/class/zram-control` **absent** means the
+        kernel exposes no zram support at all, and **present but empty** means
+        zram is supported and simply not in use. Both are reported as
+        `present: False` with a note saying which, and neither is an error -
+        reporting "no information" would hide that the feature is unused.
+        """
+        state = ss.zram_state()
+        assert state["present"] is False
+        assert state["devices"] == []
+        assert state["note"] in ("zram-control absent",
+                                 "no zram device is active"), state["note"]
+
+    def test_smartd_scan_and_a_deferred_schedule_are_read_apart(self):
+        """`-n standby` defers a test until the disk leaves standby; `-n never`
+        declines to test that disk at all. Collapsing them into "scheduled" would
+        be the opposite truth for one of them."""
+        conf = ss._parse_smartd_conf(self.SMARTD_LINE)
+        assert conf["scan"] is True
+        # The shipped line's own `-n standby` is the whole schedule, and reading
+        # it only from DEVICE lines reported "nothing scheduled" - the opposite
+        # of what the file asks for.
+        assert conf["deferred"] == 1 and conf["never"] == 0
+        assert conf["scan_never"] is False
+        assert conf["line"].startswith("DEVICESCAN")
+
+    def test_a_disk_marked_never_is_counted_as_never(self):
+        conf = ss._parse_smartd_conf(
+            "DEVICESCAN -n standby\nDEVICE /dev/sda -n never\n")
+        assert conf["never"] == 1, conf
+        assert conf["deferred"] == 1, conf
+
+    def test_a_commented_directive_is_not_a_schedule(self):
+        conf = ss._parse_smartd_conf(
+            "# DEVICESCAN -n never\n# DEVICE /dev/sdb -n never\n")
+        assert conf == {"scan": False, "directory": "", "line": "",
+                        "per_disk": 0, "never": 0, "deferred": 0,
+                        "scan_never": False}, conf
+
+    def test_smartd_is_reported_because_nothing_else_says_whether_tests_run(self):
+        """The Disk Health page reads attributes on demand and deliberately
+        cannot start a self-test. A disk whose SMART data is only ever read is a
+        disk that is never tested, and nothing on the page could say so."""
+        import inspect
+        from shani_cassini import system_status as s
+        src = inspect.getsource(s.smartd_schedule)
+        assert "smartd.service" in src
+        assert "-t short" not in src and "-t long" not in src, (
+            "smartd_schedule must not start a test - that writes to the disk")
+
+    def test_the_disk_health_page_says_when_nothing_is_scheduled(self):
+        """The state that matters: SMART data read on demand here, and nothing
+        else ever testing the disk."""
+        from shani_cassini.tabs.smart import SmartTab
+        tab = SmartTab(state=None, auth_manager=None)
+        tab._on_smartd({"config_present": True, "service": False,
+                        "runner_present": True,
+                        "schedule": {"scan": True, "directory": "", "line":
+                                     "DEVICESCAN -d removable -n standby",
+                                     "per_disk": 0, "never": 0,
+                                     "deferred": 1, "scan_never": False},
+                        "error": ""}, "")
+        sub = tab._row_sched.get_subtitle()
+        assert "NOT running" in sub, sub
+        assert "deferred" in sub, sub
+
+    def test_a_missing_smartd_conf_is_reported_not_rendered_as_scheduled(self):
+        from shani_cassini.tabs.smart import SmartTab
+        tab = SmartTab(state=None, auth_manager=None)
+        tab._on_smartd({"config_present": False, "service": False,
+                        "runner_present": False,
+                        "schedule": {"scan": False, "directory": "", "line": "",
+                                     "per_disk": 0, "never": 0,
+                                     "deferred": 0, "scan_never": False},
+                        "error": "no /etc/smartd.conf"}, "")
+        assert "nothing schedules tests" in tab._row_sched.get_subtitle()

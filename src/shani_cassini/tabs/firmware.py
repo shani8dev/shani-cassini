@@ -40,6 +40,19 @@ from shani_cassini import system_status as ss
 
 logger = logging.getLogger(__name__)
 
+MICROCODE_NOTE = (
+    "CPU microcode is applied by the boot chain, not by the firmware updater "
+    "above, which manages device firmware such as SSDs, NICs and the embedded "
+    "controller. The two update by different mechanisms, so a machine can be "
+    "fully current per LVFS and still be running old microcode, and no desktop "
+    "firmware panel shows that. Read from sysfs: no tool, no password.\n"
+    "Shanios builds unified kernel images with dracut, so the microcode is "
+    "embedded in the UKI rather than shipped as a separate "
+    "/boot/efi/EFI/*/microcode.img - which means the revision below is baked "
+    "in at build time and only changes when the image is rebuilt. A "
+    "`fwupdmgr` update cannot change it."
+)
+
 DEVICES_NOTE = (
     "Read with fwupdmgr get-devices --json, which needs no password. A device "
     "fwupd can write to is marked Updatable; one it merely carries is not."
@@ -97,13 +110,35 @@ class FirmwareTab(Gtk.Box):
         self._row_updates.add_suffix(self._btn_check)
         self._updates.add(self._row_updates)
 
+        # --- CPU microcode, from sysfs
+        self._microcode = Adw.PreferencesGroup(title="CPU microcode",
+                                               description=MICROCODE_NOTE)
+        self._row_microcode = _row("Revision", "Reading\u2026")
+        self._microcode.add(self._row_microcode)
+
         guide = Adw.PreferencesGroup(title="What this page does not do")
         guide.add(_row("Installing firmware", INSTALL_NOTE))
 
-        for group in (self._devices, self._updates, guide):
+        for group in (self._devices, self._updates, self._microcode, guide):
             page.append(group)
 
+        self._render_microcode()
         self.load_devices()
+
+    def _render_microcode(self) -> None:
+        info = ss.cpu_microcode()
+        revs = info.get("revisions") or {}
+        if not revs:
+            # Not the same as "unknown": the kernel simply does not expose the
+            # file, which is an answer about this kernel rather than a failure.
+            self._row_microcode.set_subtitle(
+                "Not exposed by this kernel - nothing to report, not an error")
+            return
+        parts = []
+        for rev, cpus in sorted(revs.items()):
+            where = f"{len(cpus)} CPUs" if len(cpus) > 1 else cpus[0]
+            parts.append(f"{rev} on {where}")
+        self._row_microcode.set_subtitle("; ".join(parts))
 
     # ------------------------------------------------------------------ data
     def load_devices(self) -> None:
