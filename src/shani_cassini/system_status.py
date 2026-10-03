@@ -4510,3 +4510,152 @@ def smartd_schedule(done: Callable[[dict, str], None]) -> None:
               "error": err}, err)
 
     run_text(["systemctl", "is-active", "smartd.service"], on_service)
+
+
+# The four maintenance timers `shani-settings` enables, all from
+# **btrfsmaintenance** and all `OnCalendar=monthly` with `Persistent=true`
+# (verified from the package's own units, not from its README).
+#
+# The plain `btrfs-{balance,defrag,scrub,trim}.{service,timer}` names come from
+# `btrfsmaintenance`. `btrfs-progs` ships only the path-parameterised TEMPLATE
+# `btrfs-scrub@.service` / `btrfs-scrub@.timer`, where `-` stands in for `/`, so
+# the root filesystem is `btrfs-scrub@-.service`. The two schemes use
+# coincidentally identical names, so a reader that trusts the name rather than
+# the file can confidently report on a unit that does not exist.
+_BTRFS_MAINTENANCE: Final = (
+    ("scrub", "btrfs-scrub", "Verify every block against its checksums"),
+    ("balance", "btrfs-balance", "Re-spread chunks across the devices"),
+    ("defrag", "btrfs-defrag", "Compact fragmented extents"),
+    ("trim", "btrfs-trim", "Discard unused space on SSDs"),
+)
+
+# `LoadState` is in this list because it is the only field that distinguishes a
+# unit that exists from one that does not. **`systemctl show` on a nonexistent
+# unit still prints `Result=success`, `ExecMainCode=0`, `ExecMainStatus=0`** -
+# thirty bytes, byte-identical to a unit that exists and has never run - so a
+# reader that treats "the tool said something" as "the unit is there" reports
+# four maintenance jobs present on a machine that has none. Measured on a host
+# where `systemctl cat btrfs-scrub.service` fails.
+_BTRFS_SHOW_FLAGS: Final = ("LoadState", "Result", "ExecMainCode",
+                           "ExecMainStatus", "ExecMainStartTimestamp",
+                           "ExecMainExitTimestamp")
+
+
+def _btrfs_maint_row(label: str, unit: str, job: str, payload: dict) -> dict:
+    return {"label": label, "service": unit, "timer": f"{unit}.timer",
+            "job": job, "present": False, "load_state": "", "enabled": None,
+            "has_run": False, "result": "", "code": None, "status": None,
+            "started": "", "finished": "", "state": "unknown"}
+
+
+def _fill_btrfs_maint(payload: dict, name: str, raw: str) -> None:
+    """One `systemctl show` reply, applied to the row it belongs to.
+
+    The subtlety this exists for: **`Result` is systemd's initial value, not a
+    record of anything having happened.** A service that has never run reports
+    `Result=success` and `ExecMainStatus=0`, so reading those two as "the scrub
+    succeeded" would report success for a scrub that never ran - which on a
+    monthly timer is the state for the first month after install. Only
+    `ExecMainStartTimestamp` distinguishes "never ran" from "ran and passed",
+    so that is the field the verdict is derived from.
+    """
+    values = {}
+    for line in raw.splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            values[key.strip()] = value.strip()
+    row = next((r for r in payload["rows"] if r["service"] == name), None)
+    if row is None:
+        return
+    row["load_state"] = values.get("LoadState", "")
+    row["present"] = row["load_state"] == "loaded"
+    row["result"] = values.get("Result", "")
+    row["started"] = values.get("ExecMainStartTimestamp", "")
+    row["finished"] = values.get("ExecMainExitTimestamp", "")
+    try:
+        row["code"] = int(values.get("ExecMainCode", "") or "")
+    except ValueError:
+        row["code"] = None
+    try:
+        row["status"] = int(values.get("ExecMainStatus", "") or "")
+    except ValueError:
+        row["status"] = None
+    # ExecMainCode is 1 (EXECUTED) only once the unit has actually run, and 0
+    # before that - which is why `Result=success` on its own proves nothing: it
+    # is the value a unit carries before it has ever been started.
+    row["has_run"] = row["code"] == 1 and bool(row["started"])
+    if not row["present"]:
+        row["state"] = "absent"
+    elif not row["has_run"]:
+        row["state"] = "never-run"
+    elif row["result"] == "success":
+        row["state"] = "ok"
+    else:
+        row["state"] = "failed"
+
+
+def btrfs_maintenance_state(done: Callable[[dict, str], None]) -> None:
+    """Whether the image's own btrfs maintenance has been running, and whether it works.
+
+    `shani-settings` enables `btrfs-balance`, `btrfs-defrag`, `btrfs-scrub` and
+    `btrfs-trim` from **btrfsmaintenance**, all `OnCalendar=monthly` and
+    `Persistent=true`. So every Shanios machine scrubs its filesystem monthly
+    whether or not anyone knows, and the Timers page deliberately reports only
+    systemd's scheduling view - it cannot say whether a job ever *succeeded*.
+
+    That is the gap: a scrub that has been failing for three months looks
+    identical to one that has been passing. The filesystem's own
+    `scrub status` shows the last scrub *device* reported, which is a different
+    and older thing than whether the monthly job ran at all.
+
+    Read-only and unprivileged: `systemctl show` and `is-enabled` need neither a
+    password nor a session. Nothing here starts, cancels or reschedules a job.
+    """
+    rows = [_btrfs_maint_row(label, unit, job, {})
+            for label, unit, job in _BTRFS_MAINTENANCE]
+    payload = {"rows": rows, "installed": False, "errors": []}
+
+    # Two reads per row - `show` for the service that did the work, `is-enabled`
+    # for the timer that schedules it - so eight calls, run in sequence through
+    # one explicit work list. An earlier version chained them per-index and
+    # therefore only ever read the FIRST service, handing every later row an
+    # `is-enabled` answer where a `show` answer was expected.
+    work: list[tuple[str, int]] = ([("show", i) for i in range(len(rows))]
+                                   + [("enabled", i) for i in range(len(rows))])
+
+    def step(position: int, text: Optional[str], err: str) -> None:
+        if position >= len(work):
+            payload["installed"] = any(r["present"] for r in rows)
+            done(payload, "; ".join(payload["errors"]))
+            return
+        kind, index = work[position]
+        row = rows[index]
+        if kind == "show":
+            if text is not None:
+                _fill_btrfs_maint(payload, row["service"], text)
+            elif err:
+                payload["errors"].append(f"{row['service']}: {err}")
+        else:
+            if text is not None:
+                state = text.strip().lower()
+                row["enabled"] = state in ("enabled", "enabled-runtime",
+                                           "static", "indirect")
+            elif err:
+                payload["errors"].append(f"{row['timer']}: {err}")
+
+        def launch(next_text, next_err, pos=position + 1, k=kind, i=index):
+            if k == "show":
+                run_text(["systemctl", "show", rows[i]["service"],
+                          *(f"-p{f}" for f in _BTRFS_SHOW_FLAGS)],
+                         lambda a, b, pp=pos: step(pp, a, b))
+            else:
+                run_text(["systemctl", "is-enabled", rows[i]["timer"]],
+                         lambda a, b, pp=pos: step(pp, a, b))
+        launch(None, None)
+
+    if work:
+        run_text(["systemctl", "show", rows[0]["service"],
+                  *(f"-p{f}" for f in _BTRFS_SHOW_FLAGS)],
+                 lambda a, b: step(0, a, b))
+    else:
+        done(payload, "")

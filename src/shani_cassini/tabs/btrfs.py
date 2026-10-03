@@ -167,6 +167,21 @@ SNAPSHOT_SOURCES: Final = {"@flatpak": ("flatpak_subvol", "520"),
 INSTALLER_NOTE: Final = "created by the installer (install.sh:390)"
 SLOT_NOTE: Final = ("OS slot - a read-only snapshot of the installed system, "
                     "swapped by the deploy script when a release lands")
+MAINTENANCE_NOTE = (
+    "Every Shanios machine scrubs, balances, defrags and trims its btrfs "
+    "filesystem monthly: `shani-settings` enables four timers from "
+    "**btrfsmaintenance**, all `OnCalendar=monthly` with `Persistent=true`. "
+    "The Timers page cannot tell you whether those jobs ever succeeded, and a "
+    "scrub that has failed for three months looks exactly like one that has "
+    "been passing.\n"
+    "Note these are btrfsmaintenance's units. `btrfs-progs` ships only the "
+    "path-parameterised template `btrfs-scrub@.service`, where `-` stands in "
+    "for `/` - the two schemes use coincidentally identical names, so the root "
+    "filesystem's scrub is `btrfs-scrub@-.service` and a reader that trusts "
+    "the name can report on a unit that does not exist.\n"
+    "Read-only: nothing here starts, cancels or reschedules a job."
+)
+
 BACKUP_NOTE: Final = ("deployment backup - shani-deploy snapshots a slot before "
                       "switching it, and keeps the newest")
 UNKNOWN_NOTE: Final = ("not one of the subvolumes the installer creates - shown "
@@ -460,6 +475,14 @@ class BtrfsTab(Gtk.Box):
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         self._toasts.set_child(page)
         self._page = page
+
+        # --- the four monthly maintenance jobs, and whether they ever worked
+        self._maint = Adw.PreferencesGroup(
+            title="Monthly maintenance", description=MAINTENANCE_NOTE)
+        self._row_maint = _row("Maintenance jobs", "Reading\u2026")
+        self._maint.add(self._row_maint)
+        self._maint_rows: list[Adw.ActionRow] = []
+        page.append(self._maint)
         # The rows this page added to each group, so a refill can take exactly
         # those back out - see _clear.
         self._added: list[tuple[Adw.PreferencesGroup, Adw.ActionRow]] = []
@@ -516,13 +539,66 @@ class BtrfsTab(Gtk.Box):
         self._row_du.add_suffix(self._btn_walk)
         self._du_group.add(self._row_du)
         self._permanent.append(self._row_du)
+        # The maintenance summary is built once and never refilled, exactly like
+        # the two above - so it has to be owned here. `test_repeated_refresh_
+        # neither_duplicates_rows_nor_crashes` asserts that every row a refresh
+        # leaves behind is one it can take back out, and an unowned permanent row
+        # is precisely the leak that regression guards.
+        self._permanent.append(self._row_maint)
 
         for group in (self._subvol_group, self._fs_group, self._df_group,
                       self._scrub_group, self._du_group):
             self._page.append(group)
+        # Additive, not a replacement: an earlier edit put this line *instead of*
+        # `self.refresh()`, so the page's primary reads never started and it sat
+        # on "Asking btrfs..." for ever while every other test on this page went
+        # red for an unrelated-looking reason.
         self.refresh()
+        self.load_maintenance()
 
     # ----------------------------------------------------------------- widgets
+    def load_maintenance(self) -> None:
+        ss.btrfs_maintenance_state(self._on_maintenance)
+
+    def _clear_maintenance(self) -> None:
+        for row in self._maint_rows:
+            self._maint.remove(row)
+        self._maint_rows = []
+
+    def _on_maintenance(self, payload: dict, err: str) -> None:
+        rows = payload.get("rows") or []
+        if not payload.get("installed"):
+            # The honest report when btrfsmaintenance is not installed: the jobs
+            # this image would otherwise be running do not exist here. Not an
+            # error, and emphatically not "all four succeeded".
+            self._maint.set_visible(False)
+            return
+        self._maint.set_visible(True)
+        states = {"ok": 0, "failed": 0, "never-run": 0, "absent": 0}
+        for r in rows:
+            states[r["state"]] = states.get(r["state"], 0) + 1
+        summary = ", ".join(f"{n} {k}" for k, n in states.items() if n)
+        self._row_maint.set_subtitle(summary or "Nothing to report")
+
+        self._clear_maintenance()
+        for r in rows:
+            if r["state"] == "absent":
+                sub = f"Not installed - {r['job'].lower()} is not running here"
+            elif r["state"] == "never-run":
+                sub = ("Has never run"
+                       + ("" if r["enabled"] else ", and the timer is not enabled"))
+            elif r["state"] == "ok":
+                sub = f"Last run succeeded - {r['finished'] or r['started']}"
+            else:
+                sub = (f"Last run FAILED ({r['result']}, exit "
+                       f"{r['status']}) - {r['finished'] or r['started']}")
+            sub = f"{r['job']}: {sub}"
+            row = _row(r["label"], sub)
+            if r["state"] == "failed":
+                row.add_css_class("warning")
+            self._maint.add(row)
+            self._maint_rows.append(row)
+
     def _clear(self) -> None:
         """Take back exactly the rows this page added.
 

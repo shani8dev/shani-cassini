@@ -2365,3 +2365,94 @@ class TestCpuMicrocodeAndZramAndSmartd:
                                      "deferred": 0, "scan_never": False},
                         "error": "no /etc/smartd.conf"}, "")
         assert "nothing schedules tests" in tab._row_sched.get_subtitle()
+
+
+class TestBtrfsMonthlyMaintenance:
+    """Whether the image's own monthly btrfs maintenance has been running.
+
+    `shani-settings` enables four timers from **btrfsmaintenance** — scrub,
+    balance, defrag, trim — all `OnCalendar=monthly` with `Persistent=true`, so
+    every Shanios machine scrubs monthly whether or not anyone knows. The Timers
+    page reports systemd's *scheduling* view and deliberately cannot say whether
+    a job ever succeeded, so a scrub failing for three months is indistinguishable
+    from one passing. That is the gap.
+
+    **The fixtures are verbatim `systemctl show` output taken from this host**,
+    and they contain the defect this reader was written to avoid: a unit that
+    does not exist prints `Result=success`, `ExecMainCode=0`, `ExecMainStatus=0`
+    — thirty bytes, byte-identical to a unit that exists and has never run. The
+    first version of the reader treated "the tool said something" as "the unit is
+    there" and reported four maintenance jobs present on a machine with none.
+    """
+    NOT_FOUND = (
+        "LoadState=not-found\nResult=success\nExecMainCode=0\n"
+        "ExecMainStatus=0\nExecMainStartTimestamp=\nExecMainExitTimestamp=\n"
+    )
+    RAN_OK = (
+        "LoadState=loaded\nResult=success\nExecMainCode=1\n"
+        "ExecMainStatus=0\nExecMainStartTimestamp=Mon 2026-09-30 10:24:49 IST\n"
+        "ExecMainExitTimestamp=Mon 2026-09-30 10:25:49 IST\n"
+    )
+    RAN_FAILED = (
+        "LoadState=loaded\nResult=exit-code\nExecMainCode=1\n"
+        "ExecMainStatus=2\nExecMainStartTimestamp=Mon 2026-09-30 10:24:49 IST\n"
+        "ExecMainExitTimestamp=Mon 2026-09-30 10:26:02 IST\n"
+    )
+
+    def _fill(self, raw):
+        payload = {"rows": [ss._btrfs_maint_row("scrub", "btrfs-scrub", "j", {})]}
+        ss._fill_btrfs_maint(payload, "btrfs-scrub", raw)
+        return payload["rows"][0]
+
+    def test_a_unit_that_does_not_exist_is_not_reported_as_a_unit(self):
+        """The thirty-byte trap. `Result=success` here means nothing at all."""
+        row = self._fill(self.NOT_FOUND)
+        assert row["present"] is False
+        assert row["state"] == "absent", row
+
+    def test_a_unit_that_has_never_run_is_not_reported_as_having_succeeded(self):
+        row = self._fill(self.RAN_OK.replace("ExecMainCode=1", "ExecMainCode=0")
+                         .replace("ExecMainStartTimestamp=Mon 2026-09-30 10:24:49 IST", "ExecMainStartTimestamp="))
+        assert row["present"] is True
+        assert row["has_run"] is False
+        assert row["state"] == "never-run", row
+
+    def test_a_ran_and_passed_job_is_ok(self):
+        row = self._fill(self.RAN_OK)
+        assert row["state"] == "ok" and row["status"] == 0
+
+    def test_a_ran_and_failed_job_keeps_its_exit_code(self):
+        row = self._fill(self.RAN_FAILED)
+        assert row["state"] == "failed"
+        assert row["result"] == "exit-code"
+        assert row["status"] == 2
+
+    def test_the_four_jobs_come_from_btrfsmaintenance_not_btrfs_progs(self):
+        """The names are coincidentally identical between the two packages, and
+        `btrfs-progs` ships only the path-parameterised template - where `-`
+        stands in for `/`, so the root filesystem's scrub is
+        `btrfs-scrub@-.service`. A reader trusting the name reports on a unit
+        that does not exist."""
+        units = {u for _l, u, _j in ss._BTRFS_MAINTENANCE}
+        assert units == {"btrfs-scrub", "btrfs-balance", "btrfs-defrag",
+                         "btrfs-trim"}, units
+        assert not any("@" in u for u in units), units
+
+    def test_the_page_hides_the_group_when_the_jobs_are_not_installed(self):
+        """Not "all four succeeded" - the jobs this image would run do not exist
+        on this machine, which is a different fact."""
+        from shani_cassini.tabs.btrfs import BtrfsTab
+        tab = BtrfsTab()
+        tab._on_maintenance({"installed": False, "rows": [], "errors": []}, "")
+        assert tab._maint.get_visible() is False
+
+    def test_a_failed_job_is_named_and_flagged(self):
+        from shani_cassini.tabs.btrfs import BtrfsTab
+        tab = BtrfsTab()
+        rows = [ss._btrfs_maint_row("scrub", "btrfs-scrub", "Verify every block", {})]
+        ss._fill_btrfs_maint({"rows": rows}, "btrfs-scrub", self.RAN_FAILED)
+        tab._on_maintenance({"installed": True, "rows": rows, "errors": []}, "")
+        row = next(r for r in tab._maint_rows if r.get_title() == "scrub")
+        assert "FAILED" in row.get_subtitle(), row.get_subtitle()
+        assert "exit 2" in row.get_subtitle(), row.get_subtitle()
+        assert "warning" in row.get_css_classes()
