@@ -57,6 +57,8 @@ from shani_cassini.tabs.cron import CronTab
 from shani_cassini.tabs.firmware import FirmwareTab
 from shani_cassini.tabs.graphics import GraphicsTab
 from shani_cassini.tabs.inbound_access import InboundAccessTab
+from shani_cassini.tabs.password_policy import PasswordPolicyTab
+from shani_cassini.tabs.printers import PrintersTab
 from shani_cassini.tabs.raid import RaidTab
 from shani_cassini.tabs.totp import TotpTab
 from shani_cassini.tabs.kvm import KvmTab
@@ -134,6 +136,11 @@ SECTIONS = [
             (FirmwareTab, "firmware", "Firmware", "preferences-system-devices-symbolic",
              "Device firmware from LVFS, and the CPU microcode revision"),
         ]),
+        ("Peripherals", [
+            (PrintersTab, "printers", "Printers", "printer-symbolic",
+             "Queues, jobs and scan hardware - read-only, because the daemon "
+             "is socket-activated and usually not running"),
+        ]),
         ("Tasks & Logs", [
             (TimersTab, "timers", "Timers & Background Tasks", "preferences-system-time-symbolic",
              "systemd timers, their next and last elapse, and what they activate"),
@@ -189,6 +196,12 @@ SECTIONS = [
              "The confinement profiles loaded, and which are enforcing"),
             (AuditTab, "audit", "Audit", "document-open-recent-symbolic",
              "auditd's own state, and a search over the events it recorded"),
+        ]),
+        ("Passwords", [
+            (PasswordPolicyTab, "password-policy", "Password Policy",
+             "dialog-password-symbolic",
+             "Whether a password policy is configured, and whether any login "
+             "stack actually enforces it"),
         ]),
         ("Firewall", [
             (FirewallTab, "firewall", "Firewall", "network-server-symbolic",
