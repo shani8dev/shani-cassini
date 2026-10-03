@@ -1436,3 +1436,122 @@ class TestLingerAndSnapdApparmor:
         assert "not confined" in joined, (
             f"an inactive snapd.apparmor.service is drawn without saying Snap "
             f"apps are unconfined: {joined}")
+
+
+class TestOutboundMail:
+    """Whether mail will actually leave the machine.
+
+    `exim` is in `Packages-Base` of every image profile, so every Shanios
+    machine has a local MTA. The shipped `/etc/mail/exim.conf` has no relay
+    configured, so mail goes direct to port 25, which most providers block -
+    the job succeeds and the message silently queues.
+
+    **Every fixture here is real output**, captured from exim 4.100.1 in the
+    Arch container rather than written from the man page, and it caught a
+    parser bug: an exim message line *starts with a space* (the age is
+    right-aligned in a 3-wide field), so distinguishing message lines from
+    recipient lines by indentation dropped every first message - including the
+    frozen one, which is the entire point of the page.
+    """
+
+    FROZEN = (
+        " 0m  1.5K 1xCpH1-0000000000C-1uX2 <> *** frozen ***\n"
+        "          root@test\n\n"
+    )
+    QUEUED = (
+        "23h  12K 1xCpH1-0000000000K-2Idb <sender@example.com> "
+        "mail for a real person\n"
+        "          someone@elsewhere.invalid\n"
+    )
+
+    def test_a_frozen_message_is_recognised(self):
+        """The shape that actually occurs here: an empty sender `<>`, which is
+        a **bounce**, and `*** frozen ***`."""
+        rows = ss._parse_exim_queue(self.FROZEN)
+        assert len(rows) == 1, rows
+        assert rows[0]["frozen"] is True
+        assert rows[0]["bounce"] is True
+        assert rows[0]["recipient"] == "root@test"
+        # `<>` is a bounce, not a literal sender to print.
+        assert rows[0]["sender"] == "", rows
+
+    def test_the_first_message_is_not_lost_to_the_recipient_line(self):
+        """The bug the real fixture caught: a message line begins with a space,
+        so an indentation test mistakes it for a recipient line and the frozen
+        message - the one the page exists for - disappears."""
+        rows = ss._parse_exim_queue(self.FROZEN + self.QUEUED)
+        assert [r["id"] for r in rows] == ["1xCpH1-0000000000C-1uX2",
+                                           "1xCpH1-0000000000K-2Idb"], rows
+
+    def test_an_ordinary_queued_message(self):
+        rows = ss._parse_exim_queue(self.QUEUED)
+        assert rows[0]["frozen"] is False
+        assert rows[0]["bounce"] is False
+        assert rows[0]["sender"] == "sender@example.com"
+        assert rows[0]["age"] == "23h"
+        assert rows[0]["age_seconds"] == 23 * 3600, rows
+
+    def test_an_empty_queue_is_no_rows_not_an_error(self):
+        """What exim prints for an empty queue is nothing at all, exit 0."""
+        assert ss._parse_exim_queue("") == []
+        assert ss._parse_exim_queue("\n\n") == []
+
+    def test_no_relay_means_the_page_says_so_and_shows_the_why(self):
+        """`smarthost_smtp` appears in `exim -bP transports` only when a relay
+        is really configured, so its absence is the fact - and the page has to
+        say *why* that matters, not merely that it is missing."""
+        from shani_cassini.tabs.outbound_mail import OutboundMailTab
+        tab = OutboundMailTab()
+        tab._on_state({"relay": False, "transports": ["remote_smtp"],
+                       "queue": [], "messages": 0, "frozen": 0}, "")
+        sub = tab._row_relay.get_subtitle()
+        assert "port 25" in sub, sub
+        assert tab._relay_group.get_visible() is True
+
+    def test_a_configured_relay_hides_the_warning(self):
+        from shani_cassini.tabs.outbound_mail import OutboundMailTab
+        tab = OutboundMailTab()
+        tab._on_state({"relay": True,
+                       "transports": ["remote_smtp", "smarthost_smtp"],
+                       "queue": [], "messages": 0, "frozen": 0}, "")
+        assert tab._relay_group.get_visible() is False
+        assert "relay" in tab._row_relay.get_subtitle()
+
+    def test_could_not_tell_is_not_reported_as_no_relay(self):
+        """An absent exim would otherwise warn about a setting that may well be
+        fine - and a warning nobody can act on is how people learn to ignore the
+        ones they can."""
+        from shani_cassini.tabs.outbound_mail import OutboundMailTab
+        tab = OutboundMailTab()
+        tab._on_state({"relay": None, "queue": [], "messages": 0, "frozen": 0},
+                      "exim did not report its transports")
+        assert tab._row_relay.get_subtitle() == "Could not tell"
+        assert tab._relay_group.get_visible() is False
+
+    def test_a_frozen_queue_says_what_will_happen_to_it(self):
+        from shani_cassini.tabs.outbound_mail import OutboundMailTab
+        tab = OutboundMailTab()
+        tab._on_state({"relay": False, "transports": ["remote_smtp"],
+                       "queue": ss._parse_exim_queue(self.FROZEN),
+                       "messages": 1, "frozen": 1}, "")
+        titles = []
+        texts = []
+        def walk(w):
+            if isinstance(w, Adw.ActionRow):
+                titles.append(w.get_title()); texts.append(w.get_subtitle())
+            c = w.get_first_child()
+            while c is not None:
+                walk(c); c = c.get_next_sibling()
+        walk(tab)
+        assert any("Bounce" in str(x) for x in titles), titles
+        assert any("FROZEN" in str(x) for x in texts), texts
+        assert any("discarded" in str(x) for x in texts), texts
+
+    def test_the_page_never_sends_or_deletes(self):
+        """It reports; it does not act. Nothing here may appear in its argv."""
+        import inspect
+        from shani_cassini.tabs import outbound_mail as om
+        src = inspect.getsource(om)
+        for banned in ("-Mf", "--force", "exim -bs", "exim -odf", "rm "):
+            assert banned not in src.replace("sudo exim -Mf <msgid>", ""), \
+                f"the page references {banned!r}, which would act on mail"

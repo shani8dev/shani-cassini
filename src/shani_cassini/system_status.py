@@ -3663,3 +3663,120 @@ def user_linger(done: Callable[[Optional[bool], str], None]) -> None:
         return
     run_text([tool_path_or_self(LOGINCTL), "show-user", user, "-p", "Linger"],
              on_text)
+
+
+# --- outbound mail: will anything you send actually leave? -------------------
+#
+# `exim` is in `Packages-Base` of **every** image profile, so every Shanios
+# machine runs a local MTA whether the user knows it or not. What it does with
+# a message is decided by one `.ifdef` in the shipped `/etc/mail/exim.conf`:
+#
+#     .ifdef ROUTER_SMARTHOST   -> a relay ("smarthost") is configured
+#     .else                     -> dnslookup, straight to the MX on port 25
+#
+# The `.else` branch is what ships. Sending direct from a residential or cloud
+# IP to port 25 is refused by almost every provider (and RFC 2142 says it
+# should be), so a cron job's mail **queues and freezes** instead of arriving.
+# Nothing on the machine says so: the job succeeds, the queue grows, and the
+# first sign is a backlog. That is the whole reason this reader exists.
+#
+# Read-only, and it deliberately does not offer to set a relay: that means a
+# provider's credentials, and a settings app is the wrong place to type one.
+
+EXIM: Final = "exim"
+
+
+def exim_state(done: Callable[[dict, str], None]) -> None:
+    """Is a relay configured, and is anything stuck?
+
+    Two unprivileged reads, and nothing is spawned beyond them:
+    `exim -bP transports` (the transports as *actually configured*, so a
+    `smarthost_smtp` line only appears when a relay really is set up) and
+    `exim -bp` (the queue). `-bpc` is deliberately not used: counting the queue
+    would be a third process for a number `-bp` already gives.
+    """
+    out: dict = {"relay": None, "relay_host": "", "queue": [],
+                "frozen": 0, "messages": 0}
+
+    def on_transports(text: Optional[str], err: str) -> None:
+        if text is not None:
+            names = re.findall(r"^(\w+)\s+transport:", _strip_ansi(text), re.M)
+            out["transports"] = names
+            if "smarthost_smtp" in names:
+                out["relay"] = True
+            elif "remote_smtp" in names:
+                out["relay"] = False
+        run_text([tool_path_or_self(EXIM), "-bp"], on_queue)
+
+    def on_queue(text: Optional[str], err: str) -> None:
+        if text is None:
+            done(out, err)
+            return
+        rows = _parse_exim_queue(_strip_ansi(text))
+        out["queue"] = rows
+        out["messages"] = len(rows)
+        out["frozen"] = sum(1 for r in rows if r["frozen"])
+        done(out, "")
+
+    run_text([tool_path_or_self(EXIM), "-bP", "transports"], on_transports)
+
+
+_AGE_UNITS: Final = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+
+
+def _parse_exim_queue(text: str) -> list[dict]:
+    """Parse `exim -bp`. Real output, captured from exim 4.100.1:
+
+        0m  1.5K 1xCpH1-0000000000C-1uX2 <> *** frozen ***
+                  root@test
+
+    The first line carries age, size, message id, sender and an optional state
+    word; the **next** line is the recipients, indented. Two traps, both from the
+    real output rather than from the man page:
+
+    * A **frozen** message shows `*** frozen ***` where the age field's trailing
+      text would be, so "frozen" must be recognised before the fields are split
+      positionally or `***` lands in the age.
+    * `<>` is an empty sender - that is a **bounce**, and it is the normal
+      shape for a frozen message here, because a deferred delivery eventually
+      produces one. Rendering it as the literal text `<>` would be noise;
+      calling it "bounce" is the fact.
+    """
+    rows: list[dict] = []
+    lines = text.splitlines()
+    for i, raw in enumerate(lines):
+        if not raw.strip():
+            continue
+        parts = raw.split()
+        # **A message line also starts with a space** - exim right-aligns the
+        # age in a 3-wide field, so ` 0m  1.5K ...` is the first message and
+        # its 10-space-indented recipient line is not. Using indentation to
+        # tell them apart dropped every first message, which is how the frozen
+        # one in the real fixture above went missing.
+        #
+        # What actually distinguishes them: a message line's first token is an
+        # age (`23h`), and a recipient line's is an address. That is the test.
+        m = re.match(r"^(\d+)([smhd])$", parts[0]) if parts else None
+        if not m or len(parts) < 4:
+            continue
+        age_raw, size, msgid, sender = parts[0], parts[1], parts[2], parts[3]
+        state = " ".join(parts[4:])
+        frozen = "frozen" in state
+        age_seconds = int(m.group(1)) * _AGE_UNITS.get(m.group(2), 1)
+        recipient = ""
+        if i + 1 < len(lines):
+            nxt = lines[i + 1].strip()
+            if nxt and not re.match(r"^\d+[smhd]$", nxt.split()[0] if nxt.split() else ""):
+                recipient = nxt
+        rows.append({
+            "id": msgid,
+            "age": age_raw,
+            "age_seconds": age_seconds,
+            "size": size,
+            "sender": "" if sender == "<>" else sender.strip("<>"),
+            "bounce": sender == "<>",
+            "frozen": frozen,
+            "state": state,
+            "recipient": recipient,
+        })
+    return rows

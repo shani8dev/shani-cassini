@@ -56,6 +56,7 @@ from shani_cassini.tabs.cron import CronTab
 from shani_cassini.tabs.firmware import FirmwareTab
 from shani_cassini.tabs.graphics import GraphicsTab
 from shani_cassini.tabs.journal import JournalTab
+from shani_cassini.tabs.outbound_mail import OutboundMailTab
 from shani_cassini.tabs.modules import ModulesTab
 logger = logging.getLogger(__name__)
 
@@ -170,6 +171,11 @@ SECTIONS = [
         (JournalTab, "journal", "Journal", "text-x-generic-symbolic",
          "Every boot the journal still holds, and a search across the entries. "
          "Reads logs; never rotates or vacuums them"),
+        (OutboundMailTab, "outbound-mail", "Outbound Mail",
+         "mail-send-symbolic",
+         "Whether mail this machine sends will actually leave it - the exim "
+         "relay setup, and anything stuck in the queue. Reports; never sends, "
+         "retries or deletes"),
     ]),
     ("Apps", [
         (ChronoaTab, "chronoa", "Chronoa", "audio-input-microphone-symbolic", "The Chronoa assistant"),
