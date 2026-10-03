@@ -80,6 +80,18 @@ CONFLICT_NOTE = (
     "than as a clean error."
 )
 
+ENCRYPTED_NOTE = (
+    "Encrypted DNS needs something to answer locally, and `dnscrypt-proxy` is "
+    "installed with the right settings already written - DNSCrypt and DoH on, "
+    "listening on 127.0.0.1:53. It simply is not running, because nothing "
+    "enables it, and the machine resolves in the clear through NetworkManager "
+    "instead.\n"
+    "Nothing here changes that. Encrypted DNS is a mode choice, not a toggle "
+    "this page flips on its own: it has to be enabled, and the connection has "
+    "to be pointed at it, and if the proxy then fails to start the machine "
+    "would have no working resolver at all."
+)
+
 READ_NOTE = (
     "Nothing on this page changes a resolver.\n"
     "  resolvectl status          the live per-link view, including DNS from "
@@ -131,6 +143,16 @@ class DnsTab(Gtk.Box):
             title="The other three resolvers", description=CONFLICT_NOTE)
         self._page.append(self._conflict_group)
 
+        self._encrypted = Adw.PreferencesGroup(
+            title="Encrypted DNS", description=ENCRYPTED_NOTE)
+        self._row_enc_service = _row("dnscrypt-proxy service", "Reading…")
+        self._encrypted.add(self._row_enc_service)
+        self._row_enc_transport = _row("Transports available", "Reading…")
+        self._encrypted.add(self._row_enc_transport)
+        self._row_enc_point = _row("Is it being used?", "Reading…")
+        self._encrypted.add(self._row_enc_point)
+        self._page.append(self._encrypted)
+
         self._page.append(Adw.PreferencesGroup(
             title="Reading it yourself", description=READ_NOTE))
 
@@ -138,7 +160,47 @@ class DnsTab(Gtk.Box):
 
     def load(self) -> bool:
         ss.dns_state(self._on_state)
+        ss.dnscrypt_state(self._on_dnscrypt)
         return False
+
+    def _on_dnscrypt(self, state: dict, err: str) -> None:
+        if not state.get("installed"):
+            self._encrypted.set_visible(False)
+            return
+        self._encrypted.set_visible(True)
+        service = state.get("service")
+        # Compared as strings, not `service is False`: the reader normalises
+        # `systemctl is-active` output to the word it printed, so an identity
+        # check against False can never match and every stopped service rendered
+        # as "Unknown" - which is the one state this row most needs to be clear
+        # about, since a stopped proxy is why the machine resolves in the clear.
+        if service in ("active", "activating"):
+            self._row_enc_service.set_subtitle("Running")
+        elif service == "failed":
+            self._row_enc_service.set_subtitle("Failed to start")
+        elif service in ("inactive", "deactivating", "disabled"):
+            self._row_enc_service.set_subtitle(
+                "Not running - the machine resolves in the clear")
+        else:
+            self._row_enc_service.set_subtitle("Unknown")
+
+        transports = state.get("transports") or []
+        sub = _joined(transports) if transports else "None enabled"
+        if not state.get("local_only") and state.get("listen"):
+            # Not a warning about a hypothetical: a proxy other machines can
+            # query is an open resolver, which is a standard amplification vector.
+            sub += f" - listens on {state['listen']}, not only this machine"
+        self._row_enc_transport.set_subtitle(sub)
+
+        points = state.get("points_at_proxy")
+        if points is True:
+            self._row_enc_point.set_subtitle(
+                "Yes - the connection sends its lookups to the local proxy")
+        elif points is False:
+            self._row_enc_point.set_subtitle(
+                "No - lookups go straight to the network's own nameserver")
+        else:
+            self._row_enc_point.set_subtitle("Could not tell")
 
     def _clear_resolvers(self) -> None:
         for row in self._resolvers:
@@ -221,8 +283,12 @@ class DnsTab(Gtk.Box):
         for r in resolvers:
             if not r.get("installed"):
                 continue
-            if r["label"] == "systemd-resolved":
-                continue  # already reported as the one answering, if it is
+            # systemd-resolved has its own rows above; dnscrypt-proxy now has a
+            # group of its own. Listing either in this table as well showed
+            # dnscrypt-proxy twice, once as "not running; no config" - which
+            # contradicts the Encrypted DNS group reading its real config.
+            if r["label"] in ("systemd-resolved", "dnscrypt-proxy"):
+                continue
             service = r.get("service")
             if service in ("active", "activating"):
                 sub = ("Running" if not listeners

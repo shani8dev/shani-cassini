@@ -2016,3 +2016,125 @@ class TestUps:
         tab._on_state({"installed": True, "configured": False, "service": None,
                        "status": "", "error": ""}, "")
         assert tab._row_service.get_subtitle() == "Unknown"
+
+
+class TestEncryptedDns:
+    """Encrypted DNS: `dnscrypt-proxy` is installed, configured, and not running.
+
+    The shipped default listens on `127.0.0.1:53` with DNSCrypt and DoH enabled,
+    which is exactly the architecture the design intends - and
+    `shani-network.install` enables NetworkManager, ModemManager, firewalld,
+    fail2ban and avahi-daemon.socket, but not this. So a fully configured
+    encrypted resolver sits next to a machine that resolves in the clear.
+
+    **The fixture is the shipped TOML**, and its shape decided the parser:
+    dnscrypt-proxy 2.x is TOML rather than the old `key = value` config, and
+    `-check` rejects even a `[general]` section ("Unsupported key in
+    configuration file"). Every key reported here is top-level.
+    """
+
+    SHIPPED = (
+        "# dnscrypt-proxy configuration\n"
+        "listen_addresses = ['127.0.0.1:53']\n"
+        "max_clients = 250\n"
+        "dnscrypt_servers = true\n"
+        "doh_servers = true\n"
+        "odoh_servers = false\n"
+        "#tls_servers = true\n"
+        "require_dnssec = false\n"
+        "ignore_system_dns = true\n"
+        "\n"
+        "[query_log]\n"
+        "  format = nil\n"
+        "\n"
+        "[static]\n"
+        "  [static.example]\n"
+        "    server_names = ['example.com']\n"
+    )
+
+    def test_the_shipped_default_is_configured_for_encrypted_dns(self):
+        conf = ss._parse_dnscrypt_toml(self.SHIPPED)
+        assert conf["listen_addresses"] == ["127.0.0.1:53"]
+        assert conf["dnscrypt_servers"] is True
+        assert conf["doh_servers"] is True
+
+    def test_a_commented_transport_is_not_an_enabled_one(self):
+        """`#tls_servers = true` is the shipped file's own comment. Reading it
+        would report DoT as available on a machine that has it switched off."""
+        conf = ss._parse_dnscrypt_toml(self.SHIPPED)
+        assert "tls_servers" not in conf, conf
+
+    def test_a_key_inside_a_section_is_not_a_top_level_setting(self):
+        """Caught by this test, not by reading the code: dnscrypt-proxy's file
+        has keys at column zero *inside* sections too, so skipping only indented
+        lines let `[query_log] format` through as a top-level setting - and a
+        section-scoped `tls_servers = true` would have been reported as "DNS
+        over TLS is enabled", a fabricated fact about the machine's encryption.
+        """
+        conf = ss._parse_dnscrypt_toml(
+            self.SHIPPED + "tls_servers = true\n")  # now under [static]
+        assert "tls_servers" not in conf, conf
+        assert "format" not in conf, conf
+        assert "server_names" not in conf, conf
+
+    def test_only_the_five_real_transport_keys_are_offered(self):
+        """All five were confirmed to be real keys by appending each to the
+        shipped file and running the tool's own `-check`, which accepts them.
+        DoT and DoQ are `tls_servers`/`doq_servers` and are unset in the default,
+        so their absence has to be reportable rather than guessed."""
+        keys = {k for k, _ in ss._DNSCRYPT_TRANSPORTS}
+        assert keys == {"doh_servers", "odoh_servers", "dnscrypt_servers",
+                        "tls_servers", "doq_servers"}, keys
+
+    def test_the_page_says_encrypted_dns_is_not_being_used(self):
+        from shani_cassini.tabs.dns import DnsTab
+        tab = DnsTab()
+        tab._on_dnscrypt({"installed": True, "service": "inactive",
+                          "transports": ["DNS over HTTPS", "DNSCrypt"],
+                          "listen": "127.0.0.1:53", "local_only": True,
+                          "points_at_proxy": False, "errors": []}, "")
+        assert "resolves in the clear" in tab._row_enc_service.get_subtitle()
+        assert "DNS over HTTPS" in tab._row_enc_transport.get_subtitle()
+        assert "No" in tab._row_enc_point.get_subtitle()
+
+    def test_a_proxy_queries_being_used_is_reported_not_guessed(self):
+        from shani_cassini.tabs.dns import DnsTab
+        tab = DnsTab()
+        tab._on_dnscrypt({"installed": True, "service": "active",
+                          "transports": ["DNSCrypt"], "listen": "127.0.0.1:53",
+                          "local_only": True, "points_at_proxy": True,
+                          "errors": []}, "")
+        assert tab._row_enc_service.get_subtitle() == "Running"
+        assert "Yes" in tab._row_enc_point.get_subtitle()
+
+    def test_could_not_tell_is_not_reported_as_no(self):
+        """nmcli saying nothing is not evidence the proxy is unused."""
+        from shani_cassini.tabs.dns import DnsTab
+        tab = DnsTab()
+        tab._on_dnscrypt({"installed": True, "service": None, "transports": [],
+                          "listen": "", "local_only": True,
+                          "points_at_proxy": None, "errors": []}, "")
+        assert tab._row_enc_point.get_subtitle() == "Could not tell"
+
+    def test_a_listener_reachable_off_the_machine_is_flagged(self):
+        """A proxy other machines can query is an open resolver, which is a
+        standard amplification vector - so this is stated, not left implicit."""
+        from shani_cassini.tabs.dns import DnsTab
+        tab = DnsTab()
+        tab._on_dnscrypt({"installed": True, "service": "active",
+                          "transports": ["DNSCrypt"], "listen": "0.0.0.0:53",
+                          "local_only": False, "points_at_proxy": True,
+                          "errors": []}, "")
+        assert "not only this machine" in tab._row_enc_transport.get_subtitle()
+
+    def test_absent_dnscrypt_hides_the_group_rather_than_showing_nothing(self):
+        from shani_cassini.tabs.dns import DnsTab
+        tab = DnsTab()
+        tab._on_dnscrypt({"installed": False}, "")
+        assert tab._encrypted.get_visible() is False
+
+    def test_points_at_local_proxy_reads_nmcli_and_distinguishes_unknown(self):
+        assert ss._points_at_local_proxy("IP4.DNS:127.0.0.1\n") is True
+        assert ss._points_at_local_proxy("IP4.DNS:192.168.1.1,10.0.2.3\n") is False
+        assert ss._points_at_local_proxy("IP4.DNS:\n") is None
+        assert ss._points_at_local_proxy("") is None
