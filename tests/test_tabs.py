@@ -117,7 +117,8 @@ class TestNotebook:
             ("Sharing", ["Sharing"]),
         ]),
         ("Security", [
-            ("Boot & Disk", ["Secure Boot", "Encryption", "Boot Entries"]),
+            ("Boot & Disk", ["Secure Boot", "Encryption", "Userspace Encryption",
+                             "Boot Entries"]),
             ("Sign-in", ["Fingerprint", "Smartcard", "Security Keys",
                          "TOTP Tokens", "SSH Keys", "Kerberos"]),
             ("Confinement & Audit", ["LSM", "AppArmor", "Audit"]),
@@ -137,7 +138,7 @@ class TestNotebook:
             ("Containers", ["Containers"]),
             ("Mail", ["Outbound Mail"]),
             ("Backup & Maintenance", ["Backup", "Maintenance"]),
-            ("Apps", ["Chronoa", "Fleet"]),
+            ("Apps", ["App Versions", "Chronoa", "Fleet"]),
         ]),
     ]
 
@@ -149,7 +150,7 @@ class TestNotebook:
                for group, subs in SECTIONS]
         assert got == self.EXPECTED
         flat = [t for _g, subs in self.EXPECTED for _s, ts in subs for t in ts]
-        assert nb.get_n_pages() == len(flat) == 49, len(flat)
+        assert nb.get_n_pages() == len(flat) == 51, len(flat)
         assert nb.page_titles() == flat
 
     def test_no_group_is_a_wall_again(self):

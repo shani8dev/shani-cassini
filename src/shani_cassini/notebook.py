@@ -59,6 +59,7 @@ from shani_cassini.tabs.graphics import GraphicsTab
 from shani_cassini.tabs.inbound_access import InboundAccessTab
 from shani_cassini.tabs.password_policy import PasswordPolicyTab
 from shani_cassini.tabs.printers import PrintersTab
+from shani_cassini.tabs.app_versions import AppVersionsTab
 from shani_cassini.tabs.raid import RaidTab
 from shani_cassini.tabs.totp import TotpTab
 from shani_cassini.tabs.kvm import KvmTab
@@ -66,6 +67,7 @@ from shani_cassini.tabs.boot_entries import BootEntriesTab
 from shani_cassini.tabs.journal import JournalTab
 from shani_cassini.tabs.outbound_mail import OutboundMailTab
 from shani_cassini.tabs.ups import UpsTab
+from shani_cassini.tabs.userspace_crypto import UserspaceCryptoTab
 from shani_cassini.tabs.modules import ModulesTab
 logger = logging.getLogger(__name__)
 
@@ -172,6 +174,10 @@ SECTIONS = [
              "Secure Boot state and MOK enrolment"),
             (EncryptionTab, "encryption", "Encryption", "network-wireless-encrypted-symbolic",
              "LUKS, TPM2 sealing, and what a firmware update costs you"),
+            (UserspaceCryptoTab, "userspace-crypto", "Userspace Encryption",
+             "security-high-symbolic",
+             "fscrypt, gocryptfs and ecryptfs - per-file and per-mountpoint "
+             "encryption, which is not the LUKS above"),
             (BootEntriesTab, "boot-entries", "Boot Entries", "emblem-system-symbolic",
              "What the firmware will boot, and where the slot is really decided"),
         ]),
@@ -254,6 +260,10 @@ SECTIONS = [
              "Cleanup, optimization, log export and the reset"),
         ]),
         ("Apps", [
+            (AppVersionsTab, "app-versions", "App Versions",
+             "package-x-generic-symbolic",
+             "What version of each app is installed across flatpak, snapd and "
+             "ostree - none of which any desktop has a panel for"),
             (ChronoaTab, "chronoa", "Chronoa", "audio-input-microphone-symbolic",
              "The Chronoa assistant"),
             (FleetTab, "fleet", "Fleet", "network-workgroup-symbolic",
