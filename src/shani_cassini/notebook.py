@@ -59,6 +59,7 @@ from shani_cassini.tabs.graphics import GraphicsTab
 from shani_cassini.tabs.inbound_access import InboundAccessTab
 from shani_cassini.tabs.password_policy import PasswordPolicyTab
 from shani_cassini.tabs.printers import PrintersTab
+from shani_cassini.tabs.camera import CameraTab
 from shani_cassini.tabs.app_versions import AppVersionsTab
 from shani_cassini.tabs.raid import RaidTab
 from shani_cassini.tabs.totp import TotpTab
@@ -142,6 +143,9 @@ SECTIONS = [
             (PrintersTab, "printers", "Printers", "printer-symbolic",
              "Queues, jobs and scan hardware - read-only, because the daemon "
              "is socket-activated and usually not running"),
+            (CameraTab, "camera", "Camera", "camera-photo-symbolic",
+             "Capture devices, their formats and controls - read-only, "
+             "because neither PipeWire nor the legacy stack runs as a service"),
         ]),
         ("Tasks & Logs", [
             (TimersTab, "timers", "Timers & Background Tasks", "preferences-system-time-symbolic",
