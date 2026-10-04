@@ -113,3 +113,109 @@ def api_client(auth_manager):
 
     client = APIClient(auth_manager, base_url="http://localhost:9999")
     return client
+
+
+# --- simulating a machine a tool is not installed on ------------------------
+#
+# **`monkeypatch.setenv("PATH", <empty dir>)` works for a `/usr/bin` tool and
+# silently fails for an sbin-only one.** Both halves matter, and the first version
+# of this note got the second wrong by claiming it never works.
+#
+# `system_status._tool_path()` searches `shutil.which()` first and then
+# `SBIN_DIRS` = (`/usr/sbin`, `/usr/local/sbin`) **absolutely**. Measured:
+#
+#   tool        in /usr/bin   in /usr/sbin   have_tool() with an empty PATH
+#   podman      yes            no             False   <- hidden, as intended
+#   ls          yes            no             False   <- hidden
+#   smartctl    no             yes            **True**    <- still found
+#   aa-status   no             yes            **True**    <- still found
+#
+# So a test that empties PATH is honest about `podman` and lies about
+# `smartctl`, which is the same `/usr/sbin` trap `AGENTS.md` records for
+# `smartctl` and `aa-status`. That silence is the problem: the fixture reads as
+# "this machine has neither tool", the branch is not taken, and nothing says why.
+#
+# The fixtures below patch `have_tool`/`have`/`tool_path_or_self` **and** point
+# `SBIN_DIRS` at an empty directory, so "absent" means absent on every path the
+# resolver can take. `SBIN_DIRS` is a module constant precisely so a test can do
+# this - `_tool_path`'s own docstring says so.
+#
+# `tests/test_absent_tool_fixtures.py` holds the controls, including the
+# measurement table above, so neither half of this note can rot unnoticed. (They
+# live in a collected test module rather than here because pytest does not
+# collect tests from `conftest.py`.)
+
+@pytest.fixture
+def absent_tools(monkeypatch, tmp_path):
+    """Every tool is absent, on every path the resolver searches.
+
+    Returns the list of tool names asked about, so a test can assert the page
+    asked for the one it cares about - which is how you tell "took the absent
+    branch" apart from "never looked", the absence this repo keeps being bitten
+    by.
+    """
+    from shani_cassini import system_status as ss
+    asked: list[str] = []
+
+    def no_tool(cmd: str) -> bool:
+        asked.append(cmd)
+        return False
+
+    monkeypatch.setattr(ss, "have_tool", no_tool)
+    monkeypatch.setattr(ss, "have", no_tool)
+    # An absent tool is still executed, per tool_path_or_self's own contract, so
+    # a page's argv carries the bare name and the tool's error is what reports.
+    monkeypatch.setattr(ss, "tool_path_or_self", lambda cmd: cmd)
+    monkeypatch.setattr(ss, "_tool_path", lambda cmd: None)
+    # and the sbin fallback, which is an absolute search PATH cannot influence
+    monkeypatch.setattr(ss, "SBIN_DIRS", (str(tmp_path / "empty-sbin"),))
+    return asked
+
+
+@pytest.fixture
+def one_tool_absent(monkeypatch, tmp_path):
+    """Factory: mark specific tools absent, leave every other one findable.
+
+    The common case is "podman is here, distrobox is not" - a machine with one of
+    two tools - which neither an emptied PATH nor `absent_tools` can express.
+    Call with no names to restore the machine.
+    """
+    from shani_cassini import system_status as ss
+    real = ss._tool_path
+    absent: set[str] = set()
+
+    def make(*names: str):
+        absent.clear()
+        absent.update(names)
+        return absent
+
+    def have_tool(cmd: str) -> bool:
+        return cmd not in absent
+
+    monkeypatch.setattr(ss, "have_tool", have_tool)
+    monkeypatch.setattr(ss, "have", have_tool)
+    monkeypatch.setattr(ss, "_tool_path",
+                        lambda cmd: None if cmd in absent else real(cmd))
+    monkeypatch.setattr(ss, "SBIN_DIRS", (str(tmp_path / "empty-sbin"),))
+    return make
+
+
+@pytest.fixture
+def empty_sbin(monkeypatch, tmp_path):
+    """`have_tool()` finds nothing in the sbin fallback directories.
+
+    Use this **alongside** `monkeypatch.setenv("PATH", <empty dir>)` when the
+    tool being faked away is an sbin-only one - `smartctl`, `aa-status`,
+    `fprintd`. Emptying PATH alone does not hide those: `_tool_path()` falls back
+    to `SBIN_DIRS` absolutely, so the tool stays findable and the test's premise
+    is false while reading true.
+
+    Prefer `absent_tools`/`one_tool_absent` for new tests; this exists for the
+    ones that already empty PATH and only need the second half of the fix.
+    `tests/test_absent_tool_fixtures.py` holds the measurement.
+    """
+    from shani_cassini import system_status as ss
+    empty = tmp_path / "no-sbin"
+    empty.mkdir(exist_ok=True)
+    monkeypatch.setattr(ss, "SBIN_DIRS", (str(empty),))
+    return empty
