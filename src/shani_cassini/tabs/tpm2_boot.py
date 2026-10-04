@@ -581,16 +581,34 @@ def _verdict(payload: dict) -> tuple[str, str]:
 
 class Tpm2BootTab(Gtk.Box):
     """Read-only reporter. It renders what the reader hands it and shells out to
-    nothing beyond the one probe whose exit status is the answer."""
+    nothing beyond the one probe whose exit status is the answer.
 
-    def __init__(self, state=None, auth_manager=None) -> None:
+    **A section of the Encryption page since the two were folded**, not a page of
+    its own: it reports the same TPM2, asked a different question. Encryption
+    answers "does this disk unlock itself", this answered "is there a second
+    factor at boot" - and the honest answer on Shanios is that there is not,
+    because `tpm2-totp` and `dracut-tpm2-totp` are in `[extra]` and the image
+    ships neither. That is a fact about the disk's unlock path, so it belongs
+    beside the rows describing it.
+
+    Held by containment for the same reason the compression section is: this
+    renderer keeps **four** separate row lists (files, probe, build, pcr), and
+    its own comments record that a group shared between two renderers is how the
+    second wipes the first. `autoload=False` hands the read to the host page, so
+    a Refresh there covers this too instead of leaving a walk in flight that
+    nothing is waiting for.
+    """
+
+    def __init__(self, state=None, auth_manager=None,
+                 autoload: bool = True) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         self._state = state
         self._auth_manager = auth_manager
         self._page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         self.append(self._page)
         self._build()
-        GLib.idle_add(self.load)
+        if autoload:
+            GLib.idle_add(self.load)
 
     def _build(self) -> None:
         self._summary = Adw.PreferencesGroup(
@@ -629,7 +647,13 @@ class Tpm2BootTab(Gtk.Box):
         self._page.append(Adw.PreferencesGroup(
             title="Commands", description=_plain(COMMANDS_NOTE)))
 
-    def load(self) -> bool:
+    def load(self, settled=None) -> bool:
+        """Start the read. `settled` fires once the payload has rendered.
+
+        Optional and defaulting to None so `GLib.idle_add(self.load)` still works
+        unchanged: idle_add passes the return value, not an argument.
+        """
+        self._settled = settled
         tpm2_boot_state(self._on_state)
         return False
 
@@ -647,6 +671,11 @@ class Tpm2BootTab(Gtk.Box):
         self._render_probe(payload)
         self._render_build(payload)
         self._render_pcr(payload)
+        # Told last, so a host that re-renders in the callback sees this payload's
+        # rows already in place.
+        settled = getattr(self, "_settled", None)
+        if settled is not None:
+            settled()
 
     def _render_files(self, payload: dict) -> None:
         self._clear(self._files, self._file_rows)

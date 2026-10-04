@@ -64,7 +64,6 @@ from shani_cassini.tabs.irqbalance import IrqBalanceTab
 from shani_cassini.tabs.ananicy import AnanicyTab
 from shani_cassini.tabs.sbctl import SbctlTab
 from shani_cassini.tabs.privileges import PrivilegesTab
-from shani_cassini.tabs.tpm2_boot import Tpm2BootTab
 from shani_cassini.tabs.smb import SmbTab
 from shani_cassini.tabs.app_versions import AppVersionsTab
 from shani_cassini.tabs.raid import RaidTab
@@ -198,8 +197,6 @@ SECTIONS = [
              "encryption, which is not the LUKS above"),
             (SbctlTab, "sbctl", "Kernel Lockdown", "system-lock-screen-symbolic",
              "Whether the kernel offers lockdown, what mode is in force, and that gen-efi - not sbctl - is the system of record"),
-            (Tpm2BootTab, "tpm2-boot", "TPM2 Boot Unlock", "security-high-symbolic",
-             "The second factor at boot: installed, and whether the package's own dracut check would include it"),
             (BootEntriesTab, "boot-entries", "Boot Entries", "emblem-system-symbolic",
              "What the firmware will boot, and where the slot is really decided"),
         ]),
@@ -310,6 +307,11 @@ PAGES = [p for _g, subs in SECTIONS for _s, pages in subs for p in pages]
 # invariant is asserted in the tests, because an alias that shadows a live
 # page would silently redirect it.
 ALIASES: dict[str, str] = {
+    # The boot-time second factor is the same TPM2 the Encryption page already
+    # reports on, asked a different question. Shanios ships neither
+    # tpm2-totp nor dracut-tpm2-totp, so the answer is "there is not one",
+    # and that is a fact about how this disk unlocks.
+    "tpm2-boot": "encryption",
     # compsize only measures btrfs, so the compression read has no meaning
     # away from the filesystem page. The section itself lives inside the
     # Btrfs page now, so this id lands a reader in the right place.
@@ -320,7 +322,6 @@ ALIASES: dict[str, str] = {
     "apparmor": "lsm",
     # Populated as merges land. Intended entries, pending the content folds:
     #   "access"       -> "privileges"   sudoers + polkit, one question
-    #   "tpm2-boot"    -> "encryption"   same TPM as the sealing already there
     #   "remoteaccess" -> "inbound-access"  sshd is one of the cases listed
 }
 

@@ -15,6 +15,7 @@ import os
 from gi.repository import Adw, Gio, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.tabs.tpm2_boot import Tpm2BootTab
 
 logger = logging.getLogger(__name__)
 MAPPER = "/dev/mapper/shani_root"
@@ -91,6 +92,20 @@ class EncryptionTab(Gtk.Box):
         self._tpm_row = tpm_row = _row("TPM 2.0 security chip", "Checking…")
         g.add(tpm_row)
         self._page.append(g)
+
+        # Before the `if not encrypted` return, and that placement is the whole
+        # point. This section asks whether there is a second factor at boot, and
+        # that question does not depend on whether the disk is LUKS-encrypted:
+        # `dracut-tpm2-totp` asks for a code in the initramfs whether or not
+        # there is a sealed key behind it. Added after the return - which is
+        # where the TPM and unlock rows live, so it was the obvious place - it
+        # rendered on an encrypted machine and vanished on a passphrase-only one,
+        # which is the exact opposite of the condition that matters.
+        self._boot_factor = Tpm2BootTab(self._state, self._auth_manager,
+                                        autoload=False)
+        self._page.append(self._boot_factor)
+        self._load_boot_second_factor()
+
         if not encrypted:
             self._ask_tpm(tpm_row)
             return
@@ -141,12 +156,31 @@ class EncryptionTab(Gtk.Box):
             self._luks_rows[key] = row
             details.add(row)
         self._page.append(details)
+
+        # The boot-time second factor: the same TPM2, asked whether there is a
+        # second factor at all. It was its own page until the two were folded,
+        # and it is held rather than moved for the reason its own docstring now
+        # gives - four separate row lists, and a group two renderers share is how
+        # the second one wipes the first. `autoload=False` because this page owns
+        # the reads; see _load_boot_second_factor.
         # Asked last, and not where the row is made: the Set Up button has to
         # exist before an answer can enable it. The real reader always defers,
         # so the earlier placement worked -- but it made the page correct only
         # by accident of that timing, and a greyed-out Set Up on a machine with
         # a working chip is a bug nobody would connect to this.
         self._ask_tpm(tpm_row)
+
+    def _load_boot_second_factor(self) -> None:
+        """Start the embedded boot-second-factor read, once.
+
+        This page has no pending counter - it has no Refresh button, because its
+        reads are one-shot button presses - so there is nothing here to wait
+        with. The section renders itself; this only has to not start twice, since
+        `_build()` runs again after every enrol and every remove and a second
+        concurrent walk would file its rows against a payload that has been
+        replaced.
+        """
+        self._boot_factor.load()
 
     def _ask_tpm(self, row) -> None:
         ss.tpm2_present(lambda tpm, err: self._on_tpm(row, tpm, err))
