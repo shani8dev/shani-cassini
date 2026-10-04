@@ -86,9 +86,13 @@ class ShaniosApplication(Adw.Application):
         return 0
 
     def _show_section(self, section: str) -> None:
-        from shani_cassini.notebook import PAGES
+        from shani_cassini.notebook import ALIASES, PAGES, resolve
         if not self._main_window:
             return
+        # a retired id is not unknown - it names the page that absorbed it
+        if section in ALIASES:
+            logger.info("Section %r was merged into %r", section, resolve(section))
+            section = resolve(section)
         if section not in {p[1] for p in PAGES}:
             logger.warning("Unknown section %r (known: %s)", section, ", ".join(p[1] for p in PAGES))
             return

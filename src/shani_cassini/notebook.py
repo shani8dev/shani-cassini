@@ -306,6 +306,39 @@ SECTIONS = [
 
 PAGES = [p for _g, subs in SECTIONS for _s, pages in subs for p in pages]
 
+# `id` is a contract: `shani-cassini --section=<id>` and the D-Bus
+# `show-section` action both resolve against it, and external callers and
+# documentation link to it. When two pages answered one question they were
+# merged, and the retired id is kept here so the old invocation still lands
+# on the page that absorbed it rather than dying in `_build_page`'s
+# `next(...)`, which raises StopIteration on an unknown id - a traceback, not
+# a message. Anything mapped here must NOT also appear in PAGES; that
+# invariant is asserted in the tests, because an alias that shadows a live
+# page would silently redirect it.
+ALIASES: dict[str, str] = {
+    # Populated as merges land. Intended entries, pending the content folds:
+    #   "access"       -> "privileges"   sudoers + polkit, one question
+    #   "apparmor"     -> "lsm"          AppArmor is one LSM
+    #   "tpm2-boot"    -> "encryption"   same TPM as the sealing already there
+    #   "compression"  -> "btrfs"        compsize only scans btrfs
+    #   "remoteaccess" -> "inbound-access"  sshd is one of the cases listed
+}
+
+
+def resolve(pid: str) -> str:
+    """Map a possibly-retired page id onto the page that now owns it.
+
+    Follows chains and refuses a cycle rather than looping, so a mistyped
+    table fails loudly here instead of hanging the app at startup.
+    """
+    seen = {pid}
+    while pid in ALIASES:
+        pid = ALIASES[pid]
+        if pid in seen:
+            raise ValueError(f"ALIASES cycle at {pid!r}")
+        seen.add(pid)
+    return pid
+
 # sections that front another app: its command must exist, else the page
 # explains that instead of showing a form that cannot work
 REQUIRES = {
@@ -449,6 +482,8 @@ class ShaniosNotebook(Adw.Bin):
 
     # --- pages -----------------------------------------------------------
     def _build_page(self, pid: str) -> Gtk.Widget:
+        # a retired id still resolves - see ALIASES
+        pid = resolve(pid)
         cls, _pid, title, _icon, sub = next(p for p in PAGES if p[1] == pid)
         need = REQUIRES.get(pid)
         # have_sbin(), not shutil.which(): fprintd's tools are in /usr/sbin,
@@ -484,7 +519,7 @@ class ShaniosNotebook(Adw.Bin):
         """Show section `pid` (building it on first use); returns its tab."""
         tab = self._built.get(pid) or self._build_page(pid)
         self._stack.set_visible_child_name(pid)
-        title = next(p[2] for p in PAGES if p[1] == pid)
+        title = next(p[2] for p in PAGES if p[1] == resolve(pid))
         self._content_page.set_title(title)
         row = self._rows[pid]
         for lb in self._lists:

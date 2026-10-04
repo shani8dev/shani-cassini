@@ -616,3 +616,54 @@ class TestSiblingTestModuleIsIntact:
         assert n >= 9, (
             f"only {n} test classes left in test_new_gap_pages.py (expected at "
             f"least 9) - that file has almost certainly been truncated")
+
+
+class TestRetiredPageIds:
+    """`--section=<id>` is a contract, so retiring an id has to be deliberate.
+
+    A merge folds one page into another and the old id disappears from the
+    sidebar. Without a shim, the old invocation reaches `_build_page`'s
+    `next(...)` and raises StopIteration - a traceback rather than a message.
+    These gates are what stop that happening silently, and what stop an alias
+    table from quietly redirecting a page that is still live.
+    """
+
+    def test_no_alias_shadows_a_page_that_is_still_registered(self):
+        from shani_cassini.notebook import ALIASES, PAGES
+        live = {p[1] for p in PAGES}
+        shadowed = set(ALIASES) & live
+        assert not shadowed, (
+            f"{sorted(shadowed)} are aliased but still in the sidebar; an alias "
+            "for a live page silently redirects it")
+
+    def test_every_alias_points_at_a_page_that_exists(self):
+        from shani_cassini.notebook import ALIASES, PAGES
+        live = {p[1] for p in PAGES}
+        for old, new in ALIASES.items():
+            assert new in live, f"{old!r} -> {new!r}, which is not a page"
+
+    def test_resolve_is_the_identity_on_every_live_page(self):
+        from shani_cassini.notebook import PAGES, resolve
+        for p in PAGES:
+            assert resolve(p[1]) == p[1], p[1]
+
+    def test_resolve_leaves_an_unknown_id_alone_rather_than_guessing(self):
+        from shani_cassini.notebook import resolve
+        # It must not invent a page, or a typo in --section= opens something
+        # arbitrary instead of warning.
+        assert resolve("no-such-page") == "no-such-page"
+
+    def test_resolve_refuses_a_cycle_instead_of_looping(self):
+        import shani_cassini.notebook as nb
+        saved = dict(nb.ALIASES)
+        try:
+            nb.ALIASES.update({"a-page": "b-page", "b-page": "a-page"})
+            try:
+                nb.resolve("a-page")
+            except ValueError as exc:
+                assert "cycle" in str(exc)
+            else:
+                raise AssertionError("a cycle in ALIASES did not raise")
+        finally:
+            nb.ALIASES.clear()
+            nb.ALIASES.update(saved)
