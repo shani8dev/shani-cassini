@@ -786,8 +786,20 @@ def test_the_page_offers_a_refresh_and_nothing_else(tmp_path, monkeypatch):
     fake_tools(tmp_path, monkeypatch)
     tab = lsm.LsmTab()
     assert settled(tab), rows(tab)
-    assert button_labels(tab) == ["Refresh"], \
-        f"a re-read is all a click may do here: {button_labels(tab)}"
+    # Was `== ["Refresh"]`, and the literal form is what was wrong: the AppArmor
+    # fold added a second button that runs `pkexec aa-status`, which is *also* a
+    # re-read and also changes nothing - it just needs a password, which is why
+    # it is a button rather than a page load. Naming the two buttons states what
+    # each one is; counting them would only break again the next time a read is
+    # added, and would say nothing about whether the new one acts.
+    #
+    # The teeth of this test are the three asserts below it, which are about
+    # what a control *could* do rather than how many there are: no Switch, no
+    # CheckButton, no Entry. Those are unchanged and are the actual claim that
+    # this page cannot change how a module is enforced.
+    assert sorted(button_labels(tab)) == ["Read", "Refresh"], \
+        f"only the two documented re-reads may be clickable here, and neither " \
+        f"acts: {button_labels(tab)}"
     for widget in descendants(tab):
         assert not isinstance(widget, Gtk.Switch), \
             "a switch would be a way to change how a module is enforced"

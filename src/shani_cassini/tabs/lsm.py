@@ -169,6 +169,32 @@ AA_PENDING: Final = f"Asking {AA_STATUS}…"
 AA_UNIT: Final = "unit state"
 UNIT_PENDING: Final = "Asking systemctl is-active…"
 
+# The privileged half of AppArmor. aa-status needs root: without it the tool
+# prints only the module line and then "You do not have enough privilege to
+# read the profile set.", exit 4. The group above reads it unprivileged, so on
+# any normal machine that row IS the refusal - which is why the profile list
+# needs its own read behind a button rather than riding along with it.
+AA_PROFILES_TITLE: Final = "AppArmor profiles"
+AA_PROFILES_HELP: Final = (
+    "The list behind those counts, and the only part of it that needs a "
+    "password. One pkexec aa-status answers both the counts and the names, so "
+    "asking for this costs one prompt and not two. A profile in complain mode "
+    "logs what it would have denied and blocks nothing."
+)
+AA_PROFILES_ASK: Final = "Needs an administrator password - not read yet"
+AA_PROFILES_BUSY: Final = "Asking…"
+AA_PROFILES_REFUSED: Final = (
+    "{problem} - so no profile is claimed here. This is the tool declining to "
+    "answer without root, which is a different fact from a machine that has no "
+    "profiles."
+)
+AA_PROFILES_NONE: Final = (
+    "No profiles are loaded, which is a real answer from aa-status rather than "
+    "a read that did not happen."
+)
+AA_PROFILES_MODE_ENFORCE: Final = "Enforcing"
+AA_PROFILES_MODE_COMPLAIN: Final = "Complaining \u2014 logs, blocks nothing"
+
 AUDIT_TITLE: Final = "Security audit"
 AUDIT_HELP: Final = (
     "Lynis and rkhunter as shani-health parsed them, from "
@@ -319,6 +345,13 @@ class LsmTab(Gtk.Box):
         self._lsm_error = ""
         self._audit: dict | None = None
         self._audit_error = ""
+        # The privileged AppArmor read. None means "not asked yet", which is
+        # different from an asked-and-refused ({ok: False, problem: ...}) and
+        # different again from an asked-and-empty ({ok: True, enforce: [],
+        # complain: []}). Three states, three different sentences.
+        self._aa_profiles: dict | None = None
+        self._aa_profiles_error = ""
+        self._aa_profiles_busy = False
         self._streams: dict[str, dict] = {}
         # have_tool, not have: shani-health is on PATH today, but the same
         # sbin-aware answer is the one that stays right on a machine whose
@@ -327,6 +360,18 @@ class LsmTab(Gtk.Box):
 
         self._lsm_group = Adw.PreferencesGroup(title=LSM_TITLE, description=LSM_HELP)
         self._aa_group = Adw.PreferencesGroup(title=AA_TITLE, description=AA_HELP)
+        self._aa_profiles_group = Adw.PreferencesGroup(
+            title=AA_PROFILES_TITLE, description=AA_PROFILES_HELP)
+        # The read sits on the group it fills, for the reason given in apparmor.py
+        # before the fold: a group suffix floats outside the card and reads as
+        # belonging to the whole group, so a reader cannot tell which rows the
+        # button produced.
+        self._row_profiles = _row("Profile list", AA_PROFILES_ASK)
+        self._btn_profiles = Gtk.Button(label="Read", valign=Gtk.Align.CENTER)
+        self._btn_profiles.connect("clicked", lambda *_: self._ask_profiles())
+        self._row_profiles.add_suffix(self._btn_profiles)
+        self._aa_profiles_group.add(self._row_profiles)
+        self._permanent.append(self._row_profiles)
         self._audit_group = Adw.PreferencesGroup(title=AUDIT_TITLE,
                                                  description=AUDIT_HELP)
         self._ro_group = Adw.PreferencesGroup(title=RO_TITLE, description=RO_HELP)
@@ -345,8 +390,8 @@ class LsmTab(Gtk.Box):
         for row in self._read_only_rows():
             self._ro_group.add(row)
             self._permanent.append(row)
-        for group in (self._lsm_group, self._aa_group, self._audit_group,
-                      self._ro_group):
+        for group in (self._lsm_group, self._aa_group, self._aa_profiles_group,
+                      self._audit_group, self._ro_group):
             self._page.append(group)
         self.refresh()
 
@@ -446,6 +491,38 @@ class LsmTab(Gtk.Box):
 
         ss.run_json_tool(["pkexec", HEALTH, "--security", "--json"], done)
 
+    def _ask_profiles(self) -> None:
+        """The one read that needs a password: `pkexec aa-status`, asked for.
+
+        Behind a button rather than on page load, and that is the whole reason
+        the AppArmor page used to exist on its own. Without root aa-status prints
+        the module line and then refuses, so a load-time read would put a
+        password prompt behind merely opening the LSM section - asking for
+        authority nobody clicked on.
+
+        One spawn, not two. `apparmor_report` runs `pkexec aa-status` once and
+        parses both halves out of the text; the two readers it replaced each
+        started their own, which cost two prompts for one answer.
+        """
+        if self._aa_profiles_busy:
+            return
+        self._aa_profiles_busy = True
+        self._aa_profiles = None
+        self._aa_profiles_error = ""
+        self._render()
+        generation = self._generation
+
+        def done(payload, err) -> None:
+            # No generation check: this read is not started by refresh(), so a
+            # refresh mid-flight must not discard it, and it must not decrement a
+            # pending count it never incremented.
+            self._aa_profiles_busy = False
+            self._aa_profiles = payload
+            self._aa_profiles_error = err
+            self._render()
+
+        ss.apparmor_report(done)
+
     def _ask_stream(self, key: str, argv: list[str]) -> None:
         """One unprivileged streaming read, answered on the main loop.
 
@@ -472,6 +549,7 @@ class LsmTab(Gtk.Box):
         self._clear()
         self._render_lsm()
         self._render_apparmor()
+        self._render_profiles()
         self._render_audit()
         self._row_report.set_subtitle(AUDIT_ASK if self._pending else AUDIT_NOTE)
         self._btn_refresh.set_sensitive(self._pending == 0)
@@ -559,6 +637,51 @@ class LsmTab(Gtk.Box):
         self._add(self._aa_group, _row(
             SNAPD_APPARMOR_UNIT, detail,
             *UNIT_ICONS.get(sword, UNIT_ICONS["unknown"])))
+
+    def _render_profiles(self) -> None:
+        """The profile list, or one honest sentence about why there isn't one.
+
+        Four states and each has a different remedy: not asked yet, in flight,
+        refused, and asked-and-empty. **A refusal is never drawn as zero
+        profiles** - that is the failure this page's own docstring records having
+        shipped once, and it sends a user whose prompt was dismissed looking for
+        a machine problem that is not there.
+        """
+        if self._aa_profiles_busy:
+            self._row_profiles.set_subtitle(AA_PROFILES_BUSY)
+            self._btn_profiles.set_sensitive(False)
+            self._btn_profiles.set_label("Reading\u2026")
+            return
+        self._btn_profiles.set_sensitive(True)
+        self._btn_profiles.set_label("Read")
+        if self._aa_profiles is None:
+            self._row_profiles.set_subtitle(AA_PROFILES_ASK)
+            return
+        counts = self._aa_profiles.get("counts") or {}
+        profiles = self._aa_profiles.get("profiles") or {}
+        if not profiles.get("ok"):
+            problem = (str(profiles.get("problem") or "") or
+                       str(counts.get("problem") or "") or
+                       self._aa_profiles_error or
+                       "aa-status did not answer")
+            self._row_profiles.set_subtitle(
+                AA_PROFILES_REFUSED.format(problem=_esc(problem)))
+            return
+        enforce = list(profiles.get("enforce") or [])
+        complain = list(profiles.get("complain") or [])
+        self._row_profiles.set_subtitle(
+            f"{len(enforce)} enforcing, {len(complain)} complaining"
+            + (f" - {counts['loaded']} loaded, by aa-status's own count"
+               if isinstance(counts.get("loaded"), int) else ""))
+        if not enforce and not complain:
+            self._add(self._aa_profiles_group, _row(
+                AA_PROFILES_TITLE, AA_PROFILES_NONE, *STATE_ICONS["info"]))
+            return
+        for name, subtitle in ([(n, AA_PROFILES_MODE_ENFORCE) for n in enforce] +
+                               [(n, AA_PROFILES_MODE_COMPLAIN) for n in complain]):
+            self._add(self._aa_profiles_group,
+                      _selectable(_row(_esc(name), subtitle,
+                                      *STATE_ICONS["ok"])))
 
     def _render_audit(self) -> None:
         """The filtered rows, or one honest sentence about why there are none.

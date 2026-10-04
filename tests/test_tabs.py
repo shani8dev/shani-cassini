@@ -118,7 +118,7 @@ class TestNotebook:
             ('Security', [
                 ('Boot & Disk', ['Secure Boot', 'Encryption', 'Userspace Encryption', 'Kernel Lockdown', 'TPM2 Boot Unlock', 'Boot Entries']),
                 ('Sign-in', ['Fingerprint', 'Smartcard', 'Security Keys', 'TOTP Tokens', 'SSH Keys', 'Kerberos']),
-                ('Confinement & Audit', ['LSM', 'AppArmor', 'Audit']),
+                ('Confinement & Audit', ['LSM', 'Audit']),
                 ('Passwords', ['Password Policy']),
                 ('Privileges', ['Privileges']),
                 ('Firewall', ['Firewall']),
@@ -148,7 +148,7 @@ class TestNotebook:
                for group, subs in SECTIONS]
         assert got == self.EXPECTED
         flat = [t for _g, subs in self.EXPECTED for _s, ts in subs for t in ts]
-        assert nb.get_n_pages() == len(flat) == 60, len(flat)
+        assert nb.get_n_pages() == len(flat) == 59, len(flat)
         assert nb.page_titles() == flat
 
     def test_no_group_is_a_wall_again(self):

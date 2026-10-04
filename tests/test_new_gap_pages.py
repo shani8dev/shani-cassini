@@ -45,7 +45,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
-from shani_cassini.tabs import apparmor as apparmor_mod
+from shani_cassini.tabs import lsm as lsm_mod
 from shani_cassini.tabs import audio as audio_mod
 from shani_cassini.tabs import cron as cron_mod
 from shani_cassini.tabs import firmware as firmware_mod
@@ -429,20 +429,26 @@ def test_an_unrecognised_wording_is_reported_rather_than_read_as_zero() -> None:
     assert "profile counts" in parsed["problem"]
 
 
-def test_the_apparmor_page_reads_on_a_click_and_not_on_load(
-        tmp_path, monkeypatch) -> None:
+def test_the_apparmor_profiles_read_on_a_click_and_not_on_load(monkeypatch) -> None:
     """`aa-status` needs root, so a password prompt behind merely *opening* a
-    section would be asking for authority nobody granted."""
+    section would be asking for authority nobody granted.
+
+    This contract moved here with the profile list: the AppArmor page was folded
+    into the LSM page, and the LSM page's own `aa-status` row is read
+    unprivileged - which on any normal machine returns the refusal. So the
+    privileged read is the only way to see a profile list at all, and it has to
+    stay behind the click.
+    """
     calls = []
-    monkeypatch.setattr(ss, "apparmor_status",
-                        lambda done: (calls.append("counts"), done({}, "")))
-    monkeypatch.setattr(ss, "apparmor_profiles",
-                        lambda done: (calls.append("profiles"), done({}, "")))
-    tab = apparmor_mod.AppArmorTab()
-    assert calls == [], "aa-status was read on page load"
-    assert "Not read yet" in row_named(tab, "Profiles loaded").get_subtitle()
-    tab._load()
-    assert spin(lambda: len(calls) == 2), calls
+    monkeypatch.setattr(ss, "apparmor_report",
+                        lambda done: calls.append("profiles"))
+    tab = lsm_mod.LsmTab()
+    assert calls == [], "pkexec aa-status was run on page load"
+    row = row_named(tab, "Profile list")
+    assert row is not None, "the LSM page has no Profile list row"
+    assert "not read yet" in row.get_subtitle(), row.get_subtitle()
+    tab._btn_profiles.emit("clicked")
+    assert spin(lambda: len(calls) == 1), calls
 
 
 # ============================================================================
@@ -451,7 +457,7 @@ def test_the_apparmor_page_reads_on_a_click_and_not_on_load(
 
 READERS = (
     "cron_service_status", "user_crontab", "cron_system_jobs",
-    "apparmor_status", "apparmor_profiles",
+    "apparmor_report",
     "firmware_devices", "firmware_updates",
     "loaded_modules", "journal_boots", "journal_disk_usage",
     "pipewire_status", "gpu_report",
@@ -761,7 +767,7 @@ def test_no_page_group_description_contains_a_bare_angle_bracket() -> None:
     by rendering, so it runs without a display and covers the text itself.
     """
     for module in (modules_mod, cron_mod, firmware_mod, journal_mod,
-                   graphics_mod, audio_mod, apparmor_mod):
+                   graphics_mod, audio_mod):
         tree = ast.parse(inspect.getsource(module))
         for node in ast.walk(tree):
             if isinstance(node, ast.keyword) and node.arg == "description":
@@ -805,15 +811,24 @@ def test_a_reader_that_returns_nothing_structured_leaves_the_page_readable(
         monkeypatch) -> None:
     """The AppArmor page once read `payload["problem"]` on a payload that had
     no such key - a KeyError inside a GTK callback, which GLib swallows into a
-    page that renders nothing at all. Every branch takes a stated absence."""
-    monkeypatch.setattr(ss, "apparmor_status", lambda done: done({}, ""))
-    tab = apparmor_mod.AppArmorTab()
-    tab._load()
-    assert spin(lambda: tab._btn_read.get_sensitive() is True)
-    for title in ("Kernel module", "Profiles loaded", "In enforce mode"):
-        row = row_named(tab, title)
-        assert row is not None, title
-        assert row.get_subtitle(), f"{title} was left blank"
+    page that renders nothing at all. Every branch takes a stated absence.
+
+    Retargeted at the LSM page when the AppArmor page was folded into it, and
+    hardened: the reader is handed an **empty dict**, not a payload with a
+    `problem` key, because that is the shape that used to raise. Both halves of
+    `apparmor_report` are missing, so both `.get` chains are exercised.
+    """
+    monkeypatch.setattr(ss, "apparmor_report",
+                        lambda done: done({}, ""))
+    tab = lsm_mod.LsmTab()
+    tab._btn_profiles.emit("clicked")
+    assert spin(lambda: tab._btn_profiles.get_sensitive() is True)
+    row = row_named(tab, "Profile list")
+    assert row is not None
+    subtitle = row.get_subtitle()
+    assert subtitle, "the Profile list row was left blank"
+    assert "did not answer" in subtitle or "no profile is claimed" in subtitle, subtitle
+
 
 
 def test_a_missing_tool_leaves_every_page_with_a_readable_row(monkeypatch) -> None:

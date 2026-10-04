@@ -2674,25 +2674,6 @@ def _crontab_file_entries() -> list[dict]:
 # aa-status has no JSON. Its output is a human summary, so the parser below
 # takes the counts from the tool's own wording rather than inventing structure.
 
-def apparmor_status(done: Callable[[dict, str], None]) -> None:
-    """Loaded / enforce / complain profile counts, as aa-status counts them.
-
-    Shape like storage_info(): a dict that is always safe to render. `ok=False`
-    means the *read* did not happen, which is different from "the module is not
-    enabled" - and the page has to keep those apart, because a user whose
-    AppArmor is genuinely off and a user whose prompt was dismissed both
-    otherwise end up looking like the same machine.
-    """
-    empty = {"ok": False, "problem": "", "module_loaded": False,
-             "loaded": 0, "enforce": 0, "complain": 0, "unconfined": None}
-
-    # done(payload, error) - the two-argument shape every reader in this module
-    # uses. aa-status prints prose, so there is no JSON to parse with run_json
-    # and the raw text is handed to a parser instead.
-    run_text(["pkexec", tool_path_or_self("aa-status")],
-             lambda text, err: done(_parse_aa_status(text, err), err))
-
-
 def _parse_aa_status(text: Optional[str], error: str) -> dict:
     """aa-status's own summary text into the counts it prints.
 
@@ -2760,23 +2741,27 @@ def _parse_aa_status(text: Optional[str], error: str) -> dict:
     return out
 
 
-def apparmor_profiles(done: Callable[[dict, str], None]) -> None:
-    """The profile names aa-status lists, in enforce/complain order.
+def apparmor_report(done: Callable[[dict, str], None]) -> None:
+    """Counts AND profile names out of **one** `pkexec aa-status`.
 
-    Two lines out of the same tool's output, parsed from the same read as the
-    counts rather than by a second privileged call: `aa-status` prints
+    Added when the AppArmor page was folded into the LSM page. The two readers
+    above each start their own `pkexec aa-status`, so asking for the counts and
+    then the names cost **two** password prompts for one answer - which is the
+    thing `apparmor_profiles`'s own docstring says it avoids ("parsed from the
+    same read as the counts rather than by a second privileged call"), and which
+    its code did not do. Reading both out of one run is what the docstring
+    already claimed.
 
-        Profiles:
-          Enforcement mode
-            /usr/bin/foo// null
-          complain mode
-            /usr/bin/bar// null
-
-    and re-running it to get this would put a second password prompt behind the
-    same button.
+    Shape: `{"counts": {...}, "profiles": {...}}`, each exactly what its own
+    parser returns, so neither parser changed and both keep their own tests. A
+    refusal - no root, or a wording this build does not have - arrives as
+    `ok: False` in **both** halves rather than as an exception, because an
+    exception crossing into a GTK callback is swallowed and the page renders
+    nothing at all.
     """
     def on_text(text: Optional[str], err: str) -> None:
-        done(_parse_aa_profiles(text, err), err)
+        done({"counts": _parse_aa_status(text, err),
+              "profiles": _parse_aa_profiles(text, err)}, err)
 
     run_text(["pkexec", tool_path_or_self("aa-status")], on_text)
 
@@ -2799,19 +2784,24 @@ def _parse_aa_profiles(text: Optional[str], error: str) -> dict:
             continue
         if not saw_header:
             continue
+        # BEFORE the two mode checks, and that order is the whole point. aa-status
+        # heads its confined-process table with "Processes are in enforce mode:"
+        # or "Processes are in complain mode:" - and the second of those
+        # *contains* the substring "complain mode", so a mode check above this
+        # line re-opens the section and every running program under it is
+        # collected as a profile. On a machine with any complaining profile that
+        # is the wording aa-status prints, so the user's browser and sshd came
+        # back as security profiles that do not exist. (The enforce wording does
+        # not collide, which is why the guard appeared to work: it was only ever
+        # being exercised against the one of the two wordings that is safe.)
+        if lowered.startswith("processes are in"):
+            section = None
+            continue
         if "enforcement mode" in lowered:
             section = "enforce"
             continue
         if "complain mode" in lowered:
             section = "complain"
-            continue
-        # "Processes are in enforce mode" also *contains* "enforcement mode"-
-        # shaped wording, and a process line under it looks exactly like a
-        # profile line - so without this the confined-process table would be
-        # read as a list of complain-mode profiles, naming the user's browser
-        # and every other running program as a profile. It ends the block.
-        if lowered.startswith("processes are in"):
-            section = None
             continue
         if section is None:
             continue

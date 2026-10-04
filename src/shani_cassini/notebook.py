@@ -51,7 +51,6 @@ from shani_cassini.tabs.sharing import SharingTab
 # Interfaces with no panel in GNOME Control Center or KDE System Settings. All
 # read-only reporters: the desktop apps own whatever they do cover, and a second
 # place to change it is a second place to keep honest about it.
-from shani_cassini.tabs.apparmor import AppArmorTab
 from shani_cassini.tabs.audio import AudioTab
 from shani_cassini.tabs.cron import CronTab
 from shani_cassini.tabs.firmware import FirmwareTab
@@ -224,8 +223,6 @@ SECTIONS = [
         ("Confinement & Audit", [
             (LsmTab, "lsm", "LSM", "security-high-symbolic",
              "Which confinement modules are loaded, and which are enforcing"),
-            (AppArmorTab, "apparmor", "AppArmor", "security-high-symbolic",
-             "The confinement profiles loaded, and which are enforcing"),
             (AuditTab, "audit", "Audit", "document-open-recent-symbolic",
              "auditd's own state, and a search over the events it recorded"),
         ]),
@@ -316,9 +313,12 @@ PAGES = [p for _g, subs in SECTIONS for _s, pages in subs for p in pages]
 # invariant is asserted in the tests, because an alias that shadows a live
 # page would silently redirect it.
 ALIASES: dict[str, str] = {
+    # AppArmor is one LSM, and lsm.py already read aa-status for its
+    # counts - unprivileged, which on any normal machine IS the refusal.
+    # This id retired when the profile list moved in beside those counts.
+    "apparmor": "lsm",
     # Populated as merges land. Intended entries, pending the content folds:
     #   "access"       -> "privileges"   sudoers + polkit, one question
-    #   "apparmor"     -> "lsm"          AppArmor is one LSM
     #   "tpm2-boot"    -> "encryption"   same TPM as the sealing already there
     #   "compression"  -> "btrfs"        compsize only scans btrfs
     #   "remoteaccess" -> "inbound-access"  sshd is one of the cases listed
