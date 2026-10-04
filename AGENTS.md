@@ -15,6 +15,8 @@ known issues. The rules are all near the top.
 - `libadwaita 1.5 and 1.9 disagree about getters` — **CI and the shipped OS
   answer differently**, and a markup bug is invisible to a getter on the one
   that matters
+- `Faking "this tool is not installed"` — empty `PATH` is **half a lie**, and
+  the half that lies is the half this suite uses most
 - `Empirical verification (mandatory)`
 - `Required verification for a change`
 - `Boundaries` and `Commit discipline`
@@ -232,6 +234,33 @@ green run is not evidence about it. Two rules follow:
 had a module-level `ESCAPED_GETTERS = Adw.ActionRow(...)` probe; that **segfaulted
 the whole suite during collection on Arch** (signal 11, before any test ran) and
 was harmless on Ubuntu. Probe inside a test, or in a cached function.
+
+## Faking "this tool is not installed": empty `PATH` is half a lie
+
+**Use `absent_tools` / `one_tool_absent` / `empty_sbin` from `tests/conftest.py`
+in any new test that needs a tool to be missing.** `monkeypatch.setenv("PATH",
+<empty dir>)` — which this suite used in 74 places across 23 files — is honest
+for a `/usr/bin` tool and **silently wrong for an sbin-only one**, because
+`have_tool()` falls back to `SBIN_DIRS` absolutely. Measured:
+
+| tool | in `/usr/bin` | in `/usr/sbin` | `have_tool()` with empty `PATH` |
+|---|---|---|---|
+| `podman`, `ls` | yes | no | `False` — hidden, as intended |
+| `smartctl`, `aa-status` | no | yes | **`True`** — still found |
+
+So a fixture reading "this machine has neither tool" leaves the branch untaken
+for `smartctl` and `aa-status` and says nothing about why. That is the same
+`/usr/sbin` trap this file records for both tools, and it is the identified
+cause of `test_a_missing_smartctl_is_not_installed_and_not_an_error`, which has
+been carried here for some time as *"fails on hosts that have smartctl and a real
+disk"* — i.e. as a host quirk, when it is a fixture that cannot say what it
+means.
+
+`tests/test_absent_tool_fixtures.py` holds seven controls, including that table
+as an assertion, and two that move a **real page** onto the absent branch and
+back — so the fixtures cannot pass by being self-consistent while the pages
+ignore them. Note they live in a collected module rather than in `conftest.py`:
+pytest does not collect tests from there, so controls written there never run.
 
 ## Required verification for a change
 
