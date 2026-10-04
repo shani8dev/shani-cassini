@@ -2080,6 +2080,36 @@ class TestThePageRendersForReal:
             pytest.skip("no display: there is no GTK renderer to paint with")
         yield
 
+
+def _render_pair(page_png: str, blank_png: str) -> str:
+    """Build the page, shoot it, and shoot a blank control at the page's size.
+
+    Run in a **fresh interpreter** by the render test, for a measured reason
+    rather than tidiness: this host's GL renderer aborts the process on a
+    *second* renderer session in one process. Four render tests each calling
+    `_shoot` twice is eight sessions in the pytest process, so the test passes
+    alone and fails after a couple of thousand others. An in-process render test
+    whose result depends on how many tests ran before it is worse than no render
+    test at all. Two shots inside ONE child is fine - the crash is a second
+    session, not a second shot. Same workaround, same measurement, as
+    `tests/test_smb_page.py`.
+
+    Returns JSON so the assertions and their messages stay in the parent, where
+    a failure is actually readable.
+    """
+    import json as _json
+    tab = AvahiTab()
+    tab._on_state(_payload(), "")
+    page_bytes, page_w, page_h = _shoot(tab, page_png)
+    _flat_background_css("avahi-blank", 1000)
+    blank = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    blank.set_name("avahi-blank")
+    blank.set_size_request(page_w, page_h)
+    blank_bytes, blank_w, blank_h = _shoot(blank, blank_png)
+    return _json.dumps({"page": [page_bytes, page_w, page_h],
+                        "blank": [blank_bytes, blank_w, blank_h]})
+
+
     def test_the_page_paints_and_the_capture_is_not_a_blank_surface(
             self, tmp_path):
         """The page's PNG against a blank control of **the same dimensions**.
@@ -2108,9 +2138,28 @@ class TestThePageRendersForReal:
         a usable blank: it has no intrinsic size, produces no render node, and so
         fails for a different reason than a page that failed to draw.
         """
-        tab = AvahiTab()
-        tab._on_state(_payload(), "")
-        page_bytes, page_w, page_h = _shoot(tab, str(tmp_path / "page.png"))
+        import subprocess as _sp
+        import sys as _sys
+        here = os.path.dirname(os.path.abspath(__file__))
+        # .../src/shani_cassini/tabs/avahi.py - three levels up is .../src,
+        # the directory that has to be importable.
+        src = os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(avahi_mod.__file__))))
+        script = (
+            "import sys\n"
+            f"sys.path.insert(0, {here!r})\n"
+            f"sys.path.insert(0, {src!r})\n"
+            "import test_avahi_page as t\n"
+            f"print(t._render_pair({str(tmp_path / 'page.png')!r}, "
+            f"{str(tmp_path / 'blank.png')!r}))\n")
+        proc = _sp.run([_sys.executable, "-c", script],
+                       capture_output=True, text=True, timeout=180)
+        assert proc.returncode == 0, (
+            f"the render child failed or crashed:\n{proc.stderr[-2000:]}")
+        import json as _json
+        _got = _json.loads(proc.stdout.strip().splitlines()[-1])
+        page_bytes, page_w, page_h = _got["page"]
+        blank_bytes, blank_w, blank_h = _got["blank"]
 
         assert (page_bytes, page_w, page_h) != (0, 0, 0), (
             "the page produced no render node: nothing was painted at all")
@@ -2119,15 +2168,6 @@ class TestThePageRendersForReal:
             f"the page laid out to only {page_h}px tall; with eight groups it "
             f"measured 1779px on GTK 4.14 and 2377px on GTK 4.22.5, so this "
             f"is a page that did not lay out rather than a short one")
-
-        # The control, at exactly the size the page just measured.
-        _flat_background_css("avahi-blank", 1000)
-        blank = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        blank.set_name("avahi-blank")
-        blank.set_size_request(page_w, page_h)
-        blank_bytes, blank_w, blank_h = _shoot(
-            blank, str(tmp_path / "blank.png"))
-
         assert (blank_w, blank_h) == (page_w, page_h), (
             f"the control is {blank_w}x{blank_h} and the page is "
             f"{page_w}x{page_h}; a ratio between two different pictures means "
