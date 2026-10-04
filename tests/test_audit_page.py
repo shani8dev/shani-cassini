@@ -52,6 +52,32 @@ from shani_cassini import system_status  # noqa: E402
 from shani_cassini.widgets import find_named  # noqa: E402
 
 
+# The permanent search row's title, and a finder for it. Both read from the
+# page module rather than repeating a string, so a rename upstream cannot leave
+# these tests asserting a stale literal.
+def _search_row_title() -> str:
+    return the_module().SEARCH_ROW_TITLE
+
+
+def _row_named(tab: Gtk.Widget, title: str):
+    """The first ActionRow with this exact title, or None.
+
+    Walks the same way `shown()` does - first_child/next_sibling - so a row added
+    after construction is found, which is the whole point when checking that one
+    is NOT added a second time.
+    """
+    stack = [tab]
+    while stack:
+        w = stack.pop()
+        if isinstance(w, Adw.ActionRow) and w.get_title() == title:
+            return w
+        child = w.get_first_child()
+        while child is not None:
+            stack.append(child)
+            child = child.get_next_sibling()
+    return None
+
+
 def the_module():
     """The page module, or a failure inside a test rather than a collection
     error - the shape tests/test_directory_page.py uses, for the same reason:
@@ -579,3 +605,47 @@ def test_nothing_here_can_change_the_audit_rules_or_the_log():
         for flag in mutations:
             assert flag not in argv, \
                 f"{argv} carries the audit-rule mutation {flag}"
+
+
+def test_a_failed_search_is_shown_once_and_not_as_two_rows(tmp_path, monkeypatch):
+    """A reason used to be rendered TWICE, as two rows with the same title and
+    the same text in one group.
+
+    `_subtitle()` returns the reason for the permanent "Recent activity" row -
+    that row carries the Search button - and the branch below it then added a
+    *second* row titled "Recent activity" carrying the same reason again. Same
+    duplicate-titles-in-one-group shape this repo has shipped before, which is
+    why `tabs/compression.py` keeps its fstab lines in a group of their own.
+
+    Found on Arch by `slot-test blue repo-pytest`, where the rendered text came
+    back as `Recent activity / Authorization was cancelled / Recent activity /
+    Authorization was cancelled`. The per-page tests passed on Ubuntu because
+    they assert `in`, not "exactly once" - an absence nobody counted.
+    """
+    for rc in (126, 127):
+        fake_tools(tmp_path, monkeypatch, pkexec_rc=rc)
+        tab = the_module().AuditTab()
+        search(tab)
+        assert settled(tab), shown(tab)
+        text = shown(tab)
+        assert text.count(_search_row_title()) == 1, (
+            f"the search row title appears {text.count(_search_row_title())} "
+            f"times for rc={rc}: {text}")
+        assert text.count("Authorization was cancelled") == 1, (
+            f"the reason is rendered more than once for rc={rc}: {text}")
+
+
+def test_the_failed_search_row_is_marked_as_a_warning(tmp_path, monkeypatch):
+    """The extra row used to carry the warn icon; the single row now carries the
+    styling, so the warning is not silently lost by de-duplicating."""
+    from gi.repository import Adw
+    fake_tools(tmp_path, monkeypatch, pkexec_rc=126)
+    tab = the_module().AuditTab()
+    search(tab)
+    assert settled(tab), shown(tab)
+    row = _row_named(tab, _search_row_title())
+    assert row is not None, shown(tab)
+    assert row.get_css_classes() and "warning" in row.get_css_classes(), \
+        f"a cancelled search is not marked: {row.get_css_classes()}"
+    # and it is a real row, not a status page
+    assert isinstance(row, Adw.ActionRow)

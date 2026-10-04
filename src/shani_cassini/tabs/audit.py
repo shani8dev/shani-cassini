@@ -259,8 +259,29 @@ class AuditTab(Gtk.Box):
         self._added = []
         self._btn_search.set_sensitive(not self._searching)
         self._row_search.set_subtitle(self._subtitle())
+        # The reason goes on the permanent row, which `_subtitle()` has already
+        # done - so it used to be rendered TWICE, as two rows with the same title
+        # and the same text in one group. `_subtitle()` returns the reason and
+        # then the branch below added another row carrying it again, which is
+        # the duplicate-titles-in-one-group shape this repo has shipped before
+        # (see tabs/compression.py, which keeps its fstab lines in a group of
+        # their own for exactly this reason).
+        #
+        # What the extra row did buy was a warning ICON next to the text. That is
+        # kept by swapping the permanent row's own prefix instead of by adding a
+        # second row: one row, one title, and it still looks like a warning.
+        # The warning is the row's own styling, not a second row and not an
+        # icon swap: AdwActionRow can add a prefix but this libadwaita exposes
+        # no way to take one back (`get_prefixes` and `remove_prefix` are both
+        # absent), and the row has to keep its identity because the Search button
+        # lives on it. `add_css_class` is stable, and tabs/tpm2_boot.py already
+        # marks a row this way.
         if self._reason:
-            self._add(_row(SEARCH_ROW_TITLE, _esc(self._reason), WARN_ICON))
+            self._row_search.add_css_class("warning")
+        else:
+            self._row_search.remove_css_class("warning")
+        if self._reason:
+            pass
         elif not self._asked or self._searching:
             return
         elif not self._records:
