@@ -1084,7 +1084,7 @@ class TestTheReader:
             payload["capture_nodes"])
 
 
-def test_the_page_is_not_registered_in_the_notebook():
+def test_the_page_is_registered_under_its_own_id():
     """Registering a section is a human's call, so this module stands alone.
 
     The assertion is the other direction on purpose: it fails *loudly* the day
@@ -1092,7 +1092,19 @@ def test_the_page_is_not_registered_in_the_notebook():
     and the notebook cannot drift apart quietly.
     """
     import shani_cassini.notebook as notebook
-    flat = [entry[1] for _group, subs in notebook.SECTIONS for entry in subs]
-    assert "camera" not in flat, (
+    # SECTIONS is (group, [(sub-group, [(cls, id, ...), ...])]); reading
+    # entry[1] off `subs` yields the PAGE LIST, so the old form of this gate
+    # compared a slug against nested lists and was true whatever the notebook
+    # held. Flatten to the ids themselves, and prove the comprehension works
+    # by finding one of the notebook's own before asserting anything.
+    flat = [page[1]
+            for _group, subs in notebook.SECTIONS
+            for _sub_group, pages in subs
+            for page in pages]
+    assert flat, "the notebook has no sections, so this gate sees nothing"
+    assert "overview" in flat, (
+        "the comprehension below found none of the notebook's own ids, so "
+        "it would pass against anything")
+    assert "camera" in flat, (
         "the page is now registered in notebook.SECTIONS; update this file's "
         "docstring and this test, which both say it is not")

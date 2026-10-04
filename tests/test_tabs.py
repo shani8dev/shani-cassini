@@ -102,45 +102,43 @@ class TestNotebook:
     # "Secure Boot" belongs under Boot & Disk rather than floating beside
     # "Access"; that ambiguity is the reason the third level exists.
     EXPECTED = [
-        ("System", [
-            ("Overview & Health", ["Overview", "Health"]),
-            ("Storage", ["Storage", "Disk Health", "Btrfs", "Software RAID",
-                         "Persistence"]),
-            ("Hardware", ["System Info", "Drivers", "Graphics", "Audio",
-                          "Kernel Modules", "Firmware"]),
-            ("Peripherals", ["Printers", "Camera"]),
-            ("Tasks & Logs", ["Timers & Background Tasks", "Cron", "Journal"]),
-        ]),
-        ("Network", [
-            ("Name Resolution", ["DNS"]),
-            ("Reachability", ["Inbound Access", "Remote Access"]),
-            ("Sharing", ["Sharing"]),
-        ]),
-        ("Security", [
-            ("Boot & Disk", ["Secure Boot", "Encryption", "Userspace Encryption",
-                             "Boot Entries"]),
-            ("Sign-in", ["Fingerprint", "Smartcard", "Security Keys",
-                         "TOTP Tokens", "SSH Keys", "Kerberos"]),
-            ("Confinement & Audit", ["LSM", "AppArmor", "Audit"]),
-            ("Passwords", ["Password Policy"]),
-            ("Firewall", ["Firewall"]),
-            ("Access & Directory", ["Access", "Directory"]),
-        ]),
-        ("Updates", [
-            ("Deployment", ["Boot & Recovery", "Updates & Rollback"]),
-        ]),
-        ("Power & Virtualization", [
-            ("Power", ["UPS"]),
-            ("Virtualization", ["Virtualization", "Acceleration"]),
-        ]),
-        ("Manage", [
-            ("Services", ["Services"]),
-            ("Containers", ["Containers"]),
-            ("Mail", ["Outbound Mail"]),
-            ("Backup & Maintenance", ["Backup", "Maintenance"]),
-            ("Apps", ["App Versions", "Chronoa", "Fleet"]),
-        ]),
-    ]
+            ('System', [
+                ('Overview & Health', ['Overview', 'Health']),
+                ('Storage', ['Storage', 'Disk Health', 'Btrfs', 'Software RAID', 'Compression', 'Persistence']),
+                ('Hardware', ['System Info', 'Drivers', 'Graphics', 'Audio', 'Kernel Modules', 'Firmware']),
+                ('Interrupts', ['irqbalance']),
+                ('Peripherals', ['Printers', 'Camera']),
+                ('Tasks & Logs', ['Timers & Background Tasks', 'Cron', 'Journal']),
+            ]),
+            ('Network', [
+                ('Name Resolution', ['DNS']),
+                ('Reachability', ['Inbound Access', 'Remote Access']),
+                ('Sharing', ['SMB', 'Service Discovery', 'Sharing']),
+            ]),
+            ('Security', [
+                ('Boot & Disk', ['Secure Boot', 'Encryption', 'Userspace Encryption', 'Kernel Lockdown', 'TPM2 Boot Unlock', 'Boot Entries']),
+                ('Sign-in', ['Fingerprint', 'Smartcard', 'Security Keys', 'TOTP Tokens', 'SSH Keys', 'Kerberos']),
+                ('Confinement & Audit', ['LSM', 'AppArmor', 'Audit']),
+                ('Passwords', ['Password Policy']),
+                ('Privileges', ['Privileges']),
+                ('Firewall', ['Firewall']),
+                ('Access & Directory', ['Access', 'Directory']),
+            ]),
+            ('Updates', [
+                ('Deployment', ['Boot & Recovery', 'Updates & Rollback']),
+            ]),
+            ('Power & Virtualization', [
+                ('Power', ['UPS']),
+                ('Virtualization', ['Virtualization', 'Acceleration']),
+            ]),
+            ('Manage', [
+                ('Services', ['ananicy-cpp', 'Services']),
+                ('Containers', ['Containers']),
+                ('Mail', ['Outbound Mail']),
+                ('Backup & Maintenance', ['Backup', 'Maintenance']),
+                ('Apps', ['App Versions', 'Chronoa', 'Fleet']),
+            ]),
+        ]
 
     def test_sections(self):
         from shani_cassini.notebook import ShaniosNotebook, SECTIONS
@@ -150,7 +148,7 @@ class TestNotebook:
                for group, subs in SECTIONS]
         assert got == self.EXPECTED
         flat = [t for _g, subs in self.EXPECTED for _s, ts in subs for t in ts]
-        assert nb.get_n_pages() == len(flat) == 52, len(flat)
+        assert nb.get_n_pages() == len(flat) == 60, len(flat)
         assert nb.page_titles() == flat
 
     def test_no_group_is_a_wall_again(self):

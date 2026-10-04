@@ -60,6 +60,14 @@ from shani_cassini.tabs.inbound_access import InboundAccessTab
 from shani_cassini.tabs.password_policy import PasswordPolicyTab
 from shani_cassini.tabs.printers import PrintersTab
 from shani_cassini.tabs.camera import CameraTab
+from shani_cassini.tabs.avahi import AvahiTab
+from shani_cassini.tabs.irqbalance import IrqBalanceTab
+from shani_cassini.tabs.ananicy import AnanicyTab
+from shani_cassini.tabs.compression import CompressionTab
+from shani_cassini.tabs.sbctl import SbctlTab
+from shani_cassini.tabs.privileges import PrivilegesTab
+from shani_cassini.tabs.tpm2_boot import Tpm2BootTab
+from shani_cassini.tabs.smb import SmbTab
 from shani_cassini.tabs.app_versions import AppVersionsTab
 from shani_cassini.tabs.raid import RaidTab
 from shani_cassini.tabs.totp import TotpTab
@@ -122,6 +130,8 @@ SECTIONS = [
              "Subvolumes, allocation, scrub status, and whether the monthly maintenance ever succeeded"),
             (RaidTab, "raid", "Software RAID", "drive-multidisk-symbolic",
              "mdadm arrays, their members, and which slot is degraded or failed"),
+            (CompressionTab, "compression", "Compression", "media-zip-symbolic",
+             "What each btrfs filesystem is set to compress, and what compsize measures is already compressed"),
             (PersistenceTab, "persistence", "Persistence", "folder-symbolic",
              "The bind mounts this image ships, and which are present now"),
         ]),
@@ -138,6 +148,10 @@ SECTIONS = [
              "Every loaded module, its dependencies and each parameter's value"),
             (FirmwareTab, "firmware", "Firmware", "preferences-system-devices-symbolic",
              "Device firmware from LVFS, and the CPU microcode revision"),
+        ]),
+        ("Interrupts", [
+            (IrqBalanceTab, "irqbalance", "irqbalance", "view-continuous-symbolic",
+             "Whether the daemon runs, and where the kernel has pinned each interrupt"),
         ]),
         ("Peripherals", [
             (PrintersTab, "printers", "Printers", "printer-symbolic",
@@ -168,6 +182,10 @@ SECTIONS = [
              "The sshd directives this drop-in records"),
         ]),
         ("Sharing", [
+            (SmbTab, "smb", "SMB", "network-workgroup-symbolic",
+             "The shares testparm validates, the accounts, and what holds ports 445 and 139"),
+            (AvahiTab, "avahi", "Service Discovery", "network-transmit-receive-symbolic",
+             "mDNS and DNS-SD: the socket that decides whether the daemon runs at all"),
             (SharingTab, "sharing", "Sharing", "folder-publicshare-symbolic",
              "NFS exports and the options they are given"),
         ]),
@@ -182,6 +200,10 @@ SECTIONS = [
              "security-high-symbolic",
              "fscrypt, gocryptfs and ecryptfs - per-file and per-mountpoint "
              "encryption, which is not the LUKS above"),
+            (SbctlTab, "sbctl", "Kernel Lockdown", "system-lock-screen-symbolic",
+             "Whether the kernel offers lockdown, what mode is in force, and that gen-efi - not sbctl - is the system of record"),
+            (Tpm2BootTab, "tpm2-boot", "TPM2 Boot Unlock", "security-high-symbolic",
+             "The second factor at boot: installed, and whether the package's own dracut check would include it"),
             (BootEntriesTab, "boot-entries", "Boot Entries", "emblem-system-symbolic",
              "What the firmware will boot, and where the slot is really decided"),
         ]),
@@ -212,6 +234,10 @@ SECTIONS = [
              "dialog-password-symbolic",
              "Whether a password policy is configured, and whether any login "
              "stack actually enforces it"),
+        ]),
+        ("Privileges", [
+            (PrivilegesTab, "privileges", "Privileges", "dialog-password-symbolic",
+             "The system's polkit rules and admin groups - not Cassini's own, which installs none"),
         ]),
         ("Firewall", [
             (FirewallTab, "firewall", "Firewall", "network-server-symbolic",
@@ -246,6 +272,8 @@ SECTIONS = [
     ]),
     ("Manage", [
         ("Services", [
+            (AnanicyTab, "ananicy-cpp", "ananicy-cpp", "preferences-system-time-symbolic",
+             "The priority daemon: what it runs, the rules it loads, and the privileges it holds"),
             (ServicesTab, "services", "Services", "preferences-system-symbolic",
              "Enabled and running units, and what the image turned on"),
         ]),
