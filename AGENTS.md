@@ -12,6 +12,9 @@ known issues. The rules are all near the top.
 
 **Always read these first:**
 - `What this repo is` — it reads only real interfaces
+- `libadwaita 1.5 and 1.9 disagree about getters` — **CI and the shipped OS
+  answer differently**, and a markup bug is invisible to a getter on the one
+  that matters
 - `Empirical verification (mandatory)`
 - `Required verification for a change`
 - `Boundaries` and `Commit discipline`
@@ -183,6 +186,52 @@ with `iso-install --boot-only --console-exec=CMD`, for anything touching `/var`.
 - `update-check` exercises the `shani-deploy --status --check --json`
   contract the Updates page reads.
 - An unpublished build: `--local-pkg=<file>`.
+
+## libadwaita 1.5 and 1.9 disagree about getters, and markup breaks in a different place on each
+
+**Read this before writing or fixing any test that asserts on `get_subtitle()`,
+`get_title()` or `get_description()`.** CI runs Ubuntu 24.04 (libadwaita 1.5);
+Shanios ships Arch (libadwaita 1.9.4). Measured, same inputs, both stacks:
+
+| what was set | getter on 1.5.0 | getter on 1.9.4 |
+|---|---|---|
+| `"a &amp; b"` (escaped) | `'a & b'` — normalised to plain | `'a &amp; b'` — **verbatim** |
+| `"snapd's"` (apostrophe) | `"snapd's"` | `"snapd's"` |
+| `"a & b"` (raw `&`) | **`''`** | `'a & b'` |
+
+So a subtitle containing `&amp;` asserts one way on CI and the other way on the
+distribution the app ships on. That accounts for most of the 38 failures
+`slot-test blue repo-pytest` reported on 2026-10-04, and **they are test-premise
+failures, not defects** — both forms render as `snapd's` for the user. They need
+re-deciding one test at a time; do not "fix" them by loosening the page.
+
+**The dangerous half is where a raw `&`/`<`/`>` shows up**, because it breaks the
+row either way and the *observable* moves:
+
+- **1.5** — `get_subtitle()` returns `''`. The getter goes empty.
+- **1.9.4** — the getter is untouched and the **label** is what goes blank:
+  `Failed to set text 'a & b' from markup due to error parsing markup`.
+
+So on 1.9.4 a test that only calls `get_subtitle()` **passes while the user sees
+nothing**. `tests/test_no_rendered_label_is_blanked_by_markup.py` exists for
+this: it compares each row's *rendered* text against the string behind it, once
+per page. It currently finds nothing — no page has this bug — and on Arch its
+control exercises the detection branch, so it is demonstrably able to fire.
+
+**What that gate cannot do, so do not assume it covers you.** On 1.5 a subtitle
+destroyed by markup is indistinguishable from one that was never set: both come
+back `''`. That half of the class is not observable from the widget at all, so a
+green run is not evidence about it. Two rules follow:
+
+- **Escape at the point you build the string**, not in the test.
+- **Assert on the rendered label** (`Gtk.Label.get_text()`) when the question is
+  "does the user see this", and on the getter only when the question is "what
+  did we store".
+
+**Do not build a widget at module import time.** `tests/test_irqbalance_page.py`
+had a module-level `ESCAPED_GETTERS = Adw.ActionRow(...)` probe; that **segfaulted
+the whole suite during collection on Arch** (signal 11, before any test ran) and
+was harmless on Ubuntu. Probe inside a test, or in a cached function.
 
 ## Required verification for a change
 
