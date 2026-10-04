@@ -112,13 +112,33 @@ class ShaniosApplication(Adw.Application):
         about_action.connect("activate", self._on_about)
         self.add_action(about_action)
 
-        # app.show-section('<id>'): same as --section, over D-Bus too
-        # (gapplication action dev.shani.cassini show-section "'health'")
+        # Reaching a page by id, for a caller that is not this process.
+        #
+        # The name carries a hyphen and that is FINE, which cost an afternoon to
+        # establish the hard way. A GApplication exports its actions on the
+        # `org.gtk.Actions` interface, where the action name is the first
+        # *argument* of `Activate(s action_name, av parameter, a{sv})` - not part
+        # of a D-Bus method name, so the usual `[A-Za-z_][A-Za-z0-9_]*` rule does
+        # not apply to it.
+        #
+        # A version of this comment claimed the opposite ("a D-Bus method name
+        # may not contain a hyphen, so this is unreachable") and registered a
+        # second `show_section` action to work around it. That was wrong, the
+        # duplicate is gone, and `tests/test_show_section_action.py` now holds
+        # the measurement instead of the folklore:
+        #
+        #   gdbus call --session --dest dev.shani.cassini \
+        #     --object-path /dev/shani/cassini \
+        #     --method org.gtk.Actions.Activate show-section '<"btrfs">' '{}'
+        #
+        # What made the wrong version so convincing: `gapplication action
+        # dev.shani.cassini show-section btrfs` reports `error parsing action
+        # parameter: unknown keyword: btrfs`, which reads like it failed to find
+        # the action. It found it - it is the *parameter* that tool wants in
+        # `key=value` form. The error names the wrong thing.
         show = Gio.SimpleAction.new("show-section", GLib.VariantType.new("s"))
         show.connect("activate", lambda _a, v: self._show_section(v.get_string()))
         self.add_action(show)
-
-        logger.debug("Application actions created")
 
     def get_action(self, name: str) -> Gio.SimpleAction | None:
         """Look up a registered action by name.
