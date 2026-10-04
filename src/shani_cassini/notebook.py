@@ -307,22 +307,44 @@ PAGES = [p for _g, subs in SECTIONS for _s, pages in subs for p in pages]
 # invariant is asserted in the tests, because an alias that shadows a live
 # page would silently redirect it.
 ALIASES: dict[str, str] = {
+    # AppArmor is one LSM, and lsm.py already read aa-status for its
+    # counts - unprivileged, which on any normal machine IS the refusal.
+    # This id retired when the profile list moved in beside those counts.
+    "apparmor": "lsm",
+    # compsize only measures btrfs, so the compression read has no meaning
+    # away from the filesystem page. The section itself lives inside the
+    # Btrfs page now, so this id lands a reader in the right place.
+    "compression": "btrfs",
     # The boot-time second factor is the same TPM2 the Encryption page already
     # reports on, asked a different question. Shanios ships neither
     # tpm2-totp nor dracut-tpm2-totp, so the answer is "there is not one",
     # and that is a fact about how this disk unlocks.
     "tpm2-boot": "encryption",
-    # compsize only measures btrfs, so the compression read has no meaning
-    # away from the filesystem page. The section itself lives inside the
-    # Btrfs page now, so this id lands a reader in the right place.
-    "compression": "btrfs",
-    # AppArmor is one LSM, and lsm.py already read aa-status for its
-    # counts - unprivileged, which on any normal machine IS the refusal.
-    # This id retired when the profile list moved in beside those counts.
-    "apparmor": "lsm",
-    # Populated as merges land. Intended entries, pending the content folds:
-    #   "access"       -> "privileges"   sudoers + polkit, one question
-    #   "remoteaccess" -> "inbound-access"  sshd is one of the cases listed
+
+    # NOT MERGED, and the reason is worth keeping because the argument for
+    # each looked good and was wrong.
+    #
+    #   inbound-access  <- remoteaccess
+    #   privileges      <- access
+    #
+    # Both pairs share a question - "what can reach this machine" and "who may
+    # act as root" - but in both the page that would HOST is read-only and the
+    # page being absorbed has a privileged editor: 8 `shani-cassini-save` /
+    # pkexec call sites and 9 dialogs between them. `inbound_access.py` argues
+    # in its own docstring that it "will not switch any of them on", and
+    # `privileges.py` says it "has no button, no polkit action and no
+    # `pkexec`: a page about what asks a password" - all six of its pkexec
+    # mentions are prose in descriptions, not code.
+    #
+    # Grafting an editor onto either would not make one page tidier; it would
+    # make that page's stated property false, and false in the direction that
+    # matters: a user reading "read-only" on a panel is making a decision about
+    # whether this software touches their machine unattended.
+    #
+    # The cross-reference the other way round already exists and is the honest
+    # form of the link: inbound_access.py's table lists `openssh` as reachable
+    # "via remote shell and port forwarding (Remote Access)", so the reporter
+    # points at the editor by name without either page claiming to be the other.
 }
 
 

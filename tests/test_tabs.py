@@ -653,6 +653,55 @@ class TestRetiredPageIds:
         # arbitrary instead of warning.
         assert resolve("no-such-page") == "no-such-page"
 
+    def test_the_two_write_pages_were_not_folded_into_read_only_ones(self):
+        """A merge that was recommended, measured, and **declined**.
+
+        `remoteaccess` -> `inbound-access` and `access` -> `privileges` were
+        both on the list of pages that could be combined, and both arguments
+        were reasonable: Inbound Access is the umbrella and sshd is one of the
+        cases it lists; sudoers and polkit are two answers to "who may act as
+        root".
+
+        They are wrong, and the reason is not subtle once measured. In both pairs
+        the host page is read-only and the page being absorbed has a privileged
+        editor - 8 `shani-cassini-save`/pkexec call sites and 9 dialogs between
+        them. `inbound_access.py` argues in its own docstring that it "will not
+        switch any of them on"; `privileges.py` says it "has no button, no
+        polkit action and no pkexec". Grafting an editor onto either does not
+        tidy anything up, it makes a stated property false - and false in the
+        direction a user is relying on when they read "read-only" on a panel.
+
+        So this asserts the decision, because a later reader with the same
+        reasonable-sounding argument should have to re-measure rather than
+        re-derive. If a future change *does* merge them, this fails and the
+        docstrings have to change with it.
+        """
+        from pathlib import Path
+        here = Path(__file__).resolve().parent.parent / "src" / "shani_cassini" / "tabs"
+
+        # Counted by the write API the page calls, NOT by the word "pkexec".
+        # The first version of this test counted the string and reported
+        # `privileges` as having four privileged call sites - all four were
+        # description strings on rows, one of them its own sentence saying it
+        # has no pkexec. A page can *name* an action in prose it shows the user
+        # without ever performing one, so prose is not a call site.
+        WRITE_CALLS = ("write_staged_privileged", "config_io.stage",
+                       "_save_worker")
+
+        def writes(name: str) -> list[str]:
+            text = (here / f"{name}.py").read_text(encoding="utf-8")
+            return [c for c in WRITE_CALLS if c in text]
+
+        for host, absorbed in (("inbound_access", "remote_access"),
+                               ("privileges", "access")):
+            assert not writes(host), (
+                f"{host} is meant to stay read-only; it now calls "
+                f"{writes(host)}, so folding an editor into it is on the table")
+            assert writes(absorbed), (
+                f"{absorbed} is expected to have a privileged editor; if it no "
+                f"longer calls any of {WRITE_CALLS}, the argument for declining "
+                f"the fold has to be re-examined rather than inherited")
+
     def test_resolve_refuses_a_cycle_instead_of_looping(self):
         import shani_cassini.notebook as nb
         saved = dict(nb.ALIASES)
