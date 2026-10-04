@@ -62,7 +62,6 @@ from shani_cassini.tabs.camera import CameraTab
 from shani_cassini.tabs.avahi import AvahiTab
 from shani_cassini.tabs.irqbalance import IrqBalanceTab
 from shani_cassini.tabs.ananicy import AnanicyTab
-from shani_cassini.tabs.compression import CompressionTab
 from shani_cassini.tabs.sbctl import SbctlTab
 from shani_cassini.tabs.privileges import PrivilegesTab
 from shani_cassini.tabs.tpm2_boot import Tpm2BootTab
@@ -129,8 +128,6 @@ SECTIONS = [
              "Subvolumes, allocation, scrub status, and whether the monthly maintenance ever succeeded"),
             (RaidTab, "raid", "Software RAID", "drive-multidisk-symbolic",
              "mdadm arrays, their members, and which slot is degraded or failed"),
-            (CompressionTab, "compression", "Compression", "media-zip-symbolic",
-             "What each btrfs filesystem is set to compress, and what compsize measures is already compressed"),
             (PersistenceTab, "persistence", "Persistence", "folder-symbolic",
              "The bind mounts this image ships, and which are present now"),
         ]),
@@ -313,6 +310,10 @@ PAGES = [p for _g, subs in SECTIONS for _s, pages in subs for p in pages]
 # invariant is asserted in the tests, because an alias that shadows a live
 # page would silently redirect it.
 ALIASES: dict[str, str] = {
+    # compsize only measures btrfs, so the compression read has no meaning
+    # away from the filesystem page. The section itself lives inside the
+    # Btrfs page now, so this id lands a reader in the right place.
+    "compression": "btrfs",
     # AppArmor is one LSM, and lsm.py already read aa-status for its
     # counts - unprivileged, which on any normal machine IS the refusal.
     # This id retired when the profile list moved in beside those counts.
@@ -320,7 +321,6 @@ ALIASES: dict[str, str] = {
     # Populated as merges land. Intended entries, pending the content folds:
     #   "access"       -> "privileges"   sudoers + polkit, one question
     #   "tpm2-boot"    -> "encryption"   same TPM as the sealing already there
-    #   "compression"  -> "btrfs"        compsize only scans btrfs
     #   "remoteaccess" -> "inbound-access"  sshd is one of the cases listed
 }
 

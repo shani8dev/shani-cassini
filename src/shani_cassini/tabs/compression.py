@@ -724,22 +724,43 @@ def _filesystems(count: int) -> str:
 # --- the page ---------------------------------------------------------------
 
 class CompressionTab(Gtk.Box):
-    """Read-only reporter for btrfs compression.
+    """Read-only reporter for btrfs compression - a **section of the Btrfs page**
+    since the two were folded together, not a page of its own.
 
     It renders what `compression_state` hands it, shells out to nothing of its
     own, and never asks for a privilege: `compsize` needs root, so a page that
     escalated would be raising a password prompt no polkit rule in Shanios
     covers, in exchange for a number a terminal gives for free.
+
+    **Why it is still a Gtk.Box.** `compsize` only measures btrfs, so the read is
+    meaningless without the filesystem page - but the alternative was moving
+    five groups and their renderer into `BtrfsTab`, and this page's own
+    comments record how easily that goes wrong: it has a *separate row list per
+    group* because "one group cleared by two renderers is how the second one
+    wipes the first", and it keeps the fstab lines in their own group because
+    two rows with the same title in one group shipped here before. Folding by
+    containment keeps those five groups, their five row lists and their renderer
+    exactly as they were, and a reader who wants the compression detail scrolls
+    to it on the page that already talks about the filesystem.
+
+    `autoload=False` is what makes it a section rather than a page. As a page it
+    scheduled its own read from `GLib.idle_add` in `__init__`, which in an
+    embedded section would be a read the containing page knows nothing about -
+    it could not count it as pending, could not drop it when a newer refresh
+    started, and would leave a Refresh button that claimed to have finished
+    while this was still walking subvolumes. So the host page calls `load()`.
     """
 
-    def __init__(self, state=None, auth_manager=None) -> None:
+    def __init__(self, state=None, auth_manager=None,
+                 autoload: bool = True) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         self._state = state
         self._auth_manager = auth_manager
         self._page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         self.append(self._page)
         self._build()
-        GLib.idle_add(self.load)
+        if autoload:
+            GLib.idle_add(self.load)
 
     def _build(self) -> None:
         self._summary = Adw.PreferencesGroup(title=TITLE,
@@ -798,7 +819,16 @@ class CompressionTab(Gtk.Box):
         self._page.append(Adw.PreferencesGroup(
             title="Where this comes from", description=_plain(SOURCES_NOTE)))
 
-    def load(self) -> bool:
+    def load(self, settled=None) -> bool:
+        """Start the read. `settled` is called once the payload has rendered.
+
+        The `settled` hook is what lets the Btrfs page treat this as one of its
+        own reads. It is optional and defaults to None so `GLib.idle_add(self.load)`
+        still works unchanged for a caller that only wants the rows - idle_add
+        passes the return value, not an argument, so the signature has to stay
+        compatible with being the callback.
+        """
+        self._settled = settled
         compression_state(self._on_state)
         return False
 
@@ -832,6 +862,11 @@ class CompressionTab(Gtk.Box):
         self._render_measured(payload)
         self._render_algorithms(payload)
         self._render_crypttab(payload)
+        # Told last, so a host that re-renders in the callback sees the rows
+        # already in place rather than the state before this payload landed.
+        settled = getattr(self, "_settled", None)
+        if settled is not None:
+            settled()
 
     # -- the one line that says which of the states this machine is in -------
     def _verdict(self, payload: dict) -> str:

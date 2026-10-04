@@ -976,7 +976,50 @@ def test_repeated_refresh_neither_duplicates_rows_nor_crashes(
     visible = {id(r) for r in walk(tab)}
     owned = ({id(row) for _group, row in tab._added}
              | {id(row) for row in tab._permanent})
+    # The embedded compression section owns its rows in its own five lists, plus
+    # the one summary row it builds once in _build(). They are "owned" in exactly
+    # the sense this test means - a refresh can take every one of them back out -
+    # but they are tracked by the section rather than by this page, so without
+    # adding them here the assertion below would be reporting a leak that does
+    # not exist. Adding them rather than narrowing `visible` keeps the test
+    # covering the whole page, section included.
+    section = tab._compression
+    owned |= {id(section._row_state)}
+    for rows in (section._configured_rows, section._fstab_rows,
+                 section._measured_rows, section._algorithm_rows,
+                 section._crypttab_rows):
+        owned |= {id(row) for row in rows}
     assert visible == owned, f"rows a refresh cannot take back out: {rows(tab)}"
+
+
+def test_the_embedded_compression_section_does_not_duplicate_across_refreshes(
+        tmp_path, monkeypatch) -> None:
+    """The host's no-duplication guarantee, checked on the part of the page the
+    host does not own.
+
+    `test_repeated_refresh_neither_duplicates_rows_nor_crashes` covers the five
+    groups this page builds. The compression section is nine more groups with
+    their own renderer, driven by the same refresh, so the guarantee has to hold
+    there too - and a section that re-rendered without clearing would double
+    its rows on every click while the host's own count stayed honest.
+    """
+    bf = the_module()
+    fake_btrfs(tmp_path, monkeypatch)
+    tab = bf.BtrfsTab()
+    assert settled(tab), rows(tab)
+
+    def section_rows() -> int:
+        return sum(len(rows) for rows in (
+            tab._compression._configured_rows, tab._compression._fstab_rows,
+            tab._compression._measured_rows, tab._compression._algorithm_rows,
+            tab._compression._crypttab_rows))
+
+    first = section_rows()
+    for _ in range(5):
+        tab.refresh()
+        assert settled(tab), f"a refresh left reads in flight: {rows(tab)}"
+        assert section_rows() == first, (
+            f"the section grew from {first} rows to {section_rows()}")
     for group, row in tab._added:
         assert row in descendants(group), \
             f"{row.get_title()} is not in the group it was added to"

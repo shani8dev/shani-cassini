@@ -74,6 +74,7 @@ from typing import Callable, Final
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.tabs.compression import CompressionTab
 from shani_cassini.widgets import find_named
 
 logger = logging.getLogger(__name__)
@@ -511,6 +512,17 @@ class BtrfsTab(Gtk.Box):
                                                  description=SCRUB_NOTE)
         self._du_group = Adw.PreferencesGroup(title=DU_TITLE, description=DU_NOTE)
 
+        # `compsize` only measures btrfs, so the compression read has no meaning
+        # away from this page - it was a page of its own until the two were
+        # folded. Held by containment rather than moved in: it carries five
+        # groups with five separate row lists and a renderer whose own comments
+        # record that merging those is how you get duplicate rows. `autoload
+        # =False` because this page owns the refresh - see refresh(), where the
+        # section's read is counted as pending and dropped by generation like
+        # every other read here.
+        self._compression = CompressionTab(self._state, self._auth_manager,
+                                          autoload=False)
+
         # The one row that keeps its identity across a refresh, because the
         # Refresh button is on it. Built with NO icon, so nothing else ever gives
         # it one.
@@ -549,6 +561,7 @@ class BtrfsTab(Gtk.Box):
         for group in (self._subvol_group, self._fs_group, self._df_group,
                       self._scrub_group, self._du_group):
             self._page.append(group)
+        self._page.append(self._compression)
         # Additive, not a replacement: an earlier edit put this line *instead of*
         # `self.refresh()`, so the page's primary reads never started and it sat
         # on "Asking btrfs..." for ever while every other test on this page went
@@ -644,6 +657,24 @@ class BtrfsTab(Gtk.Box):
                 continue
             self._read(key, [BTRFS, *tail, DEVICE])
         self._list_subvolumes()
+        # The embedded compression section counts as one more pending read. It
+        # does not decrement `_pending` itself - it has its own completion
+        # callback and its own row lists - so it gets a bridge that does, which
+        # is what keeps the Refresh button honest: without this the button
+        # re-enables while compsize is still walking a subvolume, and a second
+        # click starts a second walk.
+        #
+        # Generation is NOT checked here, and deliberately: a refresh that
+        # arrives mid-walk discards the *rows* (the section re-renders them when
+        # its own answer lands) but must not leave `_pending` permanently
+        # raised, or the Refresh button never comes back.
+        self._pending += 1
+        self._compression.load(lambda: self._compression_settled())
+
+    def _compression_settled(self) -> None:
+        """The embedded section's read has landed; let the page stop waiting."""
+        self._pending = max(0, self._pending - 1)
+        self._render()
 
     def _list_subvolumes(self) -> None:
         """Find a directory on the device, then list the subvolumes there.
