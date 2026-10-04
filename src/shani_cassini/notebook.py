@@ -150,7 +150,7 @@ SECTIONS = [
         ("Tasks & Logs", [
             (TimersTab, "timers", "Timers & Background Tasks", "preferences-system-time-symbolic",
              "systemd timers, their next and last elapse, and what they activate"),
-            (CronTab, "cron", "Cron", "clock-symbolic",
+            (CronTab, "cron", "Cron", "alarm-symbolic",
              "The system crontabs, read directly because no tool lists them"),
             (JournalTab, "journal", "Journal", "text-x-generic-symbolic",
              "Every boot still on disk, a search across entries, and the cap in force"),

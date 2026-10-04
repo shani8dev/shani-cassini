@@ -32,7 +32,15 @@ jobs:
         # GTK4 windows need a display: headless, test_application segfaults
         xvfb-run -a python3 -m pytest tests/ -v
       python-version: "3.12"
-      apt-packages: python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 libglib2.0-bin xvfb
+      # cups and sane-utils are not decoration. The Printers page reports
+      # CUPS and SANE state, and its tests assert what the page says when
+      # lpstat/scanimage answer - including the notes it shows when they do
+      # not exist. Without the tools installed here, every one of those
+      # assertions ran against a runner that is not the product: the page
+      # reported "CUPS is not installed" where the test expected a queue,
+      # and the suite passed on developer machines that have cups. Fixing
+      # it by loosening the assertions would have deleted the subject.
+      apt-packages: python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 libglib2.0-bin xvfb cups sane-utils
       system-site-packages: true
     needs: lint
 

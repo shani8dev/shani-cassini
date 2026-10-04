@@ -233,6 +233,25 @@ def install(tmp_path, monkeypatch, *, status=None, deploy_body=None,
     pk = d / "pkexec"
     pk.write_text('#!/bin/sh\nexec "$@"\n')
     pk.chmod(0o755)
+    # systemd-inhibit, faked the same way pkexec is: take the inhibitor's own
+    # options and run what is left. Without this the *system* one is found on
+    # PATH, and it needs a session it can take a lock in - a CI runner has
+    # none, so it answers "Failed to inhibit: Access denied", the deploy
+    # script under test never runs, and every assertion about the stage bar
+    # and the log pane fails on a host that is not the product. What these
+    # tests are about is the page reading the script's output, and the page
+    # still runs its command through the inhibitor either way.
+    inhibit = d / "systemd-inhibit"
+    inhibit.write_text(
+        '#!/bin/sh\n'
+        'while [ $# -gt 0 ]; do\n'
+        '  case "$1" in\n'
+        '    --what=*|--who=*|--why=*|--mode=*) shift ;;\n'
+        '    *) break ;;\n'
+        '  esac\n'
+        'done\n'
+        'exec "$@"\n')
+    inhibit.chmod(0o755)
     for name, content in (extra or {}).items():
         f = d / name
         f.write_text(content)
