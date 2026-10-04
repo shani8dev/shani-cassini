@@ -686,8 +686,28 @@ def _code(module) -> str:
 # Whether this stack's label getters hand back the markup or the plain text.
 # Probed rather than branched on, so a test can say which behaviour it is
 # looking at instead of failing mysteriously on one of the two stacks.
-ESCAPED_GETTERS: bool = Adw.ActionRow(
-    title="t", subtitle="a &amp; b &lt; c").get_subtitle() == "a &amp; b &lt; c"
+#
+# **Probed lazily, not at import.** This was a module-level constant, so it built
+# a widget while the module was being imported, and that **segfaults on Arch's
+# PyGObject** - signal 11, at collection, before a single test ran. It was
+# found by `slot-test blue repo-pytest`, which runs this suite on the image's
+# own GTK (PyGObject 3.56 / libadwaita 1.9) where CI's Ubuntu 24.04 stack
+# (3.48 / 1.5) never showed it. Building the same widget *inside* a test is
+# fine on both; it is only import-time construction that dies.
+#
+# So the cost of a probe that is convenient at import is that the module cannot
+# be imported at all on the distribution that ships the app. It is a function
+# now, and the one caller is a test.
+_ESCAPED_CACHE: list[bool] = []
+
+
+def escaped_getters() -> bool:
+    """True when this stack's getters hand back the markup, not the plain text."""
+    if not _ESCAPED_CACHE:
+        raw = "a &amp; b &lt; c"
+        _ESCAPED_CACHE.append(
+            Adw.ActionRow(title="t", subtitle=raw).get_subtitle() == raw)
+    return _ESCAPED_CACHE[0]
 
 ENTITY = re.compile(r"&(#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);")
 # The five names GLib's parser knows. Anything else - `&bogus;` - is an unknown
@@ -1925,7 +1945,7 @@ class TestTheGetterForms:
         raw = "a &amp; b &lt; c"
         row = Adw.ActionRow(title="t", subtitle=raw)
         got = row.get_subtitle()
-        assert (got == raw) is ESCAPED_GETTERS, (got, ESCAPED_GETTERS)
+        assert (got == raw) is escaped_getters(), (got, escaped_getters())
         assert _unescaped(got) == "a & b < c", got
 
     def test_a_title_with_no_entities_is_unaffected_by_either_form(self):
