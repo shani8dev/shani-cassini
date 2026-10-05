@@ -58,6 +58,12 @@ class ShaniosApplication(Adw.Application):
         # Create actions
         self._create_actions()
 
+        # A tray icon when the binding is there; no-op and logged when it is not.
+        # Kept after the window/auth wiring so a failure here cannot uninitialise
+        # what the app needs to run.
+        from shani_cassini.tray import make_tray
+        self._tray = make_tray(self)
+
         logger.info("ShaniosApplication startup complete")
 
     @override
