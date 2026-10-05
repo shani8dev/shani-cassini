@@ -40,6 +40,9 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["TrayIcon", "make_tray"]
 
+from shani_cassini.update_state import POLL_INTERVAL_MS, summarize, updates_available
+
+
 
 def make_tray(application) -> "TrayIcon | None":
     """Create the tray indicator, or None when the binding is not available.
@@ -84,6 +87,9 @@ class TrayIcon:
         from gi.repository import Gtk as Gtk3
 
         self._application = application
+        self._state_item_text = "Checking…"
+        # a dedicated, insensitive label row for the state line
+        self._status_item = None
 
         self._indicator = AppIndicator3.Indicator.new(
             "dev.shani.cassini",          # id, so the panel knows who owns it
@@ -91,8 +97,10 @@ class TrayIcon:
             AppIndicator3.IndicatorCategory.APPLICATION_STATUS,
         )
         self._indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
-        self._indicator.set_title("Shani Cassini")
+        self._indicator.set_title("Shanios updates")
         self._indicator.set_menu(self._make_menu())
+        # The updater's status line is folded in here: a tray icon without the
+        # one fact it exists to show ("is a reboot ready") would be decoration.
 
     def _make_menu(self):
         import gi
@@ -101,7 +109,14 @@ class TrayIcon:
         from gi.repository import Gtk as Gtk3
 
         menu = Gtk3.Menu()
+        # a non-sensitive first row: the one fact the tray exists for
+        self._status_item = Gtk3.MenuItem(label=self._state_item_text)
+        self._status_item.set_sensitive(False)
+        self._status_item.show()
+        menu.append(self._status_item)
+
         for label, handler in (("Open Cassini", self._on_open),
+                               ("Check now", self._on_check),
                                ("Quit", self._on_quit)):
             item = Gtk3.MenuItem(label=label)
             item.connect("activate", handler)
@@ -117,6 +132,26 @@ class TrayIcon:
             self._application.activate()
             return
         window.present()
+
+    def set_status(self, text: str) -> None:
+        self._state_item_text = text
+        if self._status_item is not None:
+            self._status_item.set_label(text)
+
+    def refresh(self) -> None:
+        from shani_cassini.update_state import current_status
+        self._state = current_status()
+        self.set_status(summarize(self._state))
+
+    def _on_check(self, *_args) -> None:
+        import subprocess
+        from shani_cassini.update_state import DEPLOY
+        try:
+            subprocess.run([DEPLOY, "--check"], capture_output=True,
+                           text=True, timeout=120)
+        except Exception as exc:
+            logger.warning("--check failed: %s", exc)
+        self.refresh()
 
     def _on_quit(self, *_args) -> None:
         self._application.quit()

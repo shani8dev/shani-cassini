@@ -62,7 +62,22 @@ class ShaniosApplication(Adw.Application):
         # Kept after the window/auth wiring so a failure here cannot uninitialise
         # what the app needs to run.
         from shani_cassini.tray import make_tray
+        from shani_cassini.update_state import POLL_INTERVAL_MS
         self._tray = make_tray(self)
+        if self._tray is not None:
+            # one tray, one updater: the tray's first row is the deploy check,
+            # refreshed on the same 10-minute cadence the detached updater used
+            try:
+                from gi.repository import GLib
+
+                def _tick():
+                    self._tray.refresh()
+                    return True  # GLib expects the source to, literally, keep on
+
+                GLib.timeout_add(POLL_INTERVAL_MS, _tick)
+                self._tray.refresh()
+            except Exception as exc:
+                logger.warning("no GLib main loop for the tray refresh: %s", exc)
 
         logger.info("ShaniosApplication startup complete")
 
