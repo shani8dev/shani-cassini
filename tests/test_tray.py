@@ -70,4 +70,16 @@ class TestTheMenuItWouldBuild:
         import shani_cassini.tray as m
         src = inspect.getsource(m)
         assert '"Open Cassini"' in src, "the tray needs an open entry"
+        assert '"Check now"' in src, "the tray absorbed the updater's check action"
         assert '"Quit"' in src, "the tray needs a quit entry"
+
+    def test_the_first_row_reports_the_deploy_state(self):
+        # The tray icon exists to say "is a reboot ready"; that text has to live
+        # in the first menu row, and it must be non-interactive.
+        import inspect
+        import shani_cassini.tray as m
+        src = inspect.getsource(m)
+        assert "_status_item" in src, "no status row on the tray"
+        assert "set_sensitive(False)" in src, (
+            "the deploy state must be read, not clickable, so it cannot act "
+            "until the user opens Cassini")
