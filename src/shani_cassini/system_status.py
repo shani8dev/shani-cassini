@@ -18,6 +18,7 @@ blocks.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import os
@@ -348,21 +349,6 @@ _PROGRESS = re.compile(r"(\d+(?:\.\d+)?)%")
 _MAX_LINE = 65536
 
 
-_LOG_PREFIX = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \[[A-Z]+\] ")
-
-
-def strip_log_prefix(text: str) -> str:
-    """The message from one of the deploy script's own log lines.
-
-    The prefix is "<date> [TAG] ", and a column of near-identical timestamps in
-    a log pane is noise: the pane is a record of one run, so the date on every
-    line tells the reader nothing they cannot see from the first one. Anything
-    without the prefix is returned unchanged - a line the script did not write
-    must not be edited to look as though it had.
-    """
-    return _LOG_PREFIX.sub("", text).strip()
-
-
 def parse_deploy_line(line: str) -> list[tuple[str, str, str]]:
     """Everything in one line of shani-deploy output, as (kind, level, message).
 
@@ -428,14 +414,45 @@ def _one_event(line: str) -> list[tuple[str, str, str]]:
 
 
 def deploy_backups(done) -> None:
-    """shani-deploy --list-backups --json: {"ok", "slots": [{slot, version, backups}]}.
+    """`shani-deploy --list-backups --json`, shaped as a value rather than as a
+    raw `run_json` callback.
 
     Root: it mounts the subvolume table to read each slot's own
-    /etc/shani-version, which is the only place a slot's version exists. That is
-    also why a version cannot be folded into --status, and why this is a pkexec
-    call the user must click for - never one that runs because a page opened.
+    `/etc/shani-version`, which is the only place a slot's version exists. That
+    is also why a version cannot be folded into `--status`, and why this is a
+    pkexec call the user must click for - never one that runs because a page
+    opened.
+
+    **This function was dead until 2026-10-07.** It existed as a bare
+    `run_json([...], done)` passthrough that nothing called, while
+    `tabs/boot_recovery.py` had grown its own copy of the same argv with the
+    *better* version of it — one that turns a refused dialog, a missing binary
+    or a document without a `slots` list into a `problem` string a row can
+    show, instead of handing the page a `None` or a shape it has to defend
+    against on every branch.
+
+    Two copies of one privileged contract is exactly the drift this repo warns
+    about for `/etc/ssh/sshd_config` and nsswitch: the argv that polkit sees is
+    defined twice, so changing one leaves the other running a command no polkit
+    rule matches. The shaped version is the one that survived in the page, so it
+    moved here and the page now calls it. **If you change the argv, change it
+    here.**
     """
-    run_json(["pkexec", DEPLOY, "--list-backups", "--json"], done)
+    empty = {"ok": False, "problem": "", "slots": []}
+
+    def finish(payload, error: str) -> None:
+        if payload is None:
+            done({**empty, "problem": error or "shani-deploy did not answer"})
+            return
+        slots = payload.get("slots")
+        if not isinstance(slots, list):
+            done({**empty, "problem": "shani-deploy --list-backups --json has "
+                                      "no slots list"})
+            return
+        done({"ok": True, "problem": "",
+              "slots": [slot for slot in slots if isinstance(slot, dict)]})
+
+    run_json(["pkexec", DEPLOY, "--list-backups", "--json"], finish)
 
 
 def run_streaming(argv: list[str], on_line: Callable[[str], None],
@@ -823,22 +840,77 @@ def hardware_card(done: Callable[[dict], None]) -> None:
 
 
 def storage_card(done: Callable[[dict], None]) -> None:
-    """The storage card's six rows, same contract as hardware_card().
+    """The storage card's rows, same contract as hardware_card().
 
     `du -sh /var/log` carries a 30s cap because it walks a directory tree, and
     it was the longest freeze this page could hand a user: every one of these
     reads ran synchronously while the page was being built.
+
+    **`storage-swap` used to be the whole swap story, and it was not enough.**
+    `free -h` reports total swap, not *where* it lives — and on Shanios it is a
+    zram device, which behaves nothing like a swap partition: it is compressed
+    RAM, so the same total costs a fraction of the memory and it never touches
+    the disk. A user reading "12 GiB swap" cannot tell that from a disk-backed
+    file, which is the exact thing that makes people tune swappiness the wrong
+    way. `zram_state()` has read this from `/sys/class/zram-control` since
+    before this card existed and **nothing called it** — it is the one row of
+    this card that needs no tool at all.
     """
+    out: dict = {}
+
+    def finished(cards: dict) -> None:
+        out.update(cards)
+        # Read here rather than inside `_gather`, because it is four file reads
+        # and no subprocess - and `hardware_card()` already sets the precedent
+        # that /proc and /sys reads stay synchronous on purpose.
+        out["storage-zram"] = _format_zram(zram_state())
+        done(out)
+
     _gather((("storage-root-usage", "storage-root"), ["df", "-h", "/"], _parse_df, "N/A"),
             (("storage-home-usage",), ["df", "-h", "/home"], _parse_df, "N/A"),
             (("storage-var-usage",), ["df", "-h", "/var"], _parse_df, "N/A"),
             (("storage-varlog",), ["du", "-sh", "/var/log"], _parse_du, "N/A"),
             (("storage-swap",), ["free", "-h"], _parse_free, "N/A"),
-            done=done)
+            done=finished)
 
 
-def boot_entries(done) -> None:
-    run_json(["bootctl", "list", "--json=short", "--no-pager"], done)
+def _format_zram(state: dict) -> str:
+    """One line naming the compressed-swap device, or why there is none.
+
+    Three outcomes kept apart, because they are different facts and the middle
+    one is not a fault:
+
+    * a device exists - its size, its algorithm, and how much it is holding;
+    * **zram is supported and simply not in use** (`supported` true,
+      `present` false). `zram-generator` creates a device only when it is
+      configured to, so this is the normal state on a machine not using it, and
+      reporting "no information" would hide a working feature being switched
+      off.
+    * **the kernel exposes no zram support at all** (`supported` false). A
+      genuinely different answer about the machine, and worded as one.
+
+    The branch is on `supported`, never on the `note` prose — see the comment
+    in `zram_state()` for why that distinction is structural.
+    """
+    if not state.get("supported"):
+        return "Not available - this kernel exposes no zram support"
+    devices = state.get("devices") or []
+    if not state.get("present") or not devices:
+        return "Not in use"
+    bits = []
+    for d in devices:
+        size = d.get("disksize") or 0
+        used = d.get("used") or 0
+        algo = d.get("algorithm") or "?"
+        if size:
+            bits.append(f"{d['name']}: {size // (1 << 20)} MiB {algo}"
+                        + (f", {used // (1 << 20)} MiB in use" if used else ""))
+        else:
+            # A device whose size the kernel will not report is reported as
+            # that. It is not the same as a zero-size device, and inventing
+            # "0 MiB" would be a number the kernel never gave.
+            bits.append(f"{d['name']}: size not reported")
+    return " · ".join(bits) if bits else "Not in use"
 
 
 def boot_errors(done, limit: int = 50) -> None:
@@ -3875,9 +3947,248 @@ def ups_state(done: Callable[[dict, str], None]) -> None:
     run_text(["systemctl", "is-active", "apcupsd"], on_service)
 
 
+SYS_CLASS_NET: Final = "/sys/class/net"
+
+
+def _read_sysfs(path: str) -> Optional[str]:
+    """A sysfs/procfs attribute's contents, or None when it is not there.
+
+    `None` rather than `""` because for these files *absent* and *empty* are
+    different facts, and for `addr_assign_type` the absence is meaningful: a
+    kernel that does not implement per-address assign types leaves the file out
+    entirely, and reading that as `0` would report every address as permanent.
+    """
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read().strip()
+    except OSError:
+        return None
+
+
+def mac_addresses() -> dict:
+    """Whether this machine's hardware addresses are stable, from sysfs.
+
+    A MAC address is burned into the network card and every access point the
+    machine has ever passed remembers it, which is the property that makes it
+    an identifier rather than an address. Both desktops let you *ask* for a
+    different one on a connection profile; **neither reports what this machine
+    is actually using**, and that is the half this reads.
+
+    **Two independent signals, kept separate because they can disagree, and the
+    disagreement is the interesting part.**
+
+    1. **The locally-administered bit** — bit 1 of the first octet, set by IEEE
+       802 to mean "this address was assigned locally and is not globally
+       unique by construction". This is unambiguous and is the primary signal,
+       because it is a property of the address itself rather than of the
+       kernel's opinion about it. Verified against this host's real addresses:
+       every bridge reported `1a:`, `9e:`, `2a:` or `22:` in the first octet,
+       all with the bit set, and both physical NICs reported `6c:` and `c4:`,
+       both without it.
+
+    2. **`addr_assign_type`** — the kernel's own account of how the address came
+       to be, where `0` is `IF_ADDR_PERMANENT`. **The non-zero values are
+       deliberately not interpreted.** They name policies that have been added
+       over several kernel versions (`IF_ADDR_RANDOM`, stable-privacy,
+       stable-private), their numbering has changed with them, and the UAPI
+       header is not something this app can rely on being present to check
+       against. So the number is reported and only `0` is acted on, because
+       that one is both the oldest and the only one whose name is unambiguous.
+
+    Read-only: four small file reads per interface, no tool, no privilege.
+    """
+    interfaces: list[dict] = []
+    try:
+        names = sorted(os.listdir(SYS_CLASS_NET))
+    except OSError as e:
+        return {"interfaces": [], "readable": False, "errors": [str(e)]}
+
+    for name in names:
+        base = os.path.join(SYS_CLASS_NET, name)
+        addr = _read_sysfs(os.path.join(base, "address"))
+        if not addr:
+            # The loopback interface reports an all-zero address rather than
+            # omitting the file, and it has no `device` link, so it is excluded
+            # by the physical check below - but a genuinely unreadable address
+            # is not the same as "no address" and is skipped rather than
+            # reported as an interface with an empty one.
+            continue
+        # `device` is a symlink to the backing PCI/USB device, and is the
+        # kernel's own answer to "is this a real interface rather than a
+        # bridge, bond, veth or docker endpoint". /sys/class/net/<if>/device
+        # existing is exactly the test the kernel's own documentation uses.
+        is_physical = os.path.exists(os.path.join(base, "device"))
+        is_wireless = (os.path.exists(os.path.join(base, "wireless"))
+                       or os.path.exists(os.path.join(base, "phy80211")))
+
+        octets = addr.split(":")
+        local_admin: Optional[bool] = None
+        if len(octets) == 6:
+            try:
+                local_admin = bool(int(octets[0], 16) & 0x02)
+            except ValueError:
+                local_admin = None
+
+        assign = _read_sysfs(os.path.join(base, "addr_assign_type"))
+        interfaces.append({
+            "name": name,
+            "address": addr,
+            "locally_administered": local_admin,
+            "assign_type": int(assign) if assign and assign.isdigit() else None,
+            "physical": is_physical,
+            "wireless": is_wireless,
+        })
+
+    return {"interfaces": interfaces, "readable": True, "errors": []}
+
+
 RESOLVED_CONF: Final = "/etc/systemd/resolved.conf"
 RESOLVED_DROPIN_DIR: Final = "/etc/systemd/resolved.conf.d"
 RESOLV_CONF: Final = "/etc/resolv.conf"
+
+IF_INET6: Final = "/proc/net/if_inet6"
+PROC_SYS_NET6: Final = "/proc/sys/net/ipv6/conf"
+
+
+def _read_text_or_none(path: str) -> Optional[str]:
+    """A small file's contents, or None if it could not be read.
+
+    **Named apart from the module's `_read_text`, and the difference is the
+    whole point.** That one returns `""` for a file it could not open, which is
+    right for its callers: a missing `/proc/cpuinfo` contributes no lines and
+    the caller has nothing to distinguish. Here it would be a lie - `None` has
+    to mean *could not ask*, distinct from *asked and there was nothing*, so
+    that "IPv6 privacy is off" and "this kernel does not tell us" stay two
+    different claims and only the first is something a user should act on.
+
+    **A first version of this reused the name and silently redefined the
+    module's existing `_read_text`** (lines 1770 and 3887 were both `_read_text`
+    in the same file, and the later definition won). 27 unrelated tests then
+    failed with `'NoneType' object has no attribute 'strip'` from callers that
+    had every right to expect a string - none of them IPv6, none of them audit,
+    and the suite's own IPv6 and Audit tests stayed green throughout. Do not
+    collapse these two back into one name.
+    """
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def _parse_if_inet6(text: str) -> list[dict]:
+    """Global IPv6 addresses from `/proc/net/if_inet6`, classified.
+
+    The kernel's own list, so no tool, no password and no privilege. Each line
+    is six whitespace-separated fields (`net/ipv6/if_inet6(7)`):
+
+        address  ifindex  prefixlen  scope  flags  name
+
+    - **address** is 32 hex digits of the 128-bit address, no colons.
+    - **scope** is hex; `0` is global. Everything else (link-local `0x20`,
+      host `0x40`, site `0x80`) is skipped, because an address a site cannot
+      route to cannot identify anybody.
+    - **flags** is hex, and its bit 0 is `IFA_F_TEMPORARY` - set by the kernel
+      when the address is one of the rotating privacy extensions rather than
+      the stable one. **This is the field the whole question turns on.**
+    - An address whose bytes 11 and 12 are `FF FE` was **derived from the
+      hardware MAC** by the modified EUI-64 format. That is a stronger and
+      different claim than "stable": it means the address contains the
+      interface's burned-in identity, so it follows the machine onto every
+      network it has ever joined, not just this one.
+
+    The three classifications are deliberately distinct and never collapsed:
+    `eui64` (embeds the MAC), `temporary` (rotates), and neither (stable but
+    random, which is what a good stack produces and which is *not* what a
+    naive "is it temporary?" test would call good).
+    """
+    out: list[dict] = []
+    for raw in text.splitlines():
+        parts = raw.split()
+        # A short line is a kernel we do not understand, and guessing which
+        # field is which is how a reader starts reporting another machine's
+        # addresses as this one's.
+        if len(parts) < 6:
+            continue
+        hexaddr, _ifindex, _plen, scope, flags, name = parts[:6]
+        try:
+            scope_i = int(scope, 16)
+            flags_i = int(flags, 16)
+            packed = bytes.fromhex(hexaddr)
+        except ValueError:
+            continue
+        if scope_i != 0 or len(packed) != 16:
+            continue
+        addr = str(ipaddress.IPv6Address(packed))
+        if not ipaddress.IPv6Address(packed).is_global:
+            # A "global" scope address can still be non-global by ipaddress's
+            # own rules (documentation ranges, for one). Reporting it as an
+            # internet-facing address would be a claim the routing table does
+            # not make.
+            continue
+        out.append({
+            "address": addr,
+            "ifname": name,
+            "temporary": bool(flags_i & 0x01),
+            "eui64": packed[11] == 0xFF and packed[12] == 0xFE,
+        })
+    return out
+
+
+def ipv6_privacy_state(done: Callable[[dict, str], None]) -> None:
+    """Is this machine's IPv6 address a trackable identifier, and do we know?
+
+    Two independent facts, deliberately kept apart because they fail
+    differently and only one of them is actionable:
+
+    1. **What the kernel is configured for** -
+       `net.ipv6.conf.{all,default}/use_tempaddr`, and the same per interface.
+    2. **What the addresses actually assigned to this machine look like** -
+       `/proc/net/if_inet6`, classified as MAC-derived, temporary or stable.
+
+    Reading only the first is the mistake this reader exists to avoid, and it
+    is a mistake this repo has already made elsewhere: a sysctl file requesting
+    a setting is a **request**, not a fact about the running system. A later
+    `sysctl.d` file, a NetworkManager connection that sets `ipv6.ip6-privacy`
+    itself, or a service re-running `sysctl` after boot all produce a config
+    that looks right and a machine that is not. So the addresses are read and
+    judged on their own evidence, and the configured value is reported beside
+    them rather than in place of them.
+
+    `use_tempaddr` is the RFC 4941 privacy-extension switch and Shanios sets it
+    to 2 fleet-wide (`shani-settings/usr/lib/sysctl.d/90-security-hardening.conf`).
+    **This reader is what makes that setting verifiable rather than merely
+    present** - the same "config is not effect" discipline the harness enforces
+    for sysctls (`shani-testbed/slot-tests/sysctl-hardening.sh`).
+
+    Read-only: four small file reads, no tool, no privilege.
+    """
+    payload: dict = {
+        "addresses": [],
+        "if_inet6_readable": False,
+        "use_tempaddr": {},
+        "errors": [],
+    }
+
+    raw = _read_text_or_none(IF_INET6)
+    if raw is None:
+        # Not a fault on this machine: the file is absent when IPv6 is
+        # compiled out or the namespace has none. Saying "IPv6 is not
+        # leaking" here would be inventing an answer from a failed read.
+        payload["errors"].append(f"{IF_INET6} could not be read")
+        done(payload, "; ".join(payload["errors"]))
+        return
+
+    payload["if_inet6_readable"] = True
+    payload["addresses"] = _parse_if_inet6(raw)
+
+    for scope in ("all", "default"):
+        val = _read_text_or_none(f"{PROC_SYS_NET6}/{scope}/use_tempaddr")
+        # None stays None. It means the kernel does not publish this key, which
+        # is not the same as it being 0.
+        payload["use_tempaddr"][scope] = val.strip() if val is not None else None
+
+    done(payload, "")
 
 # The four resolver implementations the image ships, and the file that would
 # have to exist for one to be doing anything. All four verified present as
@@ -4373,6 +4684,14 @@ def cpu_microcode() -> dict:
     return {"revisions": revisions, "count": len(cpus)}
 
 
+# A module constant for the same reason the other /proc and /sys paths in this
+# module are: it is what makes the reader reachable by a test. A literal inside
+# the function can only be exercised against the real /sys, so the branch that
+# matters most - an absent control directory, which is what this host has - was
+# unreachable until the path could be pointed elsewhere.
+_ZRAM_CTL: Final = "/sys/class/zram-control"
+
+
 def zram_state() -> dict:
     """Compressed swap, from the kernel's own sysfs - no tool and no privilege.
 
@@ -4385,11 +4704,22 @@ def zram_state() -> dict:
     are both read rather than derived.
     """
     devices: list[dict] = []
-    ctl = "/sys/class/zram-control"
+    ctl = _ZRAM_CTL
     try:
         names = sorted(d for d in os.listdir(ctl) if d.startswith("zram"))
     except OSError:
-        return {"present": False, "devices": [], "note": "zram-control absent"}
+        # **`supported` is separate from `present` on purpose, and that split
+        # is the reason the two were confused.** "The kernel has no zram
+        # support" and "zram is supported and not in use" both come back with
+        # `present: False`, so a caller reading only that flag renders them
+        # identically - and they are opposite answers about the machine. This
+        # was first written with the distinction carried in the `note` prose,
+        # which meant the renderer had to string-match on wording to tell them
+        # apart; a renamed sentence would have silently merged the two.
+        # Verified against this host, which uses a swapfile: the directory is
+        # genuinely absent rather than empty.
+        return {"supported": False, "present": False, "devices": [],
+                "note": "zram-control absent"}
     for name in names:
         base = os.path.join("/sys/block", name)
         entry = {"name": name, "size": 0, "disksize": 0, "mem_limit": 0,
@@ -4407,7 +4737,7 @@ def zram_state() -> dict:
             elif text.isdigit():
                 entry[key] = int(text)
         devices.append(entry)
-    return {"present": bool(devices), "devices": devices,
+    return {"supported": True, "present": bool(devices), "devices": devices,
             "note": "" if devices else "no zram device is active"}
 
 

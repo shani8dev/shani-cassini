@@ -314,13 +314,35 @@ def test_the_every_level_the_deploy_script_uses_maps_to_a_severity() -> None:
         assert parsed == [("level", level, "something happened")], tag
 
 
-def test_the_log_prefix_is_stripped_but_a_line_the_script_did_not_write_is_not() -> None:
-    """The strip must only remove a prefix that is really there: editing a line
-    to look as though the script wrote it is how a log pane starts lying."""
-    assert ss.strip_log_prefix("2026-10-01 07:30:43 [SUCCESS] done") == "done"
-    assert ss.strip_log_prefix("just some text") == "just some text"
-    assert ss.strip_log_prefix("2026-10-01 not-a-tag done") == \
-        "2026-10-01 not-a-tag done"
+def test_only_a_real_prefix_is_stripped_and_the_message_survives() -> None:
+    """A line the script did not write must come through unedited.
+
+    **This used to assert `ss.strip_log_prefix`, removed 2026-10-07.** It had
+    been dead for some time: `parse_deploy_line` captures the message through
+    `_LOG_LINE`'s second group, nothing called the standalone stripper, and this
+    test was the only thing keeping it alive. Removing the function therefore
+    meant changing its last caller - but not the *property*, which is the point
+    of the test and now belongs to `parse_deploy_line`. Retargeted, not deleted.
+
+    The property, precisely: a real prefix is consumed and the message is what
+    remains, and a line that merely looks roughly timestamped is returned whole,
+    because editing a line to look as though the deploy script wrote it is how a
+    log pane starts lying.
+    """
+    assert ss.parse_deploy_line("2026-10-01 07:30:43 [SUCCESS] done") == \
+        [("level", "success", "done")]
+    # `[\w]+` does not match `not-a-tag`, so this is not the script's format and
+    # must survive byte for byte.
+    assert ss.parse_deploy_line("2026-10-01 not-a-tag done") == \
+        [("text", "", "2026-10-01 not-a-tag done")]
+    assert ss.parse_deploy_line("just some text") == [("text", "", "just some text")]
+    # A prefix-shaped line with nothing after it is NOT silently turned into an
+    # empty message. `parse_deploy_line` returns the whole line as unparsed text,
+    # where the removed helper returned "". The difference is deliberate and this
+    # is the safer of the two: an empty message is indistinguishable from a
+    # rendering failure, and this way the raw line is still on screen to read.
+    assert ss.parse_deploy_line("2026-10-01 07:30:43 [ERROR] ") == \
+        [("text", "", "2026-10-01 07:30:43 [ERROR]")]
 
 
 def test_a_download_progress_redraw_is_not_a_log_line() -> None:

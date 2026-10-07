@@ -630,14 +630,47 @@ def test_this_page_can_never_roll_back_switch_slots_or_restart() -> None:
     """Rollback, --set-channel and reboot already exist on Updates and
     Rollback, where the confirmation dialogs live. A second route to them here
     would be two places to keep honest about the most dangerous button in the
-    app."""
+    app.
+
+    **This now follows the reader out of the page.** Until 2026-10-07 the page
+    built its own `--list-backups` argv while `ss.deploy_backups()` sat dead in
+    `system_status.py` with a bare copy of the same command — one privileged
+    argv defined twice, which is the drift this repo warns about elsewhere. The
+    reader moved into `system_status` and the page delegates to it, so the gate
+    has to look in both places: at the page for anything it still runs itself,
+    and at `ss.deploy_backups` for the argv it delegated.
+
+    Checking only the page would have made this test pass against a page with no
+    subprocesses at all, whatever `deploy_backups` was doing — so the delegation
+    is asserted explicitly, and the reader's own argv is checked to the same
+    standard the page's was.
+    """
     br = the_module()
     tree = _code_without_docstrings()
     flags = sorted({part for argv in _string_lists(tree) for part in argv
                     if part.startswith("--")})
-    assert flags == ["--json", "--list-backups"], \
-        f"these are the only flags this page may hand to a process: {flags}"
+    assert flags == [], \
+        f"this page runs no process of its own any more: {flags}"
+
+    # The delegation is the whole reason the page has no argv, so it is
+    # asserted rather than inferred from an empty flag list.
     code = ast.unparse(tree)
+    assert "deploy_backups" in code, (
+        "the page no longer builds this argv itself, so it must be calling the "
+        f"reader that does: {code}")
+
+    # And that reader gets the same scrutiny the page's argv used to get.
+    reader = ast.parse(inspect.getsource(ss.deploy_backups))
+    rflags = sorted({part for argv in _string_lists(reader) for part in argv
+                     if part.startswith("--")})
+    assert rflags == ["--json", "--list-backups"], \
+        f"deploy_backups may only use these flags: {rflags}"
+    rcode = ast.unparse(reader)
+    for program in ("systemctl", "bootctl", "grub2-mkconfig", "wipefs",
+                    "shani-reset", "shani-health", "smartctl"):
+        assert program not in rcode, \
+            f"{program} is another tool's business in deploy_backups"
+
     for program in ("systemctl", "bootctl", "grub2-mkconfig", "wipefs",
                     "shani-reset", "shani-health", "smartctl"):
         assert program not in code, f"{program} is another tool's business here"

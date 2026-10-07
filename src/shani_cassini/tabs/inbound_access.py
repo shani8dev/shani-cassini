@@ -18,14 +18,13 @@ turned on.
 | `cloudflared` | Cloudflare relays, no port forward, no static address |
 | `tailscale` | a mesh VPN, via DERP relays when direct paths fail |
 | `wireguard-tools` | peer-to-peer, which needs a reachable address |
-| `openssh` | remote shell and port forwarding (Remote Access) |
+| `opensssh` | remote shell and port forwarding (Remote Access) |
 | `caddy` | listens on a port; serves or reverse-proxies |
 | `rclone` | its `serve` modes listen, and can expose local files |
 
-**Read-only, and it will not switch any of them on.** Enabling an inbound path is
-not a decision a settings panel should make on the user's behalf, and the input
-each of these needs - a Cloudflare tunnel token, a Tailscale auth key, a peer
-private key - does not belong in a generic settings window either.
+**Inbound access services can be enabled or disabled** - toggling them starts or
+stops the service immediately. Configuration (tunnel tokens, auth keys, etc.)
+must still be done externally via the appropriate CLI or config files.
 
 **No secret is read or shown.** A tunnel token and an auth key are credentials.
 This reports that a configuration exists, never what is in it.
@@ -34,16 +33,14 @@ This reports that a configuration exists, never what is in it.
 from __future__ import annotations
 
 import logging
-
 from gi.repository import Adw, GLib, Gtk  # type: ignore
-
 from shani_cassini import system_status as ss
 
 logger = logging.getLogger(__name__)
 
 SUMMARY_NOTE = (
     "Six installed packages can make this machine reachable from the network. "
-    "This reports which are on. It does not switch any of them on."
+    "This reports which are on. It can also enable or disable them."
 )
 
 WHY_NOTE = (
@@ -93,9 +90,10 @@ class InboundAccessTab(Gtk.Box):
         self._group = Adw.PreferencesGroup(
             title="Installed mechanisms",
             description="Each row reports what is installed and whether it is "
-                        "running. Nothing here is switched on by this page.")
+                        "running. Use the switch to enable or disable the service.")
         self._page.append(self._group)
         self._rows: list[Adw.ActionRow] = []
+        self._unit_for_row: dict[int, str] = {}
 
     def load(self) -> bool:
         ss.inbound_access_state(self._on_state)
@@ -105,6 +103,7 @@ class InboundAccessTab(Gtk.Box):
         for row in self._rows:
             self._group.remove(row)
         self._rows = []
+        self._unit_for_row.clear()
 
     def _on_state(self, state: dict, err: str) -> None:
         rows = [r for r in (state.get("rows") or []) if r.get("installed")]
@@ -123,19 +122,89 @@ class InboundAccessTab(Gtk.Box):
 
         self._clear()
         for r in rows:
+            label = r["label"]
+            unit = r.get("unit", "")
             service = r.get("service")
+            config_present = r.get("config_present", False)
+            
+            # Determine subtitle and switch state
             if service in ("active", "activating"):
                 sub = "Running - this machine is reachable"
+                switch_active = True
             elif service == "failed":
                 sub = "Failed to start"
+                switch_active = False
             elif service == "configured":
                 sub = "Configured, not running"
-            elif r.get("config_present"):
+                switch_active = False
+            elif config_present:
                 sub = "Not running; configuration present"
+                switch_active = False
             else:
                 sub = "Installed, not enabled"
-            row = _row(r["label"], f"{sub}. {r['effect']}")
+                switch_active = False
+            
+            # Skip WireGuard since it has its own dedicated page with per-interface control
+            if label == "WireGuard":
+                # For WireGuard, just show the config status without switch
+                row = _row(label, f"{sub}. {r['effect']}")
+                self._group.add(row)
+                self._rows.append(row)
+                continue
+                
+            # For other services, add enable/disable switch
+            row = Adw.ActionRow(title=label)
+            row.set_subtitle(f"{sub}. {r['effect']}")
+            
+            if unit:  # Only add switch if there's a systemd unit
+                sw = Gtk.Switch()
+                sw.set_active(switch_active)
+                # Pass both the unit and the current desired state
+                sw.connect("state-set", self._on_service_switch, unit, switch_active)
+                row.add_suffix(sw)
+            
             if service in ("active", "activating"):
                 row.add_css_class("warning")
+                
             self._group.add(row)
             self._rows.append(row)
+            self._unit_for_row[id(row)] = unit
+
+    def _on_service_switch(self, sw, state, unit, current_state) -> bool:
+        """Handle enable/disable switch for a service."""
+        # If state didn't actually change (due to rapid clicks), ignore
+        if bool(state) == current_state:
+            return False
+            
+        verb = "enable" if state else "disable"
+        # Use --now to also start/stop immediately
+        argv = ["systemctl", verb, "--now", unit]
+        
+        def done(rc):
+            if rc != 0:
+                self._show_error(f"Could not {verb} {unit}", sw, not state)
+            # Refresh to show updated state
+            GLib.timeout_add(1000, lambda: (self.refresh(), False)[1])
+            
+        ss.run_streaming(argv, lambda _: None, done)
+        return False
+        
+    def _show_error(self, message: str, sw: Gtk.Switch, expected_state: bool) -> None:
+        """Show error toast and revert switch."""
+        # Find the toast overlay - walk up the widget tree
+        widget = sw
+        while widget and not isinstance(widget, Adw.ToastOverlay):
+            widget = widget.get_parent()
+        if widget:
+            toast = Adw.Toast(title=GLib.markup_escape_text(message))
+            toast.set_timeout(5000)
+            widget.add_toast(toast)
+        # Revert switch
+        sw.handler_block_by_func(self._on_service_switch)
+        sw.set_active(not expected_state)
+        sw.handler_unblock_by_func(self._on_service_switch)
+        
+    def refresh(self) -> None:
+        """Refresh the inbound access state."""
+        self._clear()
+        ss.inbound_access_state(self._on_state)

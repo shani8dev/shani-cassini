@@ -762,13 +762,23 @@ def test_the_storage_card_renders_every_row_from_the_fakes(tmp_path, monkeypatch
     from shani_cassini import system_status as ss
     out = {}
     ss.storage_card(out.update)
-    assert spin(lambda: len(out) == 6), out
+    # Waited on the key rather than on a row count: the card grew a row
+    # (`storage-zram`, 2026-10-07) and three tests here were pinned to the
+    # number 6, so they failed with a bare `len(out) == 6` and no indication of
+    # which read was missing. A count is also the weakest possible assertion -
+    # any row at all would satisfy it.
+    assert spin(lambda: "storage-zram" in out), out
     assert out["storage-root-usage"] == "123G/916G"
     assert out["storage-root"] == "123G/916G"
     assert out["storage-home-usage"] == "11G/916G"
     assert out["storage-var-usage"] == "8.2G/50G"
     assert out["storage-varlog"] == "412M"
     assert out["storage-swap"] == "128Mi used / 8.0Gi total"
+    # `free -h` above says how much swap exists and not where it lives. On
+    # Shanios it is a zram device, so the zram row is a different fact and not
+    # a restatement - and it is read from /sys with no tool at all.
+    assert "storage-zram" in out
+    assert out["storage-zram"], "the zram row was added but never filled"
 
 
 def test_the_storage_card_asks_df_once_for_the_two_root_rows(tmp_path, monkeypatch):
@@ -788,7 +798,7 @@ def test_the_storage_card_asks_df_once_for_the_two_root_rows(tmp_path, monkeypat
     from shani_cassini import system_status as ss
     out = {}
     ss.storage_card(out.update)
-    assert spin(lambda: len(out) == 6), out
+    assert spin(lambda: "storage-zram" in out), out
     calls = log.read_text().splitlines()
     assert calls.count("-h /") == 1, f"df -h / ran {calls.count('-h /')}x: {calls}"
     assert calls.count("-h /home") == 1, calls
@@ -821,7 +831,7 @@ def test_one_missing_source_does_not_blank_the_other_rows(tmp_path, monkeypatch)
     from shani_cassini import system_status as ss
     out = {}
     ss.storage_card(out.update)
-    assert spin(lambda: len(out) == 6), out
+    assert spin(lambda: "storage-zram" in out), out
     assert out["storage-varlog"] == "N/A", out
     assert out["storage-root"] == "123G/916G", out
     assert out["storage-swap"] == "128Mi used / 8.0Gi total", out

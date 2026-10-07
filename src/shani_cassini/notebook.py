@@ -61,6 +61,7 @@ from shani_cassini.tabs.printers import PrintersTab
 from shani_cassini.tabs.camera import CameraTab
 from shani_cassini.tabs.avahi import AvahiTab
 from shani_cassini.tabs.irqbalance import IrqBalanceTab
+from shani_cassini.tabs.wireguard import WireGuardTab
 from shani_cassini.tabs.ananicy import AnanicyTab
 from shani_cassini.tabs.sbctl import SbctlTab
 from shani_cassini.tabs.privileges import PrivilegesTab
@@ -175,6 +176,8 @@ SECTIONS = [
              "What could let traffic reach this machine - six packages can, none is on"),
             (RemoteAccessTab, "remoteaccess", "Remote Access", "preferences-system-network-symbolic",
              "The sshd directives this drop-in records"),
+            (WireGuardTab, "wireguard", "WireGuard", "network-wireless-encrypted-symbolic",
+             "Peer-to-peer tunnels and the interfaces they use"),
         ]),
         ("Sharing", [
             (SmbTab, "smb", "SMB", "network-workgroup-symbolic",

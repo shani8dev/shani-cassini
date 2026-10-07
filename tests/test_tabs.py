@@ -112,7 +112,7 @@ class TestNotebook:
             ]),
             ('Network', [
                 ('Name Resolution', ['DNS']),
-                ('Reachability', ['Inbound Access', 'Remote Access']),
+                ('Reachability', ['Inbound Access', 'Remote Access', 'WireGuard']),
                 ('Sharing', ['SMB', 'Service Discovery', 'Sharing']),
             ]),
             ('Security', [

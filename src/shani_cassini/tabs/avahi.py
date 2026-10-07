@@ -243,6 +243,21 @@ NOT_PARSED_NOTE = (
     "`avahi-browse -alrpt` is the tool for it."
 )
 
+IDENTITY_TITLE = "The address the hardware announces"
+IDENTITY_NOTE = (
+    "A network card has its own address burned into it, and every access point "
+    "this machine has ever passed remembers it. That is what makes it an "
+    "identifier rather than just an address.\n"
+    "Both desktops let you ask NetworkManager for a different one on a "
+    "connection, and Plasma's connection editor also exposes the IPv6 privacy "
+    "setting. A setting is a request; these rows are the state - which address "
+    "the interface is using right now, and whether the kernel considers it "
+    "locally assigned.\n"
+    "Only real hardware is listed. A bridge, a bond or a container's virtual "
+    "interface has no card behind it, and its address is a placeholder the "
+    "kernel makes up."
+)
+
 DOES_NOT_NOTE = (
     "Turning discovery on or off, and making this machine visible to the network, "
     "belong to you rather than to a settings window. So this page never enables, "
@@ -933,6 +948,11 @@ class AvahiTab(Gtk.Box):
         self._page.append(Adw.PreferencesGroup(
             title="About those lines", description=_plain(NOT_PARSED_NOTE)))
 
+        self._identity = Adw.PreferencesGroup(
+            title=IDENTITY_TITLE, description=_plain(IDENTITY_NOTE))
+        self._mac_rows: list[Adw.ActionRow] = []
+        self._page.append(self._identity)
+
         self._page.append(Adw.PreferencesGroup(
             title="What this page does not do",
             description=_plain(DOES_NOT_NOTE)))
@@ -941,6 +961,19 @@ class AvahiTab(Gtk.Box):
 
     def load(self) -> bool:
         avahi_state(self._on_state)
+        # A synchronous read of four small sysfs files per interface, deferred
+        # through the main loop like every other collector on this page. No
+        # subprocess, so there is nothing here that can block the main thread
+        # the way a tool call would.
+        #
+        # `err` defaults because `GLib.idle_add` calls back with the user data
+        # alone. Without the default this raised
+        # `TypeError: _on_macs() missing 1 required positional argument: 'err'`
+        # inside a GTK callback - which GLib swallows - and the whole identity
+        # group silently never appeared. **Found by rendering in Arch, not by any
+        # test**: every unit test here calls `_on_macs(payload, "")` directly and
+        # so never went through the dispatch that broke.
+        GLib.idle_add(self._on_macs, ss.mac_addresses())
         return False
 
     # ----------------------------------------------------------------- render
@@ -949,6 +982,84 @@ class AvahiTab(Gtk.Box):
         for row in rows:
             group.remove(row)
         rows.clear()
+
+    def _on_macs(self, payload: dict, err: str = "") -> None:
+        """The hardware addresses, and whether they are stable.
+
+        On this page by subject, not by accident: everything above it is about
+        **what this machine announces to the network**, and a burned-in MAC is
+        announced by the simple fact of being on the network. mDNS names the
+        machine; the MAC identifies the card.
+
+        The readout is the half neither desktop has. Both let you *ask* for a
+        cloned address on a connection profile — NetworkManager's
+        `802-11-wireless.cloned-mac-address` and `ipv6.ip6-privacy` — but a
+        setting is a request and this is the state: which address the interface
+        is using right now, and whether the kernel considers it local.
+
+        Two signals, deliberately not collapsed, because they can disagree and
+        the disagreement is the finding:
+
+        * **the locally-administered bit**, a property of the address itself
+          (IEEE 802 sets bit 1 of the first octet to mean "assigned locally, not
+          globally unique"), which is unambiguous;
+        * **`addr_assign_type`**, the kernel's account of how the address came
+          to be, where only `0` (permanent) is acted on. The non-zero values are
+          shown, never interpreted — their numbering has changed across kernel
+          versions and this app cannot check the UAPI header to confirm which
+          policy each one names.
+
+        Physical interfaces only: a bridge, a bond, a veth or a docker endpoint
+        has no card behind it and its address is a kernel-generated placeholder
+        that means nothing about identity.
+        """
+        self._clear(self._identity, self._mac_rows)
+
+        if not payload.get("readable", False):
+            # The tree could not be listed at all, which is not the same as
+            # there being no addresses.
+            self._add(self._mac_rows, self._identity,
+                      _row("Hardware addresses", "Could not read "
+                          "/sys/class/net, so this could not be checked"))
+            return
+
+        physical = [i for i in (payload.get("interfaces") or [])
+                    if i.get("physical")]
+        if not physical:
+            self._add(self._mac_rows, self._identity,
+                      _row("Hardware addresses",
+                           "No physical network interface to report"))
+            return
+
+        stable = [i for i in physical
+                  if i.get("locally_administered") is False]
+        if stable:
+            verdict = (f"{len(stable)} of {len(physical)} use the address burned "
+                       f"into the card, which every network this machine has "
+                       f"joined has seen")
+        else:
+            verdict = (f"All {len(physical)} use a locally-assigned address "
+                       f"rather than the hardware one")
+        self._add(self._mac_rows, self._identity,
+                  _row("Hardware addresses", verdict))
+
+        for iface in physical:
+            # The locally-administered bit decides the wording, because it is
+            # the fact about the address itself. `assign_type` is shown as a
+            # number next to it rather than translated.
+            la = iface.get("locally_administered")
+            if la is True:
+                kind = "locally assigned"
+            elif la is False:
+                kind = "the card's permanent address"
+            else:
+                kind = "could not be classified"
+            at = iface.get("assign_type")
+            at_note = "" if at is None else f" · assign_type {at}"
+            kindof = "Wi-Fi" if iface.get("wireless") else "Ethernet"
+            self._add(self._mac_rows, self._identity,
+                      _row(f"{iface['name']} ({kindof})",
+                           f"{iface['address']} · {kind}{at_note}"))
 
     def _add(self, rows: list, group: Adw.PreferencesGroup,
              row: Adw.ActionRow) -> Adw.ActionRow:

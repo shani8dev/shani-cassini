@@ -149,6 +149,7 @@ an image.
 
 import ast
 import inspect
+import time
 import os
 import re
 import subprocess
@@ -171,6 +172,13 @@ from shani_cassini.tabs.avahi import (  # noqa: E402
     parse_mdns_listeners,
     parse_unit_files,
 )
+
+# The real `AvahiTab.load`, captured at import time - i.e. before the autouse
+# `no_autoload` fixture below replaces it with a no-op. `TestTheIdentityGroupIsWired`
+# has to drive the real dispatch, because the bug it guards is *in* that dispatch,
+# and there is no other way back to the original function object once patched.
+_REAL_LOAD = AvahiTab.load
+
 
 @pytest.fixture(autouse=True)
 def no_autoload(monkeypatch):
@@ -3092,3 +3100,72 @@ class TestAgainstThisHost:
         assert avahi_mod.SERVER_ICON == "network-server-symbolic"
 
 
+
+
+class TestTheIdentityGroupIsWired:
+    """The MAC rows must appear when the page LOADS, not only when the handler
+    is called directly.
+
+    **A regression no unit test here could see.** `load()` hands the payload to
+    `GLib.idle_add`, which calls back with the user data alone, while `_on_macs`
+    was declared `(self, payload, err)`. Every other test in this file invokes
+    `_on_macs(payload, "")` directly, so the whole suite stayed green - and on a
+    real page the call raised `TypeError: _on_macs() missing 1 required
+    positional argument: 'err'` inside a GTK callback, which GLib swallows. The
+    group therefore simply never appeared.
+
+    Found by rendering the page in Arch and reading the rows back, which is the
+    only step that dispatches through GLib the way the running app does. So the
+    test below drives `load()` the way the app does and requires the rows to be
+    there afterwards.
+
+    The sysfs read is not stubbed: this file's `no_autoload` fixture only stops
+    subprocesses, and the collector is four file reads. That is deliberate - it
+    means the test runs against the machine's real `/sys/class/net`, so it also
+    proves the reader does not raise on a real tree.
+    """
+
+    def test_the_identity_group_and_its_rows_are_on_the_loaded_page(self, monkeypatch):
+        # Defeat this file's autouse stub for this test only. It exists for good
+        # reason - sixty page constructions would spawn three hundred and sixty
+        # un-reaped children - but this test exists precisely to exercise the
+        # dispatch the stub removes.
+        monkeypatch.setattr(AvahiTab, "load", _REAL_LOAD)
+        tab = AvahiTab()
+        ctx = GLib.MainContext.default()
+        for _ in range(120):
+            ctx.iteration(False)
+            time.sleep(0.01)
+
+        rows = _rows(tab)
+        assert tab._mac_rows, (
+            "the identity group rendered with no rows after load(): "
+            f"{[t for t, _ in rows]}")
+        titles = [t for t, _ in rows]
+        # The verdict row, named by the collector, and at least one interface.
+        assert "Hardware addresses" in titles, titles
+        assert any(t.startswith(("en", "wl", "eth", "wlp")) for t in titles), (
+            f"no interface row was filled: {titles}")
+        subs = [s for t, s in rows if t == "Hardware addresses"]
+        assert subs and subs[0], "the verdict row is empty"
+
+    def test_the_handler_takes_the_payload_alone_as_the_main_loop_calls_it(self):
+        """The dispatch contract itself, stated directly so the signature and
+        the call site cannot drift apart again.
+
+        `GLib.idle_add(func, payload)` invokes `func(payload)`. Anything the
+        handler needs beyond that has to be optional or supplied by the call.
+        """
+        tab = AvahiTab()
+        # Exactly what the main loop does - one argument, no error string.
+        tab._on_macs({"readable": True, "errors": [], "interfaces": []})
+        assert tab._mac_rows, "the handler needs an err argument to run"
+
+    def test_a_failed_read_still_renders_a_row_rather_than_nothing(self):
+        tab = AvahiTab()
+        tab._on_macs({"readable": False, "errors": ["boom"], "interfaces": []})
+        titles = [t for t, _ in _rows(tab)]
+        assert "Hardware addresses" in titles, (
+            f"an unreadable /sys rendered as no group at all: {titles}")
+        subs = [s for t, s in _rows(tab) if t == "Hardware addresses"]
+        assert "Could not read" in subs[0], subs

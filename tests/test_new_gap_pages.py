@@ -30,6 +30,7 @@ answered, is the failure this repo keeps shipping.
 from __future__ import annotations
 
 import ast
+import ipaddress
 from pathlib import Path
 import inspect
 import json
@@ -2471,3 +2472,605 @@ class TestBtrfsMonthlyMaintenance:
         assert "FAILED" in row.get_subtitle(), row.get_subtitle()
         assert "exit 2" in row.get_subtitle(), row.get_subtitle()
         assert "warning" in row.get_css_classes()
+
+
+class TestIpv6Privacy:
+    """IPv6 address privacy, judged from the addresses the kernel assigned.
+
+    Shanios ships `net.ipv6.conf.{all,default}.use_tempaddr = 2`
+    (`shani-settings/usr/lib/sysctl.d/90-security-hardening.conf`), which asks
+    for RFC 4941 privacy extensions. **Reading that setting is not the same
+    question as reading the addresses**, and this class exists because the
+    difference is invisible to a config reader: a later sysctl file, a
+    NetworkManager connection setting `ipv6.ip6-privacy` itself, or anything
+    re-running `sysctl` after boot all leave the config correct and the
+    machine unchanged.
+
+    **The fixtures are real `/proc/net/if_inet6` lines**, captured from a booted
+    machine, including the one that motivates the parser: that host has *both* a
+    stable and a temporary global address on the same interface while
+    `use_tempaddr` reads 2. A boolean could not tell that apart from either
+    state alone.
+    """
+
+    REAL_IF_INET6 = (
+        "240940c240458405bf0509148acf3b37 03 40 00 00 wlp0s20f3\n"
+        "fe80000000000000200a94fffe4ba75a 05 40 20 80  docker0\n"
+        "00000000000000000000000000000001 01 80 10 80       lo\n"
+        "fe8000000000000069a39300e2ace998 03 40 20 80      wlp0s20f3\n"
+        "240940c240458405ee2e6c854376c012 03 40 00 01 wlp0s20f3\n"
+    )
+
+    @staticmethod
+    def _eui64(mac: str) -> str:
+        b = bytearray(int(x, 16) for x in mac.split(":"))
+        b[0] ^= 0x02
+        addr = ipaddress.IPv6Address(
+            bytes.fromhex("240940c240458405") + bytes(b[:3]) + b"\xff\xfe" + bytes(b[3:]))
+        return addr.exploded.replace(":", "")
+
+    @staticmethod
+    def _line(hexaddr: str, scope: str = "00", flags: str = "00",
+              ifname: str = "wlp0s20f3", ifindex: str = "03") -> str:
+        return f"{hexaddr} {ifindex} 40 {scope} {flags} {ifname}\n"
+
+    def test_the_real_file_yields_the_two_global_addresses_and_nothing_else(self):
+        addrs = ss._parse_if_inet6(self.REAL_IF_INET6)
+        assert [a["address"] for a in addrs] == [
+            "2409:40c2:4045:8405:bf05:914:8acf:3b37",
+            "2409:40c2:4045:8405:ee2e:6c85:4376:c012",
+        ], addrs
+
+    def test_a_link_local_address_is_not_an_internet_identity(self):
+        """Its bytes 11-12 really are fffe, so a parser that tested only for
+        EUI-64 and not for scope would report a MAC-derived leak that does not
+        exist on this machine."""
+        every = ss._parse_if_inet6(self.REAL_IF_INET6)
+        assert not any(a["ifname"] == "docker0" for a in every), every
+
+    def test_a_non_global_scope_is_skipped_even_for_a_routable_address(self):
+        """The scope check, proved on its own rather than through link-local.
+
+        An earlier version of this test used the `fe80::` line above, and it
+        **passed against a parser with the scope check deleted** - because
+        `ipaddress.is_global` already rejects `fe80::`, so the link-local was
+        filtered by the other test and proved nothing about scope. A control
+        that passes against broken code is not a control.
+
+        So this uses **site scope** (`0x80`), which is a deprecated but legal
+        value the kernel still writes, on an address every other test considers
+        global. Only the scope check can exclude it.
+        """
+        routable = ipaddress.IPv6Address(
+            bytes.fromhex("240940c240458405") + bytes.fromhex("bf059148acf3b371")
+        )
+        assert routable.is_global, \
+            "the fixture must be globally routable, or it proves nothing"
+        hexaddr = routable.exploded.replace(":", "")
+        assert ss._parse_if_inet6(self._line(hexaddr, scope="00")), \
+            "control: scope 0 is kept"
+        for scope in ("80", "20", "40"):
+            assert ss._parse_if_inet6(self._line(hexaddr, scope=scope)) == [], \
+                f"scope {scope} is not a globally routable identity"
+
+    def test_the_temporary_flag_is_bit_zero_of_the_flags_field(self):
+        """`...c012` has flags `01` and must be temporary; its sibling on the same
+        interface has flags `00` and must not be. They differ by one bit, so a
+        parser reading the whole field as a boolean is indistinguishable from
+        one that reads the right bit."""
+        by_addr = {a["address"]: a for a in ss._parse_if_inet6(self.REAL_IF_INET6)}
+        assert by_addr["2409:40c2:4045:8405:ee2e:6c85:4376:c012"]["temporary"] is True
+        assert by_addr["2409:40c2:4045:8405:bf05:914:8acf:3b37"]["temporary"] is False
+
+    def test_a_mac_derived_address_is_recognised_as_one(self):
+        hexaddr = self._eui64("3c:84:6a:11:22:33")
+        got = ss._parse_if_inet6(self._line(hexaddr))
+        assert len(got) == 1, got
+        assert got[0]["eui64"] is True, got
+        assert got[0]["temporary"] is False
+
+    def test_eui64_needs_both_ff_and_fe_not_either(self):
+        assert ss._parse_if_inet6(self._line(self._eui64("a4:bb:6d:aa:bb:cc")))[0]["eui64"]
+        packed = bytearray(ipaddress.IPv6Address(
+            bytes.fromhex("240940c240458405") + bytes(8)).packed)
+        packed[11], packed[12] = 0xFE, 0x00
+        not_eui = ipaddress.IPv6Address(bytes(packed)).exploded.replace(":", "")
+        assert ss._parse_if_inet6(self._line(not_eui))[0]["eui64"] is False
+
+    def test_a_stable_but_random_address_is_not_called_a_leak(self):
+        hexaddr = ipaddress.IPv6Address(
+            bytes.fromhex("240940c240458405") + bytes.fromhex("bf059148acf3b371")
+        ).exploded.replace(":", "")
+        got = ss._parse_if_inet6(self._line(hexaddr))
+        assert got[0]["temporary"] is False and got[0]["eui64"] is False
+
+    def test_a_short_line_is_skipped_rather_than_guessed_at(self):
+        assert ss._parse_if_inet6("240940c240458405 03 40 00\n") == []
+        assert ss._parse_if_inet6("") == []
+
+    def test_a_malformed_address_is_skipped_not_raised(self):
+        """One bad line must not blank the whole page - that would render as
+        "no IPv6 address", i.e. as good news."""
+        text = (self._line("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")
+                + self._line("240940c240458405ee2e6c854376c012", flags="01"))
+        got = ss._parse_if_inet6(text)
+        assert len(got) == 1 and got[0]["temporary"] is True, got
+
+    def test_a_documentation_range_is_not_a_global_address(self):
+        doc = ipaddress.IPv6Address("2001:db8::1").exploded.replace(":", "")
+        assert ss._parse_if_inet6(self._line(doc)) == []
+
+    def test_an_unreadable_if_inet6_reports_a_failed_check_not_a_clean_one(self, monkeypatch):
+        """The absence-shaped case. Reporting "no IPv6 identity" because the
+        file could not be opened is inventing a verdict from a failed read."""
+        seen = {}
+        monkeypatch.setattr(ss, "_read_text_or_none",
+                            lambda p: None if p == ss.IF_INET6 else "2")
+        ss.ipv6_privacy_state(lambda v, e: seen.update(v=v, e=e))
+        assert seen["v"]["if_inet6_readable"] is False
+        assert seen["v"]["addresses"] == []
+        assert seen["e"], "a failed read must be named, not silently empty"
+
+    def test_the_configured_value_is_reported_beside_the_addresses_not_instead(self):
+        """The whole point: a kernel saying 2 while the address is MAC-derived is
+        a real, diagnosable state - something overrode the setting after boot -
+        and collapsing the two would hide exactly that."""
+        payload = {
+            "if_inet6_readable": True,
+            "addresses": [{"address": "2409::1", "ifname": "eth0",
+                           "temporary": False, "eui64": True}],
+            "use_tempaddr": {"all": "2", "default": "2"},
+        }
+        assert payload["use_tempaddr"]["all"] == "2"      # asked for
+        assert payload["addresses"][0]["eui64"] is True   # and did not happen
+
+    def test_an_unreadable_use_tempaddr_stays_none_and_is_not_read_as_off(self, monkeypatch):
+        """None means the kernel does not publish the key. Reading it as 0
+        would tell a user their privacy extensions are disabled when the truth
+        is that nobody answered."""
+        seen = {}
+
+        def fake(path):
+            if path == ss.IF_INET6:
+                return "240940c240458405bf0509148acf3b37 03 40 00 00 wlp0s20f3\n"
+            return None
+
+        monkeypatch.setattr(ss, "_read_text_or_none", fake)
+        ss.ipv6_privacy_state(lambda v, e: seen.update(v=v, e=e))
+        assert seen["v"]["use_tempaddr"]["all"] is None
+        assert seen["v"]["addresses"], "the addresses were still read"
+
+    @staticmethod
+    def _render(payload):
+        from shani_cassini.tabs.dns import DnsTab
+        tab = DnsTab()
+        tab._on_privacy(payload, "")
+        return tab._row_privacy_verdict.get_subtitle()
+
+    def test_a_mac_derived_address_is_reported_as_the_strong_claim_it_is(self):
+        sub = self._render({
+            "if_inet6_readable": True,
+            "addresses": [{"address": "2409::1", "ifname": "eth0",
+                           "temporary": False, "eui64": True}],
+            "use_tempaddr": {"all": "0", "default": "0"},
+        })
+        assert "hardware address" in sub, sub
+        assert "every network" in sub, sub
+
+    def test_all_temporary_is_reported_as_not_a_trackable_identifier(self):
+        sub = self._render({
+            "if_inet6_readable": True,
+            "addresses": [{"address": "2409::1", "ifname": "eth0",
+                           "temporary": True, "eui64": False}],
+            "use_tempaddr": {"all": "2", "default": "2"},
+        })
+        assert "rotate" in sub, sub
+
+    def test_a_mixed_set_is_reported_as_mixed_not_collapsed(self):
+        """The real machine's state: one rotating address for outbound plus a
+        stable one for inbound. A boolean would throw away the half that is
+        still an identifier."""
+        sub = self._render({
+            "if_inet6_readable": True,
+            "addresses": [
+                {"address": "2409::1", "ifname": "eth0", "temporary": True, "eui64": False},
+                {"address": "2409::2", "ifname": "eth0", "temporary": False, "eui64": False},
+            ],
+            "use_tempaddr": {"all": "2", "default": "2"},
+        })
+        assert "1 of 2" in sub, sub
+        assert "stable" in sub, sub
+
+    def test_no_global_address_is_good_news_not_an_empty_row(self):
+        sub = self._render({"if_inet6_readable": True, "addresses": [],
+                            "use_tempaddr": {"all": "2", "default": "2"}})
+        assert "No global IPv6" in sub, sub
+
+    def test_an_unreadable_file_never_renders_as_clean(self):
+        """The control for the whole class: the one state that must NOT say
+        anything reassuring."""
+        sub = self._render({"if_inet6_readable": False, "addresses": [],
+                            "use_tempaddr": {}, "errors": ["nope"]})
+        assert "Could not read" in sub, sub
+        for reassuring in ("rotate", "No global IPv6", "nothing here to track"):
+            assert reassuring not in sub, f"{reassuring!r} in a failed check: {sub}"
+
+    def test_an_unreadable_use_tempaddr_row_says_the_kernel_did_not_answer(self):
+        from shani_cassini.tabs.dns import DnsTab
+        tab = DnsTab()
+        tab._on_privacy({"if_inet6_readable": True, "addresses": [],
+                         "use_tempaddr": {"all": None, "default": None}}, "")
+        sub = tab._row_privacy_config.get_subtitle()
+        assert "does not publish" in sub, sub
+        assert "off" not in sub, f"None was rendered as a value: {sub}"
+
+    def test_use_tempaddr_zero_is_described_as_off_not_as_a_failure(self):
+        from shani_cassini.tabs.dns import DnsTab
+        tab = DnsTab()
+        tab._on_privacy({"if_inet6_readable": True, "addresses": [],
+                         "use_tempaddr": {"all": "0", "default": "0"}}, "")
+        assert "off" in tab._row_privacy_config.get_subtitle()
+
+    def test_the_address_rows_are_actually_added_to_the_group(self):
+        """The lesson from the Updates page, where two rows were built, updated
+        on every read and never displayed because the `add()` sat outside the
+        loop. Asserting the attribute is reading the object, not the screen."""
+        from shani_cassini.tabs.dns import DnsTab
+        tab = DnsTab()
+        tab._on_privacy({
+            "if_inet6_readable": True,
+            "addresses": [
+                {"address": "2409::1", "ifname": "eth0", "temporary": True, "eui64": False},
+                {"address": "2409::2", "ifname": "eth0", "temporary": False, "eui64": True},
+            ],
+            "use_tempaddr": {"all": "2", "default": "2"},
+        }, "")
+        assert len(tab._privacy_rows) == 2, tab._privacy_rows
+        subs = [r.get_subtitle() for r in tab._privacy_rows]
+        assert any("rotating" in s for s in subs), subs
+        assert any("hardware address" in s for s in subs), subs
+        titles = [t for t, _ in self._walk(tab._privacy)]
+        assert titles.count("eth0") == 2, titles
+
+    def test_a_reload_does_not_stack_duplicate_address_rows(self):
+        """`_on_privacy` runs again on every load, so the per-address rows are
+        removed first."""
+        from shani_cassini.tabs.dns import DnsTab
+        tab = DnsTab()
+        payload = {"if_inet6_readable": True,
+                   "addresses": [{"address": "2409::1", "ifname": "eth0",
+                                  "temporary": True, "eui64": False}],
+                   "use_tempaddr": {"all": "2", "default": "2"}}
+        for _ in range(4):
+            tab._on_privacy(payload, "")
+            assert len(tab._privacy_rows) == 1, len(tab._privacy_rows)
+
+    @staticmethod
+    def _walk(widget):
+        out = []
+
+        def rec(w):
+            if isinstance(w, Adw.ActionRow):
+                out.append((w.get_title(), w.get_subtitle()))
+            child = w.get_first_child()
+            while child is not None:
+                rec(child)
+                child = child.get_next_sibling()
+        rec(widget)
+        return out
+
+
+class TestMacIdentity:
+    """Hardware addresses, and whether they are the card's own.
+
+    Both desktops can be *asked* for a cloned address - NetworkManager's
+    `802-11-wireless.cloned-mac-address` and `ipv6.ip6-privacy`, which Plasma's
+    connection editor exposes and GNOME's does not - but neither reports what
+    the machine is using. This is that half.
+
+    **The fixtures are this host's real `/sys/class/net`, read 2026-10-07**, and
+    they are the reason the two signals are kept apart: `enp4s0` reports
+    `6c:24:08:9c:87:10` and `wlp0s20f3` reports `c4:75:ab:cf:c2:f9`, both
+    **permanent** (`assign_type 0`, locally-administered bit clear), while all
+    four container bridges report addresses whose first octet has the bit set.
+    So on a real machine the two signals agree - and the reader must still be
+    able to say so rather than collapsing them into one number.
+    """
+
+    # name -> (address, assign_type, has_device, wireless)
+    REAL = {
+        "enp4s0":    ("6c:24:08:9c:87:10", "0", True, False),
+        "wlp0s20f3": ("c4:75:ab:cf:c2:f9", "0", True, True),
+        "docker0":   ("22:0a:94:4b:a7:5a", "3", False, False),
+        "lo":        ("00:00:00:00:00:00", "0", False, False),
+    }
+
+    @pytest.fixture
+    def fake_net(self, tmp_path, monkeypatch):
+        """A /sys/class/net the reader walks, built from this host's values."""
+        root = tmp_path / "net"
+        for name, (addr, assign, has_dev, wireless) in self.REAL.items():
+            d = root / name
+            d.mkdir(parents=True)
+            (d / "address").write_text(addr + "\n")
+            (d / "addr_assign_type").write_text(assign + "\n")
+            if has_dev:
+                (d / "device").mkdir()
+            if wireless:
+                (d / "phy80211").mkdir()
+        monkeypatch.setattr(ss, "SYS_CLASS_NET", str(root))
+        return root
+
+    def _read(self):
+        return {i["name"]: i for i in ss.mac_addresses()["interfaces"]}
+
+    def test_it_reads_the_real_hosts_interfaces(self, fake_net):
+        got = self._read()
+        assert set(got) == set(self.REAL), sorted(got)
+        assert got["enp4s0"]["address"] == "6c:24:08:9c:87:10"
+
+    def test_the_locally_administered_bit_decides_and_assign_type_confirms(self, fake_net):
+        """The bit is the decision, `assign_type` the corroboration. Asserted
+        separately because they are separate reads of separate facts, and a
+        reader that only looked at one would be right on this host and wrong on
+        a machine where they disagree."""
+        got = self._read()
+        # 0x6c & 0x02 == 0 -> not locally administered. 0x22 & 0x02 == 2 -> is.
+        assert got["enp4s0"]["locally_administered"] is False
+        assert got["enp4s0"]["assign_type"] == 0
+        assert got["docker0"]["locally_administered"] is True
+        assert got["docker0"]["assign_type"] == 3
+
+    def test_a_device_directory_is_what_marks_an_interface_physical(self, fake_net):
+        """`/sys/class/net/<if>/device` is the kernel's own answer to "is there a
+        card behind this". A bridge has no such link, and reporting its
+        placeholder address as an identity would be meaningless."""
+        got = self._read()
+        assert got["enp4s0"]["physical"] is True
+        assert got["wlp0s20f3"]["physical"] is True
+        assert got["docker0"]["physical"] is False
+        assert got["lo"]["physical"] is False
+
+    def test_wireless_is_detected_from_either_of_the_two_names(self, fake_net):
+        got = self._read()
+        assert got["wlp0s20f3"]["wireless"] is True
+        assert got["enp4s0"]["wireless"] is False
+
+    def test_a_missing_address_file_leaves_the_interface_out(self, fake_net):
+        """An absent `address` is not "an interface with no address", and
+        inventing an empty row for it would be a claim the kernel never made."""
+        (fake_net / "br0").mkdir()
+        (fake_net / "br0" / "addr_assign_type").write_text("0\n")
+        assert "br0" not in self._read()
+
+    def test_an_unreadable_assign_type_stays_none_and_is_not_read_as_permanent(self, fake_net):
+        """`None` means the kernel does not implement the attribute. Reading it
+        as 0 would report every address as burned into the card on a kernel
+        that never said so."""
+        (fake_net / "br0").mkdir()
+        (fake_net / "br0" / "address").write_text("aa:bb:cc:dd:ee:ff\n")
+        assert self._read()["br0"]["assign_type"] is None
+
+    def test_a_non_numeric_assign_type_is_none_not_zero(self, fake_net):
+        (fake_net / "enp4s0" / "addr_assign_type").write_text("unknown\n")
+        assert self._read()["enp4s0"]["assign_type"] is None
+
+    def test_an_unclassifiable_address_is_none_rather_than_a_guess(self, fake_net):
+        """A malformed first octet cannot be tested for the bit. Reporting
+        False would claim the address is the card's own, which is the alarming
+        direction to be wrong in."""
+        (fake_net / "br0").mkdir()
+        (fake_net / "br0" / "address").write_text("zz:bb:cc:dd:ee:ff\n")
+        assert self._read()["br0"]["locally_administered"] is None
+
+    def test_an_unreadable_sys_class_net_is_not_an_empty_machine(self, monkeypatch):
+        monkeypatch.setattr(ss, "SYS_CLASS_NET", "/nonexistent/net/tree")
+        got = ss.mac_addresses()
+        assert got["readable"] is False, got
+        assert got["errors"], "a failed read must be named"
+
+    def _render(self, payload):
+        from shani_cassini.tabs.avahi import AvahiTab
+        tab = AvahiTab()
+        tab._on_macs(payload, "")
+        return "\n".join(f"{t} | {s}" for t, s in self._rows(tab))
+
+    @staticmethod
+    def _rows(tab):
+        out, stack = [], [tab]
+        while stack:
+            w = stack.pop()
+            if isinstance(w, Adw.ActionRow):
+                out.append((w.get_title(), w.get_subtitle()))
+            c = w.get_first_child()
+            while c is not None:
+                stack.append(c)
+                c = c.get_next_sibling()
+        return out
+
+    @staticmethod
+    def _payload(ifaces):
+        return {"readable": True, "errors": [], "interfaces": ifaces}
+
+    def test_a_permanent_mac_is_reported_as_the_strong_claim_it_is(self):
+        """The real case on this host, and the one the group exists for."""
+        text = self._render(self._payload([
+            {"name": "enp4s0", "address": "6c:24:08:9c:87:10",
+             "locally_administered": False, "assign_type": 0,
+             "physical": True, "wireless": False},
+        ]))
+        assert "burned into the card" in text, text
+        assert "the card's permanent address" in text, text
+
+    def test_a_local_mac_is_reported_as_locally_assigned(self):
+        text = self._render(self._payload([
+            {"name": "wlp0s20f3", "address": "02:11:22:33:44:55",
+             "locally_administered": True, "assign_type": 1,
+             "physical": True, "wireless": True},
+        ]))
+        assert "locally assigned" in text, text
+        assert "burned into the card" not in text, text
+
+    def test_only_physical_interfaces_are_listed(self):
+        """A bridge's address is a kernel-made placeholder and says nothing
+        about identity."""
+        text = self._render(self._payload([
+            {"name": "enp4s0", "address": "6c:24:08:9c:87:10",
+             "locally_administered": False, "assign_type": 0,
+             "physical": True, "wireless": False},
+            {"name": "docker0", "address": "22:0a:94:4b:a7:5a",
+             "locally_administered": True, "assign_type": 3,
+             "physical": False, "wireless": False},
+        ]))
+        assert "docker0" not in text, text
+        assert "1 of 1" in text, text
+
+    def test_a_machine_with_no_physical_interface_says_so(self):
+        text = self._render(self._payload([
+            {"name": "docker0", "address": "22:0a:94:4b:a7:5a",
+             "locally_administered": True, "assign_type": 3,
+             "physical": False, "wireless": False},
+        ]))
+        assert "No physical network interface" in text, text
+
+    def test_an_unreadable_tree_is_not_reported_as_no_interfaces(self):
+        """The absence-shaped case: a failed read rendered as an empty machine
+        reads as good news."""
+        text = self._render({"readable": False, "errors": ["boom"],
+                             "interfaces": []})
+        assert "Could not read" in text, text
+        for reassuring in ("No physical network interface", "burned into the card"):
+            assert reassuring not in text, f"{reassuring!r} in a failed check: {text}"
+
+    def test_an_unclassifiable_address_does_not_become_a_permanent_one(self):
+        """`None` must not be rendered as False. Saying 'the card's permanent
+        address' about an address the reader could not classify is a claim it
+        has no evidence for, and it is the alarming direction."""
+        text = self._render(self._payload([
+            {"name": "enp4s0", "address": "6c:24:08:9c:87:10",
+             "locally_administered": None, "assign_type": None,
+             "physical": True, "wireless": False},
+        ]))
+        assert "could not be classified" in text, text
+        assert "the card's permanent address" not in text, text
+
+    def test_the_assign_type_is_shown_as_a_number_and_never_interpreted(self):
+        """`3` is not translated into a policy name. The kernel's enum has grown
+        values over successive versions and this app cannot check the UAPI header
+        to confirm what each one means, so it shows the number."""
+        text = self._render(self._payload([
+            {"name": "enp4s0", "address": "6c:24:08:9c:87:10",
+             "locally_administered": False, "assign_type": 3,
+             "physical": True, "wireless": False},
+        ]))
+        assert "assign_type 3" in text, text
+
+    def test_a_reload_does_not_stack_duplicate_rows(self):
+        """`_on_macs` runs on every load, so the rows are cleared first."""
+        from shani_cassini.tabs.avahi import AvahiTab
+        tab = AvahiTab()
+        payload = self._payload([
+            {"name": "enp4s0", "address": "6c:24:08:9c:87:10",
+             "locally_administered": False, "assign_type": 0,
+             "physical": True, "wireless": False},
+        ])
+        for _ in range(4):
+            tab._on_macs(payload, "")
+            assert len(tab._mac_rows) == 2, len(tab._mac_rows)   # verdict + iface
+
+
+class TestZramRow:
+    """Compressed swap on the storage card, from the collector that was dead.
+
+    `zram_state()` read `/sys/class/zram-control` carefully - it documented
+    that an *empty* control directory is the normal state on a machine with no
+    device, which is not an error - and **nothing called it**. The storage card
+    reported swap totals from `free -h`, which says how much swap exists and not
+    where it lives. On Shanios it is compressed RAM, so the same total costs a
+    fraction of the memory and never touches the disk, and that is exactly the
+    fact that makes `vm.swappiness = 133` (shani-settings) behave the way it
+    does. It was invisible.
+    """
+
+    def test_an_unsupported_kernel_is_not_the_same_as_an_unused_feature(self):
+        """The split that `present` alone could not express.
+
+        Verified against this host, which uses a swapfile: `/sys/class/zram-control`
+        is genuinely **absent** rather than empty, so `os.listdir` raises. Both
+        that and a present-but-empty directory have to stay distinguishable, and
+        a caller reading only `present` renders them identically.
+        """
+        unsupported = {"supported": False, "present": False, "devices": [],
+                       "note": "zram-control absent"}
+        unused = {"supported": True, "present": False, "devices": [],
+                  "note": "no zram device is active"}
+        assert unsupported["present"] == unused["present"] is False, \
+            "the point: present alone cannot tell these apart"
+        assert "no zram support" in ss._format_zram(unsupported).lower()
+        assert ss._format_zram(unused) == "Not in use"
+        assert "no zram support" not in ss._format_zram(unused).lower()
+
+    def test_a_device_reports_its_size_algorithm_and_use(self):
+        got = ss._format_zram({
+            "supported": True, "present": True, "note": "",
+            "devices": [{"name": "zram0", "disksize": 1 << 33,
+                         "used": 1 << 30, "algorithm": "zstd", "mem_limit": 0}],
+        })
+        assert "8192 MiB" in got, got
+        assert "zstd" in got, got
+        assert "1024 MiB in use" in got, got
+
+    def test_an_unused_device_does_not_claim_zero_in_use(self):
+        """"1024 MiB, 0 MiB in use" and "1024 MiB" are the same fact, and the
+        second is the honest one when nothing is swapped."""
+        got = ss._format_zram({
+            "supported": True, "present": True, "note": "",
+            "devices": [{"name": "zram0", "disksize": 1 << 31, "used": 0,
+                         "algorithm": "zstd", "mem_limit": 0}],
+        })
+        assert "in use" not in got, got
+
+    def test_an_unreported_size_is_said_rather_than_rendered_as_zero(self):
+        """A device the kernel will not size is not a zero-size device, and
+        '0 MiB' would be a number the kernel never gave."""
+        got = ss._format_zram({
+            "supported": True, "present": True, "note": "",
+            "devices": [{"name": "zram0", "disksize": 0, "used": 0,
+                         "algorithm": "", "mem_limit": 0}],
+        })
+        assert "size not reported" in got, got
+        assert "0 MiB" not in got, got
+
+    def test_the_reader_reports_support_and_presence_separately(self, tmp_path, monkeypatch):
+        """The structural fix, exercised both ways: an absent directory and an
+        empty one are different answers and the payload has to say which."""
+        monkeypatch.setattr(ss, "_ZRAM_CTL", str(tmp_path / "nope"))
+        got = ss.zram_state()
+        assert got["supported"] is False, got
+        assert got["present"] is False, got
+
+        ctl = tmp_path / "zram-control"
+        ctl.mkdir()
+        monkeypatch.setattr(ss, "_ZRAM_CTL", str(ctl))
+        got = ss.zram_state()
+        assert got["supported"] is True, got
+        assert got["present"] is False, got
+        assert "no zram device is active" in got["note"]
+
+    def test_the_row_is_reachable_from_both_halves_of_the_page(self):
+        """Not the object - both halves of the rendered page.
+
+        A collector can be wired into a payload that nothing displays, which is
+        the exact shape of the bug this class exists for.
+
+        Asserted on the *source text* rather than on `ast.unparse`, because
+        unparse normalises string quotes and a double-quoted assertion against
+        it can never match - which is what a first version of this test did, and
+        it failed against correct code for exactly that reason.
+        """
+        card = inspect.getsource(ss.storage_card)
+        assert "storage-zram" in card, \
+            f"the storage card never sets storage-zram: {card}"
+        page = (Path(ss.__file__).parent / "tabs" / "system.py").read_text()
+        assert '"storage-zram"' in page or "'storage-zram'" in page, \
+            "no row is registered for the zram value on System Info"

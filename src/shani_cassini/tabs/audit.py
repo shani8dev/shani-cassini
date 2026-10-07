@@ -37,6 +37,7 @@ second way of spawning a process appears in this module.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Final
 
 from gi.repository import Adw, GLib, Gtk  # type: ignore
@@ -91,6 +92,44 @@ SEARCH_ROW_TITLE: Final = "Recent activity"
 SEARCH_ROW_NOTE: Final = "Not read yet - press Search to ask."
 SEARCHING: Final = "Asking ausearch…"
 NO_EVENTS: Final = "No matching events"
+
+# "No events" has three causes that look identical in ausearch's output, and
+# only one of them is good news. ausearch returns an empty list when the log
+# holds no matching records - and also when auditd is not running, when the
+# ruleset never loaded, or when the log was rotated away. Every one of those is
+# an empty stdout, so a page that reads only the records renders all four as
+# "No matching events", which is the most reassuring thing a security page can
+# say about a machine that is recording nothing.
+#
+# So an empty answer is resolved against evidence gathered *independently* of
+# the search - the daemon's own state, which this page already reads from
+# systemd without a password, and the log file's existence and size, which is a
+# stat and needs nothing at all. The rule is that a missing fact is named and
+# never turned into a verdict: if the daemon's state was not established, the
+# answer stays unresolved rather than defaulting to "nothing to report".
+QUIET_REASON: Final = (
+    "auditd is not running, so nothing is being recorded - this is not a "
+    "machine with nothing to report, it is a machine with nothing recording"
+)
+NO_LOG_REASON: Final = (
+    "auditd is running but there is no audit log, so the events are not "
+    "reaching one"
+)
+EMPTY_LOG_REASON: Final = (
+    "auditd is running and the log exists but is empty - the rules may not "
+    "have loaded, so there is nothing to search"
+)
+UNRESOLVED_REASON: Final = (
+    "ausearch returned nothing, and auditd's own state has not been "
+    "established, so this could not be resolved into either 'nothing to "
+    "report' or 'nothing recording'"
+)
+
+# /var/log/audit/audit.log is auditd's own file. Its existence and size answer
+# "is anything being written at all" without a password, without ausearch and
+# without auditd, so they are the evidence that does not depend on the thing
+# being questioned.
+AUDIT_LOG: Final = "/var/log/audit/audit.log"
 MALFORMED: Final = ("ausearch answered with something that is not a record list"
                     " - an ausearch older than --output=json would do that")
 TRUNCATED_TITLE: Final = "More records"
@@ -166,7 +205,23 @@ class AuditTab(Gtk.Box):
         self._asked = False
         self._records: list[dict] = []
         self._reason = ""
+        # Derived, and recomputed on every render - NOT the same slot as
+        # `_reason`, which holds a hard failure from the tool and must persist
+        # across re-renders. See `_render()`.
+        self._empty_reason = ""
         self._daemon_rows: dict[str, Adw.ActionRow] = {}
+        # auditd's state, as systemd words it. Kept as a separate attribute
+        # rather than re-read from the widget: resolving an empty search needs
+        # the *fact*, and reading it back out of a rendered row would make the
+        # verdict depend on a string this page formatted. None means "not
+        # established", which is a third state and the one that must never be
+        # rendered as "nothing to report".
+        self._daemon_state: dict[str, str] = {}
+        # What the audit log itself is doing, from a stat. `None` for size means
+        # the stat could not be made at all, which is not the same as a size of
+        # zero.
+        self._log_present: bool | None = None
+        self._log_size: int | None = None
 
         self._daemon_group = Adw.PreferencesGroup(title=DAEMON_TITLE,
                                                   description=DAEMON_HELP)
@@ -194,6 +249,10 @@ class AuditTab(Gtk.Box):
     # ------------------------------------------------------------------- data
     def refresh(self) -> None:
         """auditd's own state, through systemd: the half that needs no click."""
+        # A stat of the log, not a tool call - it is the one piece of evidence
+        # available for resolving an empty search that does not itself go
+        # through auditd or ausearch.
+        self._read_log()
         for name, verb, _title in DAEMON_QUERIES:
             self._read_daemon(name, verb)
         self._render()
@@ -206,8 +265,67 @@ class AuditTab(Gtk.Box):
             # all still gets a row rather than an empty one.
             word = " ".join(lines).strip() or f"exit status {status}"
             self._daemon_rows[name].set_subtitle(_esc(word))
+            self._daemon_state[name] = word
+            # An answer arriving after a search already resolved its empty case
+            # would leave that verdict standing on evidence that did not exist
+            # yet, so the events group is re-resolved now that there is a fact
+            # to resolve it against.
+            if self._asked and not self._searching and not self._records and not self._reason:
+                self._render()
 
         ss.run_stream_tool(["systemctl", verb, "auditd"], lines.append, on_exit)
+
+    def _read_log(self) -> None:
+        """The audit log's existence and size, from a stat.
+
+        Independent of auditd and of ausearch on purpose: it is the evidence
+        that does not depend on the thing being questioned. A missing file and a
+        zero-byte file are different claims, so they are recorded as different
+        claims (`_log_present` False vs `_log_size` 0) and never collapsed into
+        "no log".
+        """
+        try:
+            st = os.stat(AUDIT_LOG)
+        except FileNotFoundError:
+            self._log_present, self._log_size = False, None
+            return
+        except OSError:
+            # Permission denied or similar: the file may well be there and we
+            # simply cannot see it, which is neither absent nor empty.
+            self._log_present, self._log_size = None, None
+            return
+        self._log_present, self._log_size = True, st.st_size
+
+    def _empty_verdict(self) -> str:
+        """Why an empty answer is empty - or that it could not be resolved.
+
+        Resolution order is deliberate. auditd's own state is asked first
+        because it is the fact that matters: a machine with auditd stopped is
+        recording nothing, which is a security state, not an absence of events.
+        Only when the daemon *is* running does the log's own emptiness become
+        the interesting question.
+
+        The last case - neither established - returns a reason rather than
+        `""`. Defaulting to "no reason" would put the page on the
+        `NOTHERS` branch and render "No matching events", which is the specific
+        lie this whole mechanism exists to stop.
+        """
+        active = self._daemon_state.get("active")
+        if active is None:
+            return UNRESOLVED_REASON
+        if active not in ("active", "activating"):
+            return QUIET_REASON
+        if self._log_present is None:
+            return UNRESOLVED_REASON
+        if self._log_present is False:
+            return NO_LOG_REASON
+        if self._log_size == 0:
+            return EMPTY_LOG_REASON
+        # auditd is running and the log has content, yet ausearch matched
+        # nothing. That is the genuine "nothing to report" case - the only one
+        # of the four that is good news - and it is returned as the absence of a
+        # reason so the page draws it as it always has.
+        return ""
 
     def search(self) -> None:
         """The one privileged read, and only from a click.
@@ -224,6 +342,10 @@ class AuditTab(Gtk.Box):
         self._generation += 1
         generation = self._generation
         self._asked, self._searching, self._reason = True, True, ""
+        # A new search invalidates the previous empty-case verdict outright, so
+        # it is cleared here rather than left to be recomputed: _render() only
+        # derives it while a search is not in flight.
+        self._empty_reason = ""
         self._records = []
         self._render()
 
@@ -258,6 +380,24 @@ class AuditTab(Gtk.Box):
             self._events_group.remove(row)
         self._added = []
         self._btn_search.set_sensitive(not self._searching)
+
+        # The empty case is resolved on EVERY render, and kept in its own
+        # attribute rather than in `_reason`.
+        #
+        # Both matter. Putting it in `_reason` cached a verdict computed
+        # against whatever evidence happened to exist at that moment, so a
+        # `UNRESOLVED_REASON` written before auditd's state arrived was never
+        # revisited - the page kept saying "could not be resolved" on a machine
+        # whose answer was sitting in `_daemon_state` a moment later. And
+        # `_reason` is also where a genuine tool failure lives (cancelled
+        # pkexec, malformed output), which must survive a re-render; conflating
+        # a derived verdict with a hard error makes the two impossible to tell
+        # apart. Derived state is recomputed; an error is not.
+        self._empty_reason = ""
+        if self._asked and not self._searching and not self._records \
+                and not self._reason:
+            self._empty_reason = self._empty_verdict()
+
         self._row_search.set_subtitle(self._subtitle())
         # The reason goes on the permanent row, which `_subtitle()` has already
         # done - so it used to be rendered TWICE, as two rows with the same title
@@ -276,14 +416,20 @@ class AuditTab(Gtk.Box):
         # absent), and the row has to keep its identity because the Search button
         # lives on it. `add_css_class` is stable, and tabs/tpm2_boot.py already
         # marks a row this way.
-        if self._reason:
+        if self._reason or self._empty_reason:
             self._row_search.add_css_class("warning")
         else:
             self._row_search.remove_css_class("warning")
-        if self._reason:
-            pass
-        elif not self._asked or self._searching:
+        # This guard is load-bearing and was dropped once during this work:
+        # without it the branch below runs on a page that has **not been asked
+        # yet**, and renders "No matching events" next to its own row saying
+        # "Not read yet - press Search to ask." The render in Arch caught it,
+        # because the two rows contradict each other on screen and no unit test
+        # compared them. Nothing has been searched, so nothing has been found.
+        if not self._asked or self._searching:
             return
+        if self._reason or self._empty_reason:
+            pass
         elif not self._records:
             self._add(_row(EVENTS_TITLE, NO_EVENTS, PLAIN_ICON))
         else:
@@ -296,6 +442,10 @@ class AuditTab(Gtk.Box):
             return SEARCHING
         if not self._asked:
             return SEARCH_ROW_NOTE
+        # The resolved empty case replaces the count, because "0 records" on a
+        # machine that is not recording is the exact reassurance being removed.
+        if self._empty_reason:
+            return _esc(self._empty_reason)
         return COUNTED.format(shown=len(self._shown()))
 
     def _render_events(self) -> None:

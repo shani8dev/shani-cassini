@@ -318,7 +318,7 @@ built image's package list, and absent from GNOME's 28 and Plasma's 62):
 | Software RAID | `mdadm` | none |
 | TOTP / 2FA | `oath-toolkit` | none |
 | Password quality | `libpwquality`, `cracklib` | none |
-| zram | `zram-generator` | none |
+| zram | `zram-generator` | **row added 2026-10-07** on System Info; the collector had existed unused |
 | Userspace fs encryption | `fscrypt`, `gocryptfs`, `ecryptfs-utils` | Encryption covers LUKS/TPM only |
 | CPU microcode | `amd-ucode`, `intel-ucode` | Firmware is `fwupd` only |
 | EFI boot entries | `efibootmgr` | none (`bootctl` still unshown) |
@@ -339,6 +339,288 @@ not a resolver, so the DNS row above is real. `bind` shipping on a workstation
 image is itself worth a look.
 
 ## Known issues (current state, 2026-10-01)
+
+- **The panel-gap claim for IPv6 privacy and MAC addresses was WRONG, checked
+  and corrected 2026-10-07.** The table below and the prose under it record
+  GNOME Control Center as **46.7 / 28 panels** and Plasma as **62 modules**.
+  Re-measured from the installed packages rather than from that record:
+
+  | set | how it was measured | result |
+  |---|---|---|
+  | GNOME Control Center | `dpkg -L` on the **installed** `gnome-control-center` | **28 panels — count confirmed**, but the build here is **50.3**, not 46.7 |
+  | Plasma | `kcm_*.so` extracted from `plasma-workspace`, `plasma-desktop`, `plasma-disks`, `plasma-firewall` + `plasma-nm` | 48 + 5 network modules |
+
+  **The finding that matters: Plasma CAN set both of the things I claimed
+  neither desktop could.** `plasma-nm`'s `libplasmanm_editor.so` contains
+  `NetworkManager::Ipv6Setting::setPrivacy(IPv6Privacy)` **and**
+  `WifiConnectionWidget::generateRandomClonedMac()` /
+  `WiredConnectionWidget::generateRandomClonedMac()` /
+  `permanentHardwareAddress()`. So Plasma's connection editor exposes the IPv6
+  privacy-extension setting and MAC cloning per connection.
+
+  **GNOME cannot set IPv6 privacy at all.** Its binary contains
+  `cloned-mac-address` and `perm-hw-address` once each (the connection editor's
+  MAC cloning), but **zero** occurrences of `ipv6Privacy`, `ip6-privacy` or
+  `use_tempaddr`. `gnome-privacy-panel` is "Privacy & Security" — screen lock,
+  location, camera/mic, files & trash, diagnostics, firmware, Thunderbolt, file
+  sharing — and contains neither MAC nor IPv6 nor audit.
+
+  **So the honest framing is reporter-vs-manager, not "no panel exists".** Both
+  desktops let a user *ask* for a per-connection value; neither reports *what
+  the machine is using*, and neither shows the fleet-wide `use_tempaddr = 2`
+  from `shani-settings` or whether it took effect. That is the same split this
+  file already records for `seahorse`/`gnome-disks`. **Do not describe these as
+  missing from both desktops — Plasma has the settings.** `nm-settings(5)`
+  confirms `ipv6.ip6-privacy` is the same knob (values 0/1/2, falling back
+  through the global setting to `/proc/sys/net/ipv6/conf/default/use_tempaddr`),
+  which is precisely the override the DNS page's IPv6 group is built to catch.
+
+  Also recorded: **`ausearch`/`auditd` appear in zero KCM binaries and zero
+  GNOME strings**, so the Audit work below has no desktop counterpart at all.
+
+- **Three collectors in `system_status.py` were fully written, tested, and
+  called by nothing. All three are now wired; two of them were pre-existing.**
+  Found by sweeping every reader-like function in the module and asking which
+  the `tabs/` actually call — and the sweep's first answer was wrong for three of
+  the seven candidates (`power_profile`, `pcr_separator_measured`,
+  `fprintd_action` are helpers called *inside* other readers), which is the
+  false-positive this repo keeps meeting, so each was confirmed by grep before
+  anything was called dead.
+
+  | collector | state found | now |
+  |---|---|---|
+  | `zram_state()` | **dead since it was written.** Read `/sys/class/zram-control` carefully, including the documented "an empty control directory is normal, not an error", and had exactly one reference: a unit test. Your own gap table below says `zram: none` | a "Compressed swap" row on System Info |
+  | `deploy_backups()` | **dead, and a duplicated privileged contract.** A bare `run_json([...], done)` passthrough while `tabs/boot_recovery.py` had grown its own copy of the same argv — with the *better* version, turning a refused dialog or a shape-less document into a `problem` string | the shaped reader moved here; the page delegates |
+  | `mac_addresses()` | new this session, unwritten-to-screen until the Arch render | a "Hardware address the hardware announces" group on Service Discovery |
+
+  **`free -h` says how much swap exists and not where it lives.** On Shanios it
+  is a zram device — compressed RAM — so the same total costs a fraction of the
+  memory and never touches the disk, which is exactly the fact that makes
+  `vm.swappiness = 133` behave as it does. That was invisible.
+
+  **The zram payload gained a `supported` flag**, because `present: False` came
+  back for two opposite answers: a kernel with no zram support at all (the
+  directory is absent) and a kernel with zram that is not using it (the
+  directory is empty). Verified against this host, which uses a swapfile and
+  genuinely has no `/sys/class/zram-control`. The first version carried the
+  distinction in the `note` **prose**, which meant the renderer had to
+  string-match on wording — a renamed sentence would have silently merged them.
+  `/sys/class/zram-control` also became a module constant (`_ZRAM_CTL`) for the
+  same reason the other `/proc` and `/sys` paths are: a literal inside the
+  function made the branch that matters most unreachable from a test.
+
+  **`deploy_backups` was the drift this file warns about elsewhere.** One argv
+  that polkit authorises, defined twice, so changing one could leave the other
+  running a command no rule matches. Its gate
+  (`test_this_page_can_never_roll_back_switch_slots_or_restart`) had to follow:
+  it now asserts the page runs no process of its own, that it *delegates*, and
+  that the reader it delegates to gets the same flag check the page's argv used
+  to. Checking only the page would have made it pass against a page with no
+  subprocesses at all.
+
+  **A defect found by writing them, in the same class as the page-shadowing one
+  in this file:** three storage-card tests waited on `len(out) == 6` — the row
+  count before the zram row existed. A count is the weakest possible assertion,
+  and it reported a bare number with no indication of which read was missing.
+  They now wait on the key.
+
+- **Two more dead functions, removed 2026-10-07 after the same sweep, with
+  opposite verdicts — and the difference is worth keeping.** The sweep above
+  found three collectors to *wire*; re-running it afterwards left exactly two
+  top-level functions nothing called.
+
+  - **`strip_log_prefix()` — removed, superseded.** It stripped the
+    `<date> [TAG] ` prefix from a deploy log line, and **nothing had called it
+    since `parse_deploy_line` was written**: that function captures the message
+    through `_LOG_LINE`'s second group instead. Its own `_LOG_PREFIX` regex went
+    with it. Two things kept it looking alive: a docstring full of reasoning
+    about why a log pane should not show a column of identical timestamps, and
+    `tests/test_updates_fleet_actions.py`, which asserted it directly.
+    **The test was retargeted rather than deleted** — the *property* it held (a
+    real prefix is consumed; a line the script did not write comes through
+    unedited) is still true and now belongs to `parse_deploy_line`, so the
+    control was re-run against a deliberately loosened `_LOG_LINE` and fails.
+    One behaviour genuinely differs and is now asserted: for a prefix-shaped line
+    with an empty message (`... [ERROR] `), the removed helper returned `""`
+    while `parse_deploy_line` returns the whole line as unparsed text. The
+    second is safer — an empty message is indistinguishable from a rendering
+    failure, and this way the raw line is still on screen.
+
+  - **`boot_entries()` — removed, and it contradicted a recorded decision.**
+    It ran `bootctl list --json=short` and nothing called it. `tabs/boot_entries.py`
+    reads `efibootmgr` because it is about **the firmware's** boot menu, and this
+    file's own note on that page records why: *"`bootctl list --json` needs ESP
+    read access — not shown to the user yet"*, alongside the measured finding
+    that `shani-deploy` contains no `efibootmgr` call at all and the firmware
+    entry is a single `shanios` entry pointing at the removable-media fallback
+    loader. So the page deliberately shows one layer and names `bootctl` as the
+    command for the other. A reader for the second layer is a **future decision**
+    (it needs ESP access), not a wiring gap — leaving it in place implied a
+    capability the app does not have. `state.py`'s unrelated `boot_entries`
+    attribute is not affected.
+
+- **IPv6 address privacy is now read from the addresses, not from the config
+  that asks for them — and the Audit page no longer calls "no events" good
+  news. Added 2026-10-07.** Both from the same discipline, and both ported
+  from `study/maze-guard` and `study/Gaze` after reading their implementations
+  rather than their READMEs.
+
+  **`ipv6_privacy_state()` reads two independent facts and never derives one
+  from the other.** `shani-settings` ships
+  `net.ipv6.conf.{all,default}.use_tempaddr = 2` (RFC 4941 privacy
+  extensions), so reading that sysctl would be the obvious thing — and it is
+  the wrong question. A config requesting a setting is a **request**, not a
+  fact about the running system: a later `sysctl.d` file, a NetworkManager
+  connection setting `ipv6.ip6-privacy` itself, or anything re-running `sysctl`
+  after boot all leave the config correct and the machine unchanged. So the
+  assigned addresses are read from `/proc/net/if_inet6` and judged on their own
+  evidence, and the configured value is reported **beside** them rather than
+  in place of them — a kernel saying `2` while the address is MAC-derived is a
+  real and diagnosable state (something overrode the setting after boot), and
+  collapsing the two would hide exactly that. This is the same "config is not
+  effect" rule the harness enforces for sysctls in
+  `shani-testbed/slot-tests/sysctl-hardening.sh`; this page is the app-side
+  half of it, and it is what makes that sysctl verifiable rather than merely
+  present.
+
+  **Three classifications, deliberately not collapsed** — and the third is the
+  one a boolean would get wrong:
+
+  | kind | how it is known | meaning |
+  |---|---|---|
+  | MAC-derived | bytes 11-12 are `ff fe` (modified EUI-64) | the address **contains the card's identity** and follows the machine onto every network it has joined |
+  | rotating | `IFA_F_TEMPORARY`, bit 0 of the flags field | does not |
+  | stable | neither | fine in principle, but an identifier for as long as this network is connected |
+
+  The **fixtures are real `/proc/net/if_inet6` lines captured from a booted
+  machine**, and the reason matters: that host had **both** a stable and a
+  temporary global address on the same interface while `use_tempaddr` read `2`.
+  A boolean could not tell that apart from either state alone, which is why the
+  page renders "1 of 2 rotate; 1 stable address(es) identify this device while
+  connected to this network" rather than a verdict.
+
+  **A failed read is never good news.** `/proc/net/if_inet6` unreadable is not
+  "no IPv6 identity" — it is IPv6 compiled out, or a namespace with none. The
+  row says it could not be checked, and
+  `test_an_unreadable_file_never_renders_as_clean` asserts the absence of every
+  reassuring phrase, so the reassurance cannot creep back in.
+
+  **`None` is never `False`.** `use_tempaddr` unreadable stays `None` and the row
+  says *"This kernel does not publish it"*; reading it as `0` would tell a user
+  their privacy extensions are disabled when the truth is that nobody answered.
+  This rule is `maze/core/posture.py`'s ("Unknown is `None`, never `False` …
+  only one of them is safe to put in a report a user may lean on later"), and
+  Cassini carries such a boundary today as **strings in notes** rather than in
+  types — which is the one place this could be tightened further.
+
+  **The Audit page had the worse version of the same bug, and it was the
+  reassuring direction.** `ausearch` returns an empty record list in four
+  different situations — nothing to report, auditd not running, no audit log,
+  and a log that exists but is empty because the rules never loaded — and all
+  four are an empty stdout. The page rendered all four as *"No matching
+  events"*, which on a machine that is recording nothing is the most reassuring
+  thing a security page can say. It now resolves an empty answer against
+  evidence gathered **independently of the search**: auditd's own state from
+  systemd (which the page already read on load, without a password) and a
+  `stat` of `/var/log/audit/audit.log` (no tool, no privilege, and the one piece
+  of evidence that does not depend on the thing being questioned). Each of the
+  four gets its own wording, and a fifth state — *no evidence established at
+  all* — is named rather than defaulted to "nothing to report". No escalation
+  was added: `test_the_resolution_costs_no_password_and_no_extra_tool_run`
+  asserts the search still runs `pkexec ausearch` exactly once.
+
+  **Two defects were found while verifying this, and both are worth more than
+  the features.**
+
+  1. **I silently redefined the module's existing `_read_text`, and 27
+     unrelated tests failed while every IPv6 and Audit test stayed green.**
+     `system_status.py` already had a `_read_text(path) -> str` (line 1770,
+     returning `""` for a file it could not open). The new function needed to
+     return `None` instead, and reused the name — so the later definition won
+     and every existing caller that did `_read_text(...).strip()` began
+     raising `'NoneType' object has no attribute 'strip'`. The 27 failures were
+     in `test_security_keys_page.py`, `test_smartcard_page.py`,
+     `test_system_status.py` and `test_tabs.py`: none IPv6, none audit, nothing
+     I had touched. **Only the full-suite comparison against a stashed HEAD
+     caught it** — each file passed alone and the two pages I wrote were green
+     throughout. It is now `_read_text_or_none()`, with the reason the two
+     cannot be merged written in its docstring. **If a new reader in this module
+     wants a different failure contract from an existing helper, rename rather
+     than redefine.**
+
+  2. **A regression that only rendering caught: the Audit page claimed "No
+     matching events" before anyone had searched.** Restructuring `_render()`
+     to resolve the empty case ahead of the warning styling dropped its
+     `elif not self._asked or self._searching: return` guard, so the empty
+     branch ran on a page nobody had asked yet and the rendered page carried
+     two contradicting rows — *"Not read yet - press Search to ask."* directly
+     above *"No matching events"*. **The whole suite stayed green**, because
+     every other test in that file searches before asserting anything; the
+     contradiction is between two rows, and no test compared them.
+     `test_nothing_is_claimed_before_a_search_has_been_asked` asserts the pair
+     rather than either row, since checking either alone would pass again the
+     moment the other changed. Re-dropping the guard fails both it and the
+     in-flight variant.
+
+  **A third control is worth keeping and is currently only a note.** The
+  link-local line in the fixture (`fe80::0200:a94f:ffe4:ba75a` on `docker0`)
+  has bytes 11-12 of `ff fe` — it *is* a MAC-derived address — so a parser
+  testing EUI-64 without scope reports a leak that does not exist. The first
+  version of that test passed against a parser with the scope check **deleted**,
+  because `ipaddress.is_global` already rejects `fe80::` and the link-local was
+  filtered by the other assertion. It now uses **site scope (`0x80`)** on a
+  globally routable address, which only the scope check can exclude, and
+  re-deleting the scope check fails it.
+
+  Verified: suite **2704 passed**, **16 failed** — an identical failure set to
+  HEAD measured the same way (the 16 are the documented libadwaita 1.5-vs-1.9
+  markup mismatches plus two ordering-order failures, all reproduced at HEAD
+  with the change stashed). **36 new tests, and every negative control was
+  run**: five for the IPv6 parser and page (eui64 dropped, scope ignored,
+  `None` read as `0`, unreadable rendered as clean, address rows built but never
+  added to the group) and eight for Audit (resolution removed, verdict cached,
+  empty log folded into missing log, guard dropped, and the ordering variants).
+  All fail the suite when the reader or page is broken. **Rendered in Arch**
+  (GTK 4.22.5 / libadwaita 1.9.4, the stack this file says to use) with the row
+  labels read back out of the widget tree — a screenshot could not show this,
+  because both new groups sit below the fold of a scrolled page and would read
+  as absent either way. Note what the render also proved about honesty: inside
+  the container `systemctl is-active auditd` answers *"System has not been
+  booted with systemd as init system"*, which is **not** one of the states the
+  resolution treats as recording — so the page says so rather than claiming a
+  quiet machine.
+  **Still open:** never run against a real auditd with a real log, so the
+  *populated* branches of both groups are unexercised. `ausearch` is not
+  installed on a development host at all, and `boot-health.sh` records
+  `auditd.service` failing under nspawn, so closing this needs a real slot with
+  a real log — the same condition the SMART and fprintd items in this file
+  already carry.
+
+  **A fourth defect, and this one is the argument for rendering in one line.**
+  The MAC group on Service Discovery was built, unit-tested and **never appeared
+  on the page at all**: `load()` hands the payload to `GLib.idle_add`, which
+  calls back with the user data alone, while `_on_macs` was declared
+  `(self, payload, err)`. The `TypeError` was raised inside a GTK callback, GLib
+  swallowed it, and the group silently never rendered. **The entire suite was
+  green**, because every unit test called `_on_macs(payload, "")` directly and
+  so never went through the dispatch that was broken.
+  `TestTheIdentityGroupIsWired` now drives the real `load()` — defeating this
+  file's own `no_autoload` autouse fixture, which stubs `load` out for good
+  reason, by capturing the real function at import time before the fixture
+  patches it — and a second test states the dispatch contract on its own. Both
+  controls fail when the default argument is removed or the read is dropped.
+
+  Verified together: suite **2730 passed**, **16 failed** — an identical failure
+  set to HEAD measured the same way (the 16 are the documented libadwaita
+  1.5-vs-1.9 markup mismatches plus two ordering-order failures, all reproduced
+  at HEAD with the change stashed). **62 new tests** across the IPv6, MAC and
+  zram work, and **13 negative controls run in this pass alone** (eui64 dropped,
+  scope ignored, locally-administered bit inverted, `assign_type` defaulted to
+  0, every interface treated as physical, zram `supported`/`present` merged,
+  unreadable IPv6 rendered as clean, MAC rows built but never added, MAC `load`
+  dispatch removed, sysfs read dropped, `storage-zram` never set, `storage-zram`
+  set to an empty string, and the `err` default reverted) — every one fails the
+  suite when the reader or page is broken.
 
 - **The DNS page exists because four resolvers ship and one answers, and the
   obvious reading of the image's own config is the wrong one.** Added

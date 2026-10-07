@@ -92,6 +92,22 @@ ENCRYPTED_NOTE = (
     "would have no working resolver at all."
 )
 
+PRIVACY_NOTE = (
+    "An IPv6 address is not a number your provider hands out for this "
+    "connection - the machine picks one, and by default that one is built from "
+    "the network card's hardware address. If so, the address identifies this "
+    "device on **every network it has ever joined**, which is why an IPv4 "
+    "address that changes with your connection and an IPv6 one that does not "
+    "are not the same privacy story.\n"
+    "Shanios asks for the rotating form (RFC 4941 privacy extensions, "
+    "`use_tempaddr = 2`) on every machine. The rows below read what the kernel "
+    "**actually assigned**, not what the configuration requests: a later "
+    "sysctl file, a NetworkManager connection that sets `ipv6.ip6-privacy` "
+    "itself, or anything re-running sysctl after boot would all leave the "
+    "configuration looking correct and the address unchanged. So a row is only "
+    "ever a verdict about the addresses on this machine right now."
+)
+
 READ_NOTE = (
     "Nothing on this page changes a resolver.\n"
     "  resolvectl status          the live per-link view, including DNS from "
@@ -153,15 +169,133 @@ class DnsTab(Gtk.Box):
         self._encrypted.add(self._row_enc_point)
         self._page.append(self._encrypted)
 
+        self._privacy = Adw.PreferencesGroup(
+            title="IPv6 address privacy", description=PRIVACY_NOTE)
+        self._row_privacy_verdict = _row("This machine's IPv6 address", "Reading…")
+        self._privacy.add(self._row_privacy_verdict)
+        self._row_privacy_config = _row("Configured (use_tempaddr)", "Reading…")
+        self._privacy.add(self._row_privacy_config)
+        self._page.append(self._privacy)
+
         self._page.append(Adw.PreferencesGroup(
             title="Reading it yourself", description=READ_NOTE))
 
         self._resolvers: list[Adw.ActionRow] = []
+        self._privacy_rows: list[Adw.ActionRow] = []
 
     def load(self) -> bool:
         ss.dns_state(self._on_state)
         ss.dnscrypt_state(self._on_dnscrypt)
+        ss.ipv6_privacy_state(self._on_privacy)
         return False
+
+    def _on_privacy(self, state: dict, err: str) -> None:
+        """Render the IPv6 privacy verdict.
+
+        The three outcomes are kept apart on purpose, because two of them look
+        identical in the underlying data and mean opposite things:
+
+        * an address whose bytes are EUI-64 **embeds the hardware MAC**, and
+          follows the machine onto every network it joins;
+        * an address flagged temporary rotates, so it does not;
+        * **an unreadable `/proc/net/if_inet6` is not a clean machine.** It means
+          the question could not be asked - IPv6 compiled out, or a namespace
+          with none. Reporting "no IPv6 identity" there would be inventing a
+          verdict from a failed read, which is the failure mode this page
+          exists to avoid, so it says it could not tell.
+        """
+        addrs = state.get("addresses") or []
+
+        if not state.get("if_inet6_readable"):
+            # Never "Nothing to worry about". The reader did not get to look.
+            self._row_privacy_verdict.set_subtitle(
+                "Could not read /proc/net/if_inet6, so this could not be "
+                "checked - IPv6 may be disabled entirely, or this namespace "
+                "has none")
+            self._privacy.set_visible(True)
+            self._row_privacy_config.set_subtitle("Not checked")
+            return
+
+        if not addrs:
+            # A machine with no global IPv6 has nothing to be tracked by, and
+            # that is a genuinely good state rather than an absence of data.
+            self._row_privacy_verdict.set_subtitle(
+                "No global IPv6 address - there is nothing here to track")
+            self._privacy.set_visible(True)
+        else:
+            mac_derived = [a for a in addrs if a.get("eui64")]
+            temporary = [a for a in addrs if a.get("temporary")]
+
+            if mac_derived:
+                # The strongest claim this page can make, and the one worth
+                # leading with: the address is not merely stable, it contains
+                # the card's identity.
+                self._row_privacy_verdict.set_subtitle(
+                    f"{len(mac_derived)} of {len(addrs)} global address(es) are "
+                    f"built from the hardware address and follow this device "
+                    f"onto every network")
+                self._privacy.set_visible(True)
+            elif len(temporary) == len(addrs):
+                self._row_privacy_verdict.set_subtitle(
+                    f"All {len(addrs)} global address(es) rotate for outgoing "
+                    f"connections - not a trackable identifier")
+                self._privacy.set_visible(True)
+            elif temporary:
+                # Mixed is the real-world case and the one a boolean would
+                # flatten: a stable address for inbound plus rotating ones for
+                # outbound is the intended shape, but the stable one is still
+                # an identifier while this network is connected.
+                self._row_privacy_verdict.set_subtitle(
+                    f"{len(temporary)} of {len(addrs)} rotate; "
+                    f"{len(addrs) - len(temporary)} stable address(es) identify "
+                    f"this device while connected to this network")
+                self._privacy.set_visible(True)
+            else:
+                self._row_privacy_verdict.set_subtitle(
+                    f"{len(addrs)} stable global address(es) - sites can "
+                    f"recognise this device while you stay on this network")
+                self._privacy.set_visible(True)
+
+            # One row per address. The classification is the point, so it is
+            # rendered per address rather than summarised away into a count.
+            self._clear_privacy()
+            for a in addrs[:5]:
+                if a.get("eui64"):
+                    kind = "derived from the hardware address"
+                elif a.get("temporary"):
+                    kind = "rotating (privacy extensions)"
+                else:
+                    kind = "stable"
+                row = _row(f"{a['ifname']}", f"{a['address']} · {kind}")
+                self._privacy.add(row)
+                self._privacy_rows.append(row)
+            if len(addrs) > 5:
+                row = _row("…", f"{len(addrs) - 5} more global address(es)")
+                self._privacy.add(row)
+                self._privacy_rows.append(row)
+
+        # The configured value is reported **beside** the addresses, never
+        # instead of them. A kernel that says 2 while the address is
+        # MAC-derived is a real and diagnosable state - something overrode the
+        # setting after boot - and collapsing the two would hide exactly that.
+        cfg = state.get("use_tempaddr") or {}
+        all_v = cfg.get("all")
+        if all_v is None:
+            # None is "could not read", not "off". Reading it as 0 would tell a
+            # user their privacy extensions are disabled when the truth is that
+            # this kernel did not answer.
+            self._row_privacy_config.set_subtitle("This kernel does not publish it")
+        else:
+            explained = {"0": "off - addresses are stable",
+                         "1": "on only where an interface asks",
+                         "2": "on - rotating addresses are used"}
+            self._row_privacy_config.set_subtitle(
+                explained.get(all_v, all_v))
+
+    def _clear_privacy(self) -> None:
+        for row in self._privacy_rows:
+            self._privacy.remove(row)
+        self._privacy_rows = []
 
     def _on_dnscrypt(self, state: dict, err: str) -> None:
         if not state.get("installed"):

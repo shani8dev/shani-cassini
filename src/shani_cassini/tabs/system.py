@@ -244,6 +244,12 @@ class SystemTab(Gtk.Box):
         self._add_info_row(grid, 5, "Used/Available:", "", "storage-var-usage")
         self._add_info_row(grid, 6, "/var/log:", "", "storage-varlog")
         self._add_info_row(grid, 7, "Swap:", "", "storage-swap")
+        # zram-generator ships in the image and creates a compressed-RAM swap
+        # device at boot when it is configured to. `free -h` above reports the
+        # total and not where it lives, and on Shanios the total is RAM rather
+        # than disk — which is the fact that makes swappiness behave the way it
+        # does and is not visible anywhere else on this page.
+        self._add_info_row(grid, 8, "Compressed swap:", "", "storage-zram")
 
         return card
 

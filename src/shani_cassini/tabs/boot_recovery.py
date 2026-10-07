@@ -233,26 +233,16 @@ def _status_values(status: dict) -> dict[str, str]:
 def _read_history(done) -> None:
     """The backup listing, as a value: ok plus slots, or ok=False plus a reason.
 
-    Shaped like storage_info() rather than like a raw run_json callback, because
-    a page that raises while it builds renders blank and says nothing at all. A
-    missing binary, a dismissed dialog, a tool behind this app and a document
-    that would not parse all arrive here as something a row can show.
+    **Delegates to `ss.deploy_backups()`, which used to be a dead function in
+    `system_status.py` while this module held its own copy of the same argv**
+    (2026-10-07). The argv here is the one polkit authorises, so defining it
+    twice meant changing one copy could leave the other running a command no
+    rule matches — the same drift this repo warns about for `sshd_config` and
+    `nsswitch`. The reader moved; this wrapper stays so the page's own call
+    sites are unchanged, and `test_this_page_can_never_roll_back_switch_slots_or_restart`
+    now checks both halves.
     """
-    empty = {"ok": False, "problem": "", "slots": []}
-
-    def finish(payload, error: str) -> None:
-        if payload is None:
-            done({**empty, "problem": error or "shani-deploy did not answer"})
-            return
-        slots = payload.get("slots")
-        if not isinstance(slots, list):
-            done({**empty, "problem": "shani-deploy --list-backups --json has "
-                                      "no slots list"})
-            return
-        done({"ok": True, "problem": "",
-              "slots": [slot for slot in slots if isinstance(slot, dict)]})
-
-    ss.run_json(["pkexec", DEPLOY, "--list-backups", "--json"], finish)
+    ss.deploy_backups(done)
 
 
 def _row(title: str, subtitle: str = "", icon: str | None = None) -> Adw.ActionRow:
