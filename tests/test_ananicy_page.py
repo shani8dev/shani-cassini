@@ -209,7 +209,7 @@ UNIT_FILE_PKG = (
 
 # `systemctl cat` prefixes each fragment with `# <path>` and a blank line. That
 # header was **not observed on this host, which has no unit files at all**
-# (`systemctl cat apcupsd.service` also answers `No files found.` here), so the
+# (`systemctl cat nut-monitor.service` also answers `No files found.` here), so the
 # bare package file is the capture and this is the documented wrapper. The
 # parser must give the same answer for both - which is the point of the pair.
 SYSTEMCTL_CAT = ("# /usr/lib/systemd/system/ananicy-cpp.service\n\n"
