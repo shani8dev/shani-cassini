@@ -22,7 +22,24 @@ MAPPER = "/dev/mapper/shani_root"
 
 
 def _encrypted() -> bool:
-    """The root is the LUKS mapper install.sh opens (no root needed)."""
+    """The root is the LUKS mapper install.sh opens (no root needed).
+
+    Deliberately **not** gen-efi's `encrypted` field, for two reasons that are
+    both load-bearing:
+
+    * This runs while the page is being built, before any gen-efi read has come
+      back, and gen-efi is privileged - so using its answer would mean the page
+      cannot draw its first group without a password prompt on load.
+    * `/dev/mapper/shani_root` is world-readable, so the answer needs no pkexec
+      at all. A false negative here sends a user to look for encryption that is
+      in fact present; a false positive shows TPM actions on an unencrypted disk
+      and they fail.
+
+    The cost of reading a different source than the tool is stated rather than
+    smoothed: gen-efi's `encrypted` and `luks_device` are the same facts from a
+    privileged read, and `luks_device` is rendered in "Encryption details" so a
+    disagreement is visible instead of resolved by whichever source won.
+    """
     return os.path.exists(MAPPER)
 
 
@@ -30,11 +47,19 @@ def _encrypted() -> bool:
 # assert "LUKS2" from what LUKS2 usually is. A field the tool did not report is
 # drawn as not available: the alternative is a detail invented from a default,
 # which is the one thing a disk-encryption page must not do.
+#
+# `luks_device` is here and is not otherwise used, which is deliberate: the page
+# answers "is this disk encrypted" from the mapper directly (see `_encrypted()`)
+# because that needs no password and runs while the page is being built, before
+# any gen-efi read has come back. Rendering gen-efi's value beside it means the
+# two answers are visible together, so a mapper named anything other than
+# `shani_root` shows up as a disagreement rather than as a silently wrong yes.
 LUKS_DETAILS = (
     ("luks_version", "LUKS version"),
     ("luks_cipher", "Cipher"),
     ("luks_kdf", "Key derivation"),
     ("luks_keyslots_in_use", "Keyslots in use"),
+    ("luks_device", "LUKS device"),
 )
 NOT_AVAILABLE = "Not available"
 

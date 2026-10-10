@@ -939,6 +939,14 @@ def tpm2_present(done: Callable[[Optional[bool], str], None]) -> None:
     could not be asked -- tool absent, or it would not start. None is not
     "this machine has no TPM": reporting that would tell a user with a working
     chip to go poke their firmware because the probe itself failed.
+
+    This deliberately does not read gen-efi's `tpm2_present` field, which
+    answers the same question from the privileged status document. The probe
+    wins on the axis that matters: it is unprivileged, so it can be asked while
+    the page is still being drawn, and it can *fail* -- a boolean read out of a
+    JSON document cannot tell "no chip" from "we could not ask". A field that
+    cannot distinguish a failure from an answer will one day report somebody's
+    broken probe as their firmware.
     """
     run_status(["systemd-analyze", "has-tpm2", "-q"],
                lambda status, err: done(None if status is None else status == 0, err))
@@ -2931,6 +2939,15 @@ def firmware_devices(done: Callable[[dict, str], None]) -> None:
                 "internal": "internal" in [str(f).lower() for f in flags],
                 "guid": (device.get("Guid") or [""])[0]
                         if isinstance(device.get("Guid"), list) else "",
+                # The serial and the update state were both emitted and both
+                # dropped on the floor, which left the page unable to answer the
+                # two questions a serial exists for: which physical unit am I
+                # looking at, and did the last update this daemon attempted
+                # actually land. `UpdateState` is fwupd's own verdict string
+                # (`success`, `failed`, `needs-reboot`, ...), not a status we
+                # derive, so it is passed through verbatim.
+                "serial": str(device.get("Serial") or "").strip(),
+                "update_state": str(device.get("UpdateState") or "").strip(),
             })
         done({"ok": True, "problem": "", "devices": rows}, "")
 

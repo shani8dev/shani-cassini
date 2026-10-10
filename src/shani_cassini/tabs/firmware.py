@@ -208,11 +208,29 @@ class FirmwareTab(Gtk.Box):
                         else "Carried, not updatable")
             if device["vendor"]:
                 bits.insert(0, device["vendor"])
+            # `update_state` is fwupd's own verdict on the last update it
+            # attempted for this device - `success`, `failed`, `needs-reboot`.
+            # Shown only when fwupd says something, because an absent state means
+            # the question has never applied to this device, and rendering a
+            # blank or an invented "unknown" would both be claims the tool did
+            # not make.
+            if device.get("update_state"):
+                bits.append(f"last update {device['update_state']}")
             subtitle = " · ".join(bits)
             row = _row(_esc(name), _esc(subtitle))
             if device["updatable"]:
                 img = Gtk.Image.new_from_icon_name("emblem-system-synchronizing-symbolic")
                 row.add_prefix(img)
+            # The serial identifies the physical unit, which is the one thing no
+            # other row answers: two identical SSDs in one machine are
+            # indistinguishable by name and version, and only one of them is
+            # reporting a failure. Shown only when fwupd reported one - a device
+            # with no serial is common and not a fault.
+            if device.get("serial"):
+                row.set_subtitle_selectable(True)
+                sub = row.get_subtitle()
+                row.set_subtitle(f"{sub}\nserial {device['serial']}"
+                                 if sub else f"serial {device['serial']}")
             self._add(self._devices, row)
 
     def _render_updates(self, payload: dict) -> None:

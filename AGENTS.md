@@ -1520,6 +1520,61 @@ image is itself worth a look.
   over, so monthly scrubs simply stop. Whoever implements the scrub/balance
   actions must confirm the unit exists (`systemctl cat btrfs-scrub.service`)
   rather than trust the name.
+- **A backend-vs-UI coverage audit found the same class twice more, and one
+  gap that was a silent wrong answer. Fixed 2026-10-10.** Every JSON contract
+  Cassini reads was checked field-by-field against the emitter's own code, not
+  against the interface table above: `shani-deploy --status --json` 14/14,
+  `shani-health --verify` and the report modes all fields, `--list-backups`
+  6/6, `--storage-info` (the generic report shape, not a bespoke emitter),
+  `fwupdmgr get-devices`/`get-updates`, and systemd's list JSON. Three real
+  gaps, all now closed:
+
+  * **`gen-efi`'s `luks_device` was emitted and dropped**, while the page
+    answered "is this encrypted" from a hardcoded
+    `MAPPER = "/dev/mapper/shani_root"`. A machine whose mapper were named
+    anything else would report encryption from a path that does not exist. The
+    field is now an "Encryption details" row, so gen-efi's answer is on screen
+    *beside* the mapper the page checked and a disagreement is visible instead
+    of resolved by whichever source won. The two other unread fields are
+    deliberate and now say so in the code: `encrypted` is answered from the
+    mapper because that runs unprivileged while the page is built, before any
+    privileged read returns; `tpm2_present` is answered from the
+    `systemd-analyze has-tpm2` probe because it can *fail* and a boolean read
+    out of a document cannot tell "no chip" from "we could not ask".
+  * **`fwupdmgr`'s `Serial` and `UpdateState` were emitted and dropped.**
+    `Serial` is the one thing that distinguishes two identical SSDs in one
+    machine, and `UpdateState` is fwupd's own verdict (`success`, `failed`,
+    `needs-reboot`) on the last update it attempted. Both are now read and
+    rendered, each only when the tool reported one — a device with no serial is
+    common and rendering "unknown" would be a claim fwupd never made.
+  * **`shani-deploy --download-only` was offered by the script and called by
+    nothing.** It is now a Prefetch button, and the one thing it must never do
+    is claim a pending reboot: it installs nothing, and the banner is drawn
+    from `reboot_needed`, which a prefetch does not write.
+
+  **Two things this audit got wrong on the first pass, and running it caught
+  both.** I reported systemd's `ActiveState`, `SubState`, `Id`, `UnitFileState`
+  and `FragmentPath` as read nowhere — they are, but those are
+  `systemctl **show**` property names. The **list** JSON uses short keys
+  (`unit`, `active`, `sub`, `description`, `load`, `unit_file`, `state`,
+  `preset`), which the Services page reads correctly; measuring rather than
+  grepping is what separated them. A parse of `--storage-info` returned an empty
+  field list for the same reason. The one list field genuinely unread is
+  `load`, and that is by design: `TOGGLEABLE = ("enabled", "disabled")` filters
+  the rest.
+
+  **Verified for real, on the stack that ships**: rendered in Arch under
+  **GTK 4.22.5-1 / libadwaita 1.9.4-1 / PyGObject 3.56.3-1**, the three
+  versions the repo already verified against, taken from the workspace's pacman
+  cache rather than the network — `archlinux:latest` resolves 4.24.1/1.10.0,
+  where PyGObject 3.58's override loader asserts at import, so a render there is
+  a render against a stack that does not ship. Read the row labels back out of
+  the widget tree rather than screenshotting, because every group here sits
+  below the fold of a scrolled page and reads as absent from a capture either
+  way. Suite: **2854 passed**, and the four controls (reader drops Serial, page
+  stops rendering the state, prefetch runs `--rollback`, `luks_device` dropped
+  from the tuple) each fail it.
+
 - **B2's four LUKS fields were backend-only until now, and the populated
   encrypted branch has still never run.** `gen-efi tpm2-status --json` grew
   `luks_version`, `luks_cipher`, `luks_kdf` and `luks_keyslots_in_use`; until

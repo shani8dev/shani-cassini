@@ -95,7 +95,19 @@ class UpdatesTab(Gtk.Box):
         self._btn_update = Gtk.Button(label="Update", valign=Gtk.Align.CENTER, visible=False)
         self._btn_update.add_css_class("suggested-action")
         self._btn_update.connect("clicked", lambda *_: self._start_update())
-        for w in (self._spinner, self._btn_check, self._btn_update):
+        # Fetch and verify the image without installing it. shani-deploy has
+        # offered this since it existed and nothing here ever called it, so a
+        # user who wanted the download to happen overnight - or who wanted to
+        # check the image verifies before committing a slot to it - had to use a
+        # terminal. It is the one deploy action that changes nothing, which is
+        # what makes it safe to offer beside the others.
+        self._btn_prefetch = Gtk.Button(label="Prefetch", valign=Gtk.Align.CENTER,
+                                       visible=False)
+        self._btn_prefetch.set_tooltip_text(
+            "Download and verify the update image without installing it. "
+            "The system is not changed.")
+        self._btn_prefetch.connect("clicked", lambda *_: self._prefetch())
+        for w in (self._spinner, self._btn_check, self._btn_prefetch, self._btn_update):
             self._row_update.add_suffix(w)
         upd.add(self._row_update)
         page.append(upd)
@@ -159,7 +171,7 @@ class UpdatesTab(Gtk.Box):
             self._row_version.set_subtitle("Unavailable")
             self._row_update.set_title("Cannot read the system state")
             self._row_update.set_subtitle(err)
-            for b in (self._btn_update, self._btn_rollback):
+            for b in (self._btn_update, self._btn_prefetch, self._btn_rollback):
                 b.set_sensitive(False)
             return
         self._status = st
@@ -273,16 +285,19 @@ class UpdatesTab(Gtk.Box):
             self._row_update.set_title(f"Shanios {ss.pretty_version(remote)} is available")
             self._row_update.set_subtitle(f"You have {ss.pretty_version(ver)} · {channel}")
             self._btn_update.set_visible(True)
+            self._btn_prefetch.set_visible(True)
         elif ua is False:
             self._row_update.set_title("Your system is up to date")
             self._row_update.set_subtitle(f"Newest on {channel}: {ss.pretty_version(remote)}")
             self._btn_update.set_visible(False)
+            self._btn_prefetch.set_visible(False)
         else:
             self._row_update.set_title("Update check did not complete")
             self._row_update.set_subtitle(
                 f"You have {ss.pretty_version(ver)} - the update server did not "
                 f"answer, so this is not a claim that you are up to date")
             self._btn_update.set_visible(False)
+            self._btn_prefetch.set_visible(False)
 
     # --------------------------------------------------------------- actions
     def _on_channel_changed(self, row, _pspec) -> None:
@@ -297,6 +312,26 @@ class UpdatesTab(Gtk.Box):
     def _start_update(self) -> None:
         self._run(ss.inhibited(["pkexec", ss.DEPLOY], "Installing a Shanios update"), "Updating",
                   after=self._after_deploy, show_output=True, phases=ss.DEPLOY_PHASES)
+
+    def _prefetch(self) -> None:
+        """`--download-only`: fetch and verify the image, install nothing.
+
+        It changes no slot, so `after` refreshes rather than claiming a pending
+        reboot - and `show_output=True` because the download is the entire point,
+        with the phase bar driven from the deploy script's own log lines.
+        """
+        self._run(ss.inhibited(["pkexec", ss.DEPLOY, "--download-only"],
+                               "Prefetching a Shanios update"),
+                  "Prefetching", after=self._after_prefetch,
+                  show_output=True, phases=ss.DEPLOY_PHASES)
+
+    def _after_prefetch(self, ok: bool) -> None:
+        # Never the restart banner: nothing was installed, so there is nothing
+        # to restart into. Claiming one here would be the "invent data for an
+        # empty state" failure this repo refuses.
+        self.refresh(check=True)
+        if ok:
+            self._toast("Update image downloaded and verified — not installed")
 
     def _confirm_rollback(self) -> None:
         prev = self._status.get("previous_slot") or "the other slot"
