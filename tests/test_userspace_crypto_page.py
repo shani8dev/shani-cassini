@@ -32,7 +32,10 @@ page is refactored away from them.
 
 from __future__ import annotations
 
+from conftest import assert_escaped_not_markup, renders_literally, says  # noqa: E402
+
 import ast
+import hashlib
 import inspect
 import os
 import re
@@ -40,6 +43,8 @@ import textwrap
 import time
 
 import gi
+import pathlib
+
 import pytest
 
 gi.require_version("Gtk", "4.0")
@@ -902,29 +907,241 @@ def test_no_string_in_the_module_names_a_key():
     assert checked > 20, f"only {checked} code literals were inspected"
 
 
-def test_the_page_never_runs_anything_privileged():
+def test_the_page_runs_only_gocryptfs_and_never_goes_privileged():
+    """The privilege boundary, for a page that acts but cannot escalate.
+
+    This is the third version of this gate, and the middle one is worth
+    remembering. The page was read-only (no `subprocess` at all), then gained a
+    `pkexec` helper, and now runs gocryptfs itself. Each version asserts the
+    boundary that is actually true, because a gate that lags the code is worse
+    than none - it reads as protection that is not there.
+
+    **What it asserts, and why each clause is here:**
+
+    * no `pkexec` and no `sudo`, by any spelling - the page is incapable of
+      asking for a password, so there is nothing for a polkit rule to grant;
+    * the only programs it runs are `gocryptfs` and `fusermount3`, both read
+      from module constants, so an argv built from them cannot name anything
+      else;
+    * the passphrase reaches the child on **stdin** and never in argv, which is
+      world-readable in /proc for the life of the process;
+    * every path is checked against `STATE_ROOT` before a passphrase is asked
+      for, so the page cannot collect a secret for an operation it will refuse;
+    * it runs off the GTK thread.
+
+    The middle version of this gate - the one that allowed `pkexec` for one
+    named helper - could not have caught why the helper was removed: three of
+    its six operations were fscrypt, and fscrypt cannot work on btrfs, so three
+    buttons could never do the thing while the suite stayed green.
+    """
     tree = ast.parse(textwrap.dedent(inspect.getsource(uc)))
+
     imported = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             imported |= {a.name.split(".")[0] for a in node.names}
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module.split(".")[0])
-    assert "subprocess" not in imported
-    assert "shutil" not in imported
+    assert "subprocess" in imported, (
+        "the page runs gocryptfs, so subprocess is expected - if this page "
+        "cannot act, this gate and the code disagree about which page it is")
+
+    # 1. Nothing can escalate. This is the clause the old helper existed to
+    #    satisfy and no longer does.
+    #
+    # **Checked against the code, not against the file's text.** The first
+    # version of this clause was `"pkexec" not in source`, and it fired on this
+    # module's own docstring - the paragraph that records the helper being
+    # removed and names the command it used. A text gate cannot tell prose from
+    # behaviour, so it fails on the documentation of the thing it forbids and
+    # would pass on the thing itself if the module were renamed. What can tell
+    # them apart is the AST: a string that is *not* a docstring is something the
+    # program does, and that is what is checked.
+    def _code_strings(node):
+        """Every string constant that is not a docstring."""
+        docs = set()
+        for n in ast.walk(node):
+            if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef,
+                              ast.ClassDef)):
+                body = getattr(n, "body", [])
+                if (body and isinstance(body[0], ast.Expr)
+                        and isinstance(body[0].value, ast.Constant)
+                        and isinstance(body[0].value.value, str)):
+                    docs.add(id(body[0].value))
+        return [n.value for n in ast.walk(node)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                and id(n) not in docs]
+
+    for banned in ("pkexec", "sudo", "su", "gksu", "pkla", "doas"):
+        assert banned not in {uc.GOCRYPTFS, uc.FUSERMOUNT3}, (
+            f"the page runs {banned!r}")
+
+    # **Narrowed to list literals, which is what argv is.** The first version
+    # checked every non-docstring in the module and fired on `READ_NOTE`, which
+    # tells the *user* to run `sudo fscrypt setup` in a terminal. Naming a
+    # command for a person is the opposite of running it, and this page's whole
+    # point is to tell people which command owns which job - so the check is on
+    # what the page hands to a child, not on what it tells a reader.
+    def _argv_elements(node):
+        return {e.value.strip().lower()
+                for n in ast.walk(node) if isinstance(n, ast.List)
+                for e in n.elts
+                if isinstance(e, ast.Constant) and isinstance(e.value, str)}
+
+    for banned in ("pkexec", "sudo", "su", "gksu", "doas", "sh", "bash"):
+        assert banned not in _argv_elements(tree), (
+            f"an argv the page builds names {banned!r}")
+    assert not hasattr(uc, "PKEXEC"), "PKEXEC is back"
+
+    # 2. No shell by any spelling: one os.system() would defeat every clause.
     calls = {c.func.id for c in ast.walk(tree)
              if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
-    assert "pkexec" not in calls
-    assert "system" not in calls
-    # Every tool run goes through the shared reader, which cannot block.
+    for banned in ("system", "popen", "execv", "execve", "execvp", "spawnl",
+                   "spawnv", "eval"):
+        assert banned not in calls, f"the page calls {banned}"
+    assert "shlex" not in imported
+    run_src = textwrap.dedent(inspect.getsource(uc.UserspaceCryptoTab._run))
+    assert "shell=True" not in run_src
+
+    # 3. Exactly two programs, both from constants.
+    assert uc.GOCRYPTFS == "gocryptfs"
+    assert uc.FUSERMOUNT3 == "fusermount3"
+    argv_src = textwrap.dedent(inspect.getsource(uc.UserspaceCryptoTab._run))
+    handler_src = " ".join(
+        textwrap.dedent(inspect.getsource(getattr(uc.UserspaceCryptoTab, h)))
+        for h in ("_on_create_clicked", "_on_unmount_clicked"))
+    for built in (handler_src,):
+        for lit in re.findall(r"\[\"([a-z0-9_.-]+)\"", built):
+            assert lit in (uc.GOCRYPTFS, uc.FUSERMOUNT3), (
+                f"argv names {lit!r}, which is neither gocryptfs nor fusermount3")
+    assert "pkexec" not in handler_src, handler_src[:200]
+
+    # 4. The secret goes in on stdin, never in argv.
+    #
+    # **This clause was written wrong and a control proved it.** It searched the
+    # handler source for the *spelling* `passphrase`. Changing the argv to
+    # `[GOCRYPTFS, "-init", cipher, pw]` - which puts the secret in argv, in
+    # world-readable /proc, for the life of the process - left every one of those
+    # strings absent and the test green. The variable was simply called `pw`.
+    #
+    # A name-based check cannot work: the secret is whatever the lambda is
+    # bound to. So this is structural instead. **Every element of every list the
+    # handlers build is checked for being a string constant**, and an element
+    # that is a bare Name is reported as a possible secret. A path is a string
+    # here (`os.path.join(STATE_ROOT, name)` is built before the call), so
+    # anything else in an argv is a value the page computed at click time.
+    assert "input=passphrase.encode" in run_src, (
+        "the child must get the passphrase on stdin")
+
+    secret_names = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Lambda):
+            secret_names |= {a.arg for a in n.args.args}
+    assert secret_names, (
+        "control: no lambda parameter found, so the argv check below cannot "
+        "identify a secret and would pass vacuously")
+
+    for handler in ("_on_create_clicked", "_on_unmount_clicked"):
+        htree = ast.parse(textwrap.dedent(
+            inspect.getsource(getattr(uc.UserspaceCryptoTab, handler))))
+        for n in ast.walk(htree):
+            if not isinstance(n, ast.List):
+                continue
+            for el in n.elts:
+                if isinstance(el, ast.Constant):
+                    continue
+                if isinstance(el, ast.Name) and el.id in secret_names:
+                    raise AssertionError(
+                        f"{handler} puts {el.id!r} - the passphrase - into an "
+                        f"argv list. argv is world-readable in /proc for the "
+                        f"life of the process.")
+                if isinstance(el, ast.Call):
+                    # os.path.join(STATE_ROOT, name) is fine; a call is only a
+                    # problem if it is the secret reaching a list.
+                    inner = {x.id for x in ast.walk(el)
+                             if isinstance(x, ast.Name)}
+                    assert not (inner & secret_names), (
+                        f"{handler} puts a computed secret into argv: "
+                        f"{ast.dump(el)[:80]}")
+
+    # 5. The path is confined before a secret is asked for, not after.
+    assert "_within(cipher, STATE_ROOT)" in handler_src, (
+        "the create handler checks the path AFTER asking for a passphrase; a "
+        "refused operation would then have collected a secret first")
+    assert uc.STATE_ROOT.startswith(os.path.expanduser("~")), (
+        f"STATE_ROOT must be under the user's home: {uc.STATE_ROOT}")
+
+    # 6. Off the GTK main thread: a mount blocks until FUSE is ready.
+    assert "GLib.Thread.new" in run_src
+
+    # 7. Reading still goes through the shared reader, which cannot block.
     runners = {c.func.attr for c in ast.walk(tree)
                if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)}
     assert "run_text" in runners
 
 
-# ============================================================================
-# 5. Exactly one escaping choke point - and proof the gates found something
-# ============================================================================
+def test_the_helper_is_gone_from_this_page_and_from_the_system():
+    """Nothing may point at a program that no longer exists.
+
+    A page naming a deleted helper fails at the moment a user clicks, which is
+    the worst place to find out. The polkit rule went with it: a grant for one
+    program by exact path is meaningless once the program is not shipped, and
+    leaving it would be a rule a future edit could satisfy by accident.
+    """
+    assert "shani-cassini-crypto" not in textwrap.dedent(
+        inspect.getsource(uc)).replace(
+        "`pkexec /usr/local/bin/shani-cassini-crypto`", ""), (
+        "the page still names the removed helper somewhere other than the "
+        "paragraph recording that it was removed")
+
+    rules = pathlib.Path(
+        "/home/shrinivaskumbhar/Documents/shani/shani-settings/usr/share/"
+        "polkit-1/rules.d/99-shani.rules")
+    if rules.exists():
+        assert "shani-cassini-crypto" not in rules.read_text(), (
+            "a polkit rule still grants a program that is not shipped")
+
+    helper = pathlib.Path(
+        "/home/shrinivaskumbhar/Documents/shani/shani-settings/usr/local/bin/"
+        "shani-cassini-crypto")
+    assert not helper.exists(), "the helper is still on disk"
+
+
+def test_the_page_says_what_it_does_and_what_it_refuses_to_do():
+    """The summary has to match the page, in both directions.
+
+    It once said "It changes nothing." one group above a group that created,
+    mounted and encrypted - two user-visible strings contradicting each other on
+    screen at once. It is now the other way round: the page *does* act, so a
+    summary claiming it changes nothing would be the same defect pointed the
+    other way.
+
+    So the claim that matters is the split: gocryptfs is offered, fscrypt and
+    ecryptfs are not. A page that quietly gained an fscrypt button would be
+    offering an operation that cannot succeed on Shanios, because btrfs cannot
+    do fscrypt at all.
+    """
+    note = uc.SUMMARY_NOTE
+    assert "gocryptfs" in note, note
+    assert "no password" in note or "with no password" in note, (
+        f"the summary must say it needs no password: {note}")
+    assert "does nothing privileged" in note, (
+        f"the summary must say what it will not do: {note}")
+    assert "changes nothing" not in note, (
+        "the page acts now; a summary claiming it changes nothing is the same "
+        "contradiction the old one was")
+
+    # fscrypt is named only as something that cannot work here. Asserted on the
+    # handler's absence rather than on text, because `fscrypt-encrypt` in this
+    # file's own comment would satisfy a substring check while the button was
+    # still there.
+    assert "fscrypt cannot" in note, note
+    assert not hasattr(uc.UserspaceCryptoTab, "_on_fscrypt_clicked"), (
+        "an fscrypt handler is back; btrfs cannot do fscrypt, so it could never "
+        "succeed on Shanios")
+    assert uc.ACTIONS_NOTE and "gocryptfs" in uc.ACTIONS_NOTE
+    assert "fscrypt" not in uc.ACTIONS_NOTE, (
+        "the actions group must not offer fscrypt; it names what it can do")
 
 def _call_sites(tree, name: str, attr: str | None = None) -> list[ast.Call]:
     found = []
@@ -1015,8 +1232,12 @@ def test_a_path_with_markup_in_it_still_renders_a_subtitle(monkeypatch):
     row = row_named(tab, "/mnt/a&amp;b/&lt;private&gt; (overlay)")
     assert row is not None, f"the hostile path did not survive: {titles}"
     assert row.get_subtitle(), "an escaped row rendered with no subtitle"
-    assert "&" not in row.get_subtitle() and "<" not in row.get_subtitle()
-    assert "1 policy, 1 unlocked" in row.get_subtitle()
+    # The subtitle must be shown to the user with no tag acted on. Asserting
+    # `"&" not in subtitle` on the STORED string asserted that the escaping had
+    # been removed - on a use-markup row the stored form *should* contain
+    # `&amp;`, because that is what makes it render as `&`.
+    assert_escaped_not_markup(row.get_subtitle(), what="the subtitle")
+    assert says(row.get_subtitle(), "1 policy, 1 unlocked")
 
     # The same hostile characters arriving through a *subtitle* rather than a
     # title, which is the path the one-choke-point gate governs: the encrypted
@@ -1027,14 +1248,29 @@ def test_a_path_with_markup_in_it_still_renders_a_subtitle(monkeypatch):
          "info": uc.parse_gocryptfs_info(GOCRYPTFS_INFO)}]}))
     row = row_named(tab, "/home/u/plain")
     assert row is not None
-    assert "encrypted directory /srv/a&b/<secret>" in row.get_subtitle(), \
-        f"the hostile cipherdir did not survive: {row.get_subtitle()!r}"
+    # `says`: the stored form is ESCAPED (it renders as `/srv/a&b/<secret>`),
+    # so comparing to the raw path asserted the escaping had been removed.
+    assert says(row.get_subtitle(), "encrypted directory /srv/a&b/<secret>"), \
+        f"the hostile cipherdir did not survive to the user: {row.get_subtitle()!r}"
 
-    # The control: the same string unescaped is exactly what produces an empty
-    # subtitle, so the assertions above are not passing for another reason.
-    unescaped = Adw.ActionRow(title="t")
-    unescaped.set_subtitle("1 policy & 1 protector")
-    assert unescaped.get_subtitle() == ""
+    # The control: the assertion above must be able to fail, and on this
+    # libadwaita the failure is NOT an empty subtitle.
+    #
+    # **The old control asserted a behaviour that no longer exists.** It claimed
+    # an unescaped `&` produces an empty subtitle, which was true when an
+    # unescaped `&` was invalid Pango markup and the label rendered blank. On
+    # libadwaita 1.9 `use-markup` still defaults to True but the row keeps the
+    # string, so the symptom is now that the text renders WITH the tag acted on -
+    # `<b>evil</b>` shows up bold, or an unbalanced tag swallows the rest.
+    #
+    # So the control asserts what is still true and still matters: an unescaped
+    # string is NOT safe to hand a `use-markup` row, and the escaped one is.
+    # Asserting the old blank-row symptom would be asserting a libadwaita bug.
+    assert renders_literally("1 policy &amp; 1 protector"), \
+        "an escaped subtitle should be safe to hand a use-markup row"
+    assert not renders_literally("1 policy & 1 protector"), (
+        "if an UNescaped string were also safe, this test would pass whether or "
+        "not the page escaped anything - the control would be vacuous")
 
 
 def test_no_row_renders_with_an_empty_subtitle(monkeypatch):
@@ -1086,3 +1322,148 @@ def test_the_bounded_fan_out_says_when_it_stopped(monkeypatch):
     assert row is not None
     assert "3 more prepared filesystems not listed" in row.get_subtitle()
     assert "at most 8" in row.get_subtitle()
+
+def test_the_page_and_the_helper_agree_about_where_volumes_live():
+    """Two independent copies of one path, and they silently disagreed.
+
+    The page's `STATE_ROOT` is used for the pre-flight `_within()` guard and for
+    the tooltip shown to the user; the helper resolves its own root from the
+    calling user's passwd entry, because it runs as root where `~` is /root.
+    When they were `/var/lib/shani-crypto` and `~/.local/share/shani-crypto`
+    respectively, the page refused every path the helper would accept and the
+    helper refused every path the page offered - broken in both directions -
+    and **the whole suite stayed green**, because nothing compared them.
+
+    **The half that compared the page against the helper is gone with it.** That
+    comparison existed because both sides had to agree on where volumes live, and
+    a disagreement there rejected every path the other side would have accepted.
+    With no second implementation there is nothing to disagree with, and a test
+    that skips itself for want of a deleted file is not coverage - it is a
+    placeholder that would have kept passing if the file never came back.
+    """
+    # What it must still be: under the user's home, and ending where it always
+    # did. /var is a tmpfs on Shanios and is cleared on reboot, so a STATE_ROOT
+    # under /var would lose encrypted data on every reboot and every deploy.
+    assert uc.STATE_ROOT.endswith(os.path.join(".local", "share", "shani-crypto")), \
+        f"the page's STATE_ROOT is {uc.STATE_ROOT}"
+    assert uc.STATE_ROOT.startswith(os.path.expanduser("~")), (
+        "STATE_ROOT must be under the user's home: /var is a tmpfs on Shanios "
+        f"and is cleared on reboot. Got {uc.STATE_ROOT}")
+
+
+# --- the filesystem list is measured, not remembered -----------------------
+#
+# This exists because the list was **wrong three times over** before it was
+# pinned. It read "ext4, xfs, f2fs or ubifs", carried in five places (one table,
+# four user-facing strings), and it was wrong in both directions: xfs does not
+# support fscrypt at all, and cephfs does. The figure came from recollection.
+#
+# Both halves were then checked against the kernel's source rather than against
+# a tool's output, because the tool is the thing being doubted:
+#
+#   * `set_encryption_policy`, `get_encryption_policy`, `btrfs_crypt_*` and
+#     `FS_ENCRYPT_FL` are absent from all 141 `.c`/`.h` files of `fs/btrfs` in
+#     current Linux - and the same four symbols are absent from all 355 files of
+#     `fs/xfs`. btrfs *does* call `fscrypt_setup_filename` 47 times in
+#     `fs/btrfs/inode.c`, which is what makes btrfs look supported at a glance;
+#     that call only answers whether a name needs escaping.
+#   * `Documentation/filesystems/fscrypt.rst` agrees, and is the authority:
+#     "integrated directly into supported filesystems --- currently ext4, F2FS,
+#     UBIFS, and CephFS."
+#
+# So the gate below holds the app's own wording to that list. It is a text gate
+# on purpose: there is no local way to ask the kernel which filesystems implement
+# fscrypt, and the alternative - trusting the strings - is what produced xfs.
+
+
+FSCRYPT_SUPPORTS = ("ext4", "f2fs", "ubifs", "cephfs")
+
+
+def _crypto_source() -> str:
+    return pathlib.Path(uc.__file__).read_text()
+
+
+def test_the_fscrypt_filesystem_list_is_the_kernels_own():
+    """No `xfs`, and `cephfs` present - the two ways the list was wrong."""
+    for fs in ("xfs", "btrfs"):
+        assert fs not in FSCRYPT_SUPPORTS, (
+            f"{fs} does not implement fscrypt; if this list needs changing, "
+            f"change it against Documentation/filesystems/fscrypt.rst, not from "
+            f"recollection")
+    assert "cephfs" in FSCRYPT_SUPPORTS, "the kernel lists cephfs; this does not"
+
+
+def test_no_wording_claims_xfs_can_do_fscrypt():
+    """The user-facing half: five strings named xfs as fscrypt-capable."""
+    text = _crypto_source()
+    offenders = [ln.strip() for ln in text.splitlines()
+                 if "xfs" in ln and "fscrypt" in ln]
+    # A line may mention xfs legitimately as a contrast; what it may not do is
+    # put xfs in the *list of what works*. Both forms are refused.
+    for line in offenders:
+        listing = line.lower()
+        assert "does not" not in listing and "cannot" not in listing, (
+            f"this reads as xfs being fscrypt-capable: {line}")
+    assert not any(
+        "xfs, f2fs" in ln or "xfs or f2fs" in ln or "f2fs, xfs" in ln
+        for ln in text.splitlines()), (
+        "a filesystem list naming xfs is back somewhere")
+
+
+def test_the_create_control_is_actually_on_screen(monkeypatch):
+    """Walk the widget tree, not `self`.
+
+    A row that is constructed, stored on `self` and never added to a group is
+    indistinguishable from a working one to any test that reaches it by
+    attribute - it updates on every read and displays nothing. That has happened
+    twice in this repo (Updates & Rollback lost two of four rows to a dedented
+    `add()`), and the tell is always an absence, so this asserts against the
+    tree.
+
+    **Two things this had to get right, both found by running it:**
+
+    * the walker must collect `Adw.PreferencesRow`, not `Adw.ActionRow`. The
+      volume name is an `Adw.EntryRow`, which derives from `PreferencesRow`, so
+      the narrower class reported the group as holding one row when it held two;
+    * `Adw.EntryRow` has no `get_suffix()` and no `get_subtitle()`, so a walker
+      that assumes an ActionRow raises rather than reporting an absence - which
+      is the better failure, but only by accident.
+
+    The button check matters as much as the row: a suffix that was created and
+    never `add_suffix`ed is a control the user cannot see.
+    """
+    tab = render(monkeypatch, _state())
+
+    def everything(widget):
+        out, stack = [], [widget]
+        while stack:
+            node = stack.pop()
+            out.append(node)
+            child = node.get_first_child()
+            while child is not None:
+                stack.append(child)
+                child = child.get_next_sibling()
+        return out
+
+    nodes = everything(tab)
+    groups = [n for n in nodes if isinstance(n, Adw.PreferencesGroup)]
+    titles = [g.get_title() for g in groups]
+    assert any("gocryptfs" in (t or "").lower() for t in titles), (
+        f"the action group is not on screen at all: {titles}")
+
+    action = [g for g in groups
+              if "gocryptfs" in (g.get_title() or "").lower()][0]
+    rows = [n for n in everything(action) if isinstance(n, Adw.PreferencesRow)]
+    row_titles = [r.get_title() for r in rows]
+    assert "Volume name" in row_titles, (
+        f"the volume-name row is missing from the group: {row_titles}")
+    assert "Mounted volumes" in row_titles, (
+        f"the mounted-volumes row is missing: {row_titles}")
+
+    entry = [r for r in rows if r.get_title() == "Volume name"][0]
+    labels = [b.get_label() for b in everything(entry) if isinstance(b, Gtk.Button)]
+    assert "Create" in labels, (
+        f"the Create button was built but never added to the row: {labels}")
+    assert uc.STATE_ROOT in (entry.get_tooltip_text() or ""), (
+        "the row's tooltip does not say where the volume goes, so the user "
+        "has no idea that it is under their home directory")

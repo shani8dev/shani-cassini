@@ -148,7 +148,10 @@ class TestNotebook:
                for group, subs in SECTIONS]
         assert got == self.EXPECTED
         flat = [t for _g, subs in self.EXPECTED for _s, ts in subs for t in ts]
-        assert nb.get_n_pages() == len(flat) == 57, len(flat)
+        # 58 pages: WireGuard was added to Network > Reachability for the per-interface
+        # wg-quick@ switches. Kept as a literal rather than len(flat) alone so a
+        # page silently vanishing from SECTIONS fails here instead of passing.
+        assert nb.get_n_pages() == len(flat) == 58, len(flat)
         assert nb.page_titles() == flat
 
     def test_no_group_is_a_wall_again(self):

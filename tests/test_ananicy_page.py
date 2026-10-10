@@ -468,9 +468,22 @@ class TestTheFixturesAreTheCaptures:
         A hardcoded `/etc/ananicy.d` would be a guess unless it is in the
         program. Both literals are, and they are asserted here rather than left
         as a comment.
+
+        **Read out of the same tarball as the unit file, which is what this test
+        used to forget.** It opened `/tmp/opencode/ananicy/root/usr/bin/ananicy-cpp`
+        - a scratch directory unpacked by whichever session happened to create it.
+        That path does not survive the session, so the test raised
+        `FileNotFoundError` on every run afterwards while its sibling beside it
+        read `_PKG` and stayed green: the fixture was a capture, but the reader
+        of the capture was pinned to a temporary. Extracting from `_PKG` makes it
+        depend on the only thing the test actually claims to be about - the
+        package's own bytes - and inherit the same `skipif` for its absence.
         """
-        with open("/tmp/opencode/ananicy/root/usr/bin/ananicy-cpp", "rb") as fh:
-            blob = fh.read()
+        blob = subprocess.run(
+            ["tar", "--use-compress-program=unzstd", "-xOf", _PKG,
+             "usr/bin/ananicy-cpp"],
+            capture_output=True, check=True).stdout
+        assert blob, "the tarball's usr/bin/ananicy-cpp extracted as empty"
         for literal in (ananicy_mod.CONFIG_DIR, ananicy_mod.CONFIG_FILE):
             assert literal.encode() in blob, literal
         for key in ananicy_mod.APPLY_KEYS:

@@ -202,10 +202,67 @@ Shanios ships Arch (libadwaita 1.9.4). Measured, same inputs, both stacks:
 | `"a & b"` (raw `&`) | **`''`** | `'a & b'` |
 
 So a subtitle containing `&amp;` asserts one way on CI and the other way on the
-distribution the app ships on. That accounts for most of the 38 failures
+distribution the app ships on. That accounted for most of the 38 failures
 `slot-test blue repo-pytest` reported on 2026-10-04, and **they are test-premise
-failures, not defects** — both forms render as `snapd's` for the user. They need
-re-deciding one test at a time; do not "fix" them by loosening the page.
+failures, not defects** — both forms render as `snapd's` for the user. They needed
+re-deciding one test at a time, done 2026-10-09; do not "fix" them by loosening
+the page.
+
+### That re-deciding is finished: use the four helpers in `tests/conftest.py`
+
+**All 16 pre-existing failures are gone** (suite 2758 → 2775 passed, 16 → 0), and
+11 of them were one mistake repeated: the test asserted that an **escaped** string
+is `in` a getter that returns the string **as stored**, which on 1.9 is escaped.
+Read as prose, those assertions said "the hostile string is shown to the user" and
+mechanically said "the escaping was removed" — the *opposite*. They had been
+passing on 1.5 only because an unescaped `&` blanked the row there, so a blank row
+and a hostile row were told apart by their damage.
+
+Four helpers in `tests/conftest.py` now carry the property instead, all
+version-independent:
+
+| helper | asks | replaces |
+|---|---|---|
+| `renders_literally(s)` | would Pango find a tag? strip entities, then no `<`/`&` left | `assert "&" not in row.get_subtitle()` |
+| `assert_escaped_not_markup(s, what=…)` | `renders_literally`, with a message naming the row | bare `assert` on the stored form |
+| `literal_text(s)` | `html.unescape` — the text **as a reader sees it** | `.startswith(raw)` on a stored value |
+| `says(haystack, needle)` | `needle in literal_text(haystack)` | `needle in row.get_title()` |
+
+Two things that were **not** how they looked:
+
+- **`assert "&amp;" not in stored` is wrong, not right.** On a `use-markup` row
+  the stored form *should* contain `&amp;` — that is what makes it render as `&`.
+  A test asserting its absence asserts a defect. Two such lines were deleted
+  rather than inverted (`test_biometrics_escapes_every_string_fprintd_hands_over`),
+  along with the comment above one of them that said the opposite.
+- **One of them was vacuous as well as backwards.** The finger-group assertion
+  read `"&amp;" not in " ".join(titles)` over names like `"Left Index Finger"`,
+  which contain no `&` at all — so it passed whether or not `_esc()` ran. That is
+  the repo's recurring tell, **an absence**, and it looked like coverage of the
+  finger group while covering nothing.
+
+**Three controls asserted an obsolete symptom, and the properties replaced them.**
+"An unescaped `&` produces an empty subtitle" was true when a bare `&` was invalid
+Pango markup. On 1.9 the row keeps the string, so the failure mode is now *the tag
+being acted on* — `<b>evil</b>` shows up bold — not an empty row. Asserting the old
+symptom would be asserting a libadwaita bug. All three
+(`test_userspace_crypto_page.py`, `test_app_versions_page.py`,
+`test_biometrics_…`) now assert that an escaped string is safe and an unescaped
+one is not, which is a control that can still fail.
+
+**All four helpers have their own controls**, run at the time they were written:
+`says` returns `False` for an absent needle, `renders_literally` returns `False`
+for `"a & b"` and `"<b>x</b>"`, `assert_escaped_not_markup` raises when handed
+markup, and `literal_text` round-trips `&amp; &lt; &apos; &quot; &#65;`. Without
+those, 11 tests would be asking a helper that always answers yes. One page-side
+control too: removing `_esc()` from the smartcard account row
+(`smartcard.py:386`) fails `test_smartcard_page.py` on `assert_escaped_not_markup`
+and nothing else.
+
+**What this does not cover, unchanged:** `renders_literally` inspects the *stored*
+string, so it cannot see a page that escapes correctly at build time and is then
+handed the result somewhere unescaped. The rendered-label gate below is what
+covers that half, and it is still the gate to reach for.
 
 **The dangerous half is where a raw `&`/`<`/`>` shows up**, because it breaks the
 row either way and the *observable* moves:
@@ -312,17 +369,17 @@ built image's package list, and absent from GNOME's 28 and Plasma's 62):
 
 | Subsystem | Shipped as | Cassini |
 |---|---|---|
-| UPS | `apcupsd` | **page added 2026-10-03** |
+| UPS | `apcupsd` | **page added 2026-10-03**, and **given a shutdown-policy editor 2026-10-09**: `BATTERYLEVEL`/`MINUTES`/`TIMEOUT`/`KILLDELAY` are written into `/etc/apcupsd/apcupsd.conf` through `shani-cassini-save --target apcupsd_conf`. **Edited in place, never shipped** — `UPSCABLE`/`UPSTYPE`/`DEVICE` are per-machine, so no default would be right on someone else's hardware. The device lines are deliberately *not* offered; a wrong one is a silently dead UPS |
 | Outbound mail | `exim` | **page added 2026-10-03** |
 | Local DNS resolver | `bind`, `dnsmasq`, `openresolv`, `dnscrypt-proxy`, `systemd-resolved` | **page added 2026-10-03** |
 | Software RAID | `mdadm` | none |
 | TOTP / 2FA | `oath-toolkit` | none |
 | Password quality | `libpwquality`, `cracklib` | none |
 | zram | `zram-generator` | **row added 2026-10-07** on System Info; the collector had existed unused |
-| Userspace fs encryption | `fscrypt`, `gocryptfs`, `ecryptfs-utils` | Encryption covers LUKS/TPM only |
+| Userspace fs encryption | `fscrypt`, `gocryptfs`, `ecryptfs-utils` | **page added** (Userspace Encryption): reports all three, and can create/mount/unmount a gocryptfs volume unprivileged. **fscrypt is report-only and cannot ever act here — btrfs does not support it** (see the crypto-helper entry under Known issues) |
 | CPU microcode | `amd-ucode`, `intel-ucode` | Firmware is `fwupd` only |
 | EFI boot entries | `efibootmgr` | none (`bootctl` still unshown) |
-| IRQ balancing | `irqbalance` | none |
+| IRQ balancing | `irqbalance` | **page added**, and **given a banlist editor 2026-10-09**: `IRQBALANCE_BANNED_CPULIST` is written into `/etc/default/irqbalance`, which the package does not ship at all (it has no `/etc` directory). **`IRQBALANCE_ARGS` is refused by the helper and never offered** — the unit uses an *unquoted* `$IRQBALANCE_ARGS` and systemd passes an unquoted `$VAR` as exactly one argument, so any flags in it arrive as a single unrecognised option |
 | Process priority | `ananicy-cpp` | none |
 | polkit policies | `polkit` | none |
 | Camera | `libcamera`, `v4l-utils` | none |
@@ -339,6 +396,145 @@ not a resolver, so the DNS row above is real. `bind` shipping on a workstation
 image is itself worth a look.
 
 ## Known issues (current state, 2026-10-01)
+
+- **Two of the 16 pre-existing failures were not the libadwaita class at all, and
+  one of them was a false claim in the source, not just in the test. Fixed
+  2026-10-09.** The escaping work above took 14 of 16; these are the other two,
+  and they fail for unrelated reasons worth recording separately.
+
+  - **A per-distribution claim about `avahi-daemon.conf` was wrong, in a
+    docstring that argued the parser existed because of it.** `parse_avahi_conf`
+    and two docstrings claimed *Ubuntu ships `enable-wide-area=yes`
+    **uncommented** while Arch leaves it commented*, so wide-area DNS unicast was
+    "a fact about this host and not about Shanios". Measured on this host -
+    Ubuntu `avahi-daemon 0.8-18ubuntu1.1` - the file carries
+    `#enable-wide-area=no` **commented, exactly as Arch does**. Two builds of one
+    package's `0.8` series shipping both ways is the whole reason the parser must
+    ask the file rather than the distribution, so the claim was not merely stale,
+    it was arguing *against* the right design. The corrected statement is weaker
+    and true: **6 keys set, 33 commented** on the file measured here, so a reader
+    that kept comments reports 39 configured settings instead of 6.
+    `test_the_parser_agrees_with_the_file_about_which_keys_are_set` now compares
+    the parser's **whole** key set against an independent plain reading of the real
+    file. **The first version of that test could not fail**: it checked only
+    `enable-wide-area`, and a parser that keeps every comment still passes it,
+    because a comment's key is `#enable-wide-area`, not `enable-wide-area` - so the
+    one key under test went *missing* rather than turning up *wrong*. Comparing
+    every key is what a comment-keeping parser breaks; its control was run (the
+    `startswith("#")` guard removed) and reports exactly 39 vs 6.
+
+  - **The ananicy test pinned a fixture's reader to a scratch directory, so it
+    raised `FileNotFoundError` on every run after the session that created it.**
+    `test_the_config_paths_are_in_the_real_binary` opened
+    `/tmp/opencode/ananicy/root/usr/bin/ananicy-cpp` while the test directly
+    beside it read `_PKG`. The *fixture* was a capture, but the reader of the
+    capture was pinned to a temporary that does not survive the session - so the
+    test was green only until the next one, and then failed for a reason that had
+    nothing to do with what it claimed. It now extracts the member from `_PKG` the
+    same way its sibling does and inherits the same `skipif` for the package's
+    absence. Note this is the **"read your own capture"** half of the rule this
+    file already states for fixtures: the capture must be pinned to its source
+    (`_PKG`), not to wherever it happened to be unpacked.
+
+- **The privileged crypto helper was deleted, and the working half of it came
+  back unprivileged. 2026-10-09 — this is the reasoning, because the mistake was
+  mine and the shape of it is the reusable part.**
+
+  The page shipped six actions through `pkexec /usr/local/bin/shani-cassini-crypto`.
+  That helper split **exactly** on a line nobody had checked:
+
+  | operations | works on btrfs | needs root |
+  |---|---|---|
+  | `gocryptfs-init` / `-mount` / `-unmount` | **yes** (FUSE) | **no** |
+  | `fscrypt-encrypt` / `-unlock` / `-lock` | **no** | yes |
+
+  **So the privilege existed only to serve the half that could never work.** Three
+  buttons collected a passphrase and then hit `ENOTTY`, because fscrypt cannot do
+  btrfs and btrfs is what Shanios root *is* (`os-installer-config/scripts/install.sh`
+  runs `mkfs.btrfs`). The other three needed no root at all, and were paying for
+  a helper, a polkit grant and a subprocess seam they did not use.
+
+  **fscrypt's lack of btrfs support is confirmed at the source level, not by
+  asking the tool.** btrfs calls `fscrypt_setup_filename` 47 times in
+  `fs/btrfs/inode.c`, which makes it *look* supported and is not — that call
+  answers whether a **name needs escaping**. The symbols that would constitute
+  support (`set_encryption_policy`, `get_encryption_policy`, `btrfs_crypt_*`,
+  `FS_ENCRYPT_FL`) are absent from all **141** `.c`/`.h` files of `fs/btrfs` in
+  current Linux, and the same four are absent from all **355** files of `fs/xfs`.
+  `Documentation/filesystems/fscrypt.rst` agrees: "currently ext4, F2FS, UBIFS,
+  and CephFS". **xfs was in this repo's list before that check**, in five places
+  including four user-facing strings — it does not support fscrypt at all, and
+  `cephfs`, which does, was missing. The list came from recollection and was
+  wrong in both directions.
+
+  **Re-measured unprivileged as uid 1001, no capabilities**, `/dev/fuse` present
+  and `fusermount3` setuid-root: `gocryptfs -init` exit 0 reading the passphrase
+  off the pipe, mount exit 0 (`fuse.gocryptfs`), read/write through it, plaintext
+  absent from the cipherdir under an encrypted name (`qJqwnK6_VmH3zdDnot_EEw`),
+  `fusermount3 -u` exit 0. So the page now calls `gocryptfs` **itself**, as the
+  user: **no `pkexec`, no helper, no polkit rule.** `shani-settings` is
+  byte-identical to HEAD as a result — the helper and its rule were both
+  uncommitted, so removing them left that repo untouched.
+
+  **What survived the helper, because none of it needed root:** the path confined
+  to `STATE_ROOT`, the passphrase on **stdin** and never argv, and per-failure
+  exit codes instead of one generic error.
+
+  **Three gates, and the middle one is why this went unnoticed.** The gate went
+  read-only → "exactly one named program with a fixed operation list" → "only
+  gocryptfs, never privileged". The middle version was satisfied by a page with
+  three buttons that could never work. **A gate that lags the code reads as
+  protection that is not there** — so each version asserts the boundary that is
+  actually true rather than accumulating allowances.
+
+  **Two gate bugs found by running controls, both in the same session:**
+
+  - The "no privilege" clause was `"pkexec" not in source`, and it fired on this
+    module's own docstring — the paragraph recording the helper's removal. **A
+    text gate cannot tell prose from behaviour**: it fails on the documentation
+    of the thing it forbids and would pass on the thing itself. It now reads the
+    AST.
+  - Then it over-corrected and rejected `READ_NOTE`, which tells the *user* to
+    run `sudo fscrypt setup` in a terminal. **Naming a command for a person is
+    the opposite of running it**, and this page's job is to say which command owns
+    which job. It is now narrowed to list literals, which is what argv is.
+  - The passphrase clause searched for the *spelling* `passphrase`. Changing argv
+    to `[GOCRYPTFS, "-init", cipher, pw]` — the secret in world-readable
+    `/proc` — left every one of those strings absent and the test **green**.
+    **A name-based check cannot work: the secret is whatever the lambda is bound
+    to.** It is structural now: every element of every argv list is checked, and
+    three variants (bare name, `str(pw)`, reading it from argv) each fail it.
+
+- **A false filesystem claim reached a second file, in a subsystem that has
+  nothing to do with filesystems. Fixed 2026-10-09.** The WireGuard page's
+  summary said WireGuard "needs ext4, xfs or f2fs, and Shanios root is btrfs,
+  which cannot do it".
+
+  It is **copy-paste from the fscrypt error above** — the identical "ext4, xfs
+  or f2fs" phrasing, which was itself wrong. **WireGuard is a kernel networking
+  subsystem** (`CONFIG_WIREGUARD`) with no filesystem requirement at all, and the
+  page touches only `/etc/wireguard/*.conf` and `systemctl start wg-quick@…`,
+  neither of which cares what filesystem it is on.
+
+  **The cost was not cosmetic.** It told a user on btrfs that the one tunnel
+  they could use does not work on their machine — a false *negative* about a
+  working feature, which stops someone using it. The real limitation (a peer
+  needs a reachable address, and NAT cannot be arranged from a settings page) is
+  kept; only the invented filesystem claim went.
+
+  `tests/test_wireguard_page.py` holds it. That file did not exist before — the
+  page's other tests live in `test_service_toggle_pages.py` — and it is worth
+  noting why this test could not live there: it is not about a boundary or a
+  switch, it is about a sentence, and the existing file is about the former.
+
+  **Its first version could not fail, twice over**, and both are the traps this
+  file keeps recording. It searched the *source* for "reachable", so a control
+  that changed the summary to "routable" stayed green — the word occurs in the
+  module docstring too. It now reads the description off the **built group**.
+  Then even that stayed green on the first control, because the description says
+  "reachable" **twice** and the control replaced only the first. Both were found
+  by running the control rather than by reading the assertion, which is the only
+  reason either was caught.
 
 - **The panel-gap claim for IPv6 privacy and MAC addresses was WRONG, checked
   and corrected 2026-10-07.** The table below and the prose under it record

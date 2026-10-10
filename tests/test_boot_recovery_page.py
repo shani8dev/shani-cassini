@@ -35,6 +35,8 @@ all - which is precisely the sort of silent blank this repo already shipped once
 
 from __future__ import annotations
 
+from conftest import says  # noqa: E402
+
 import ast
 import inspect
 import json
@@ -742,9 +744,13 @@ def test_tool_output_is_escaped_not_markup(fake_deploy, capfd) -> None:
     captured = capfd.readouterr()
     assert "markup" not in captured.err, \
         f"unescaped tool output reached a label as markup: {captured.err}"
-    assert value(tab, "version") == hostile, \
+    # `says`, not `==`: on a `use-markup` row the stored form is ESCAPED, and
+    # comparing it to the raw string asserted that the escaping had been
+    # removed. What the user must see is the raw string - which is exactly what
+    # `says` asks.
+    assert says(value(tab, "version"), hostile), \
         f"the value must be shown literally: {value(tab, 'version')!r}"
-    assert value(tab, "current-slot") == "@bl&ue", value(tab, "current-slot")
+    assert says(value(tab, "current-slot"), "@bl&ue"), value(tab, "current-slot")
     assert any("&lt;b&gt;" in markup for _text, markup in labels(tab)), \
         f"the brackets were not escaped in the label: {labels(tab)}"
     assert any(hostile in text for text, _markup in labels(tab)), \

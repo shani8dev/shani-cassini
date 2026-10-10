@@ -16,7 +16,7 @@ unrelated to each other:
 
 | System | Encrypts | Configuration | Kernel needs |
 |---|---|---|---|
-| `fscrypt` | individual files/directories | `/etc/fscrypt.conf` + a `.fscrypt` directory per filesystem | per-filesystem support (ext4, xfs, f2fs, ubifs) |
+| `fscrypt` | individual files/directories | `/etc/fscrypt.conf` + a `.fscrypt` directory per filesystem | per-filesystem support (ext4, f2fs, ubifs, cephfs) |
 | `gocryptfs` | one whole directory, as a FUSE mount | `gocryptfs.conf` **inside each encrypted directory** | FUSE only |
 | `ecryptfs` | each file, plus optionally its name, in a stacked mount | `~/.ecryptfs/` per user | the `ecryptfs` filesystem |
 
@@ -43,6 +43,21 @@ installed, not recalled:
   ("filesystem type vfat is not supported for fscrypt setup"). So the shipped
   tool, on the shipped filesystem, produces a successful setup that can never
   encrypt anything - which is a state worth naming rather than hiding.
+
+  **Confirmed at the source level, so this does not rest on one tool's output.**
+  btrfs calls `fscrypt_setup_filename` 47 times in `fs/btrfs/inode.c`, which
+  reads like support and is not: that call answers whether a *name needs
+  escaping* and is reached for defensively. The symbols that would constitute
+  support - `set_encryption_policy`, `get_encryption_policy`,
+  `btrfs_crypt_{encrypt,decrypt,read,write}`, `FS_ENCRYPT_FL` - are **absent from
+  all 141 `.c`/`.h` files** in `fs/btrfs` in current Linux. `fs/xfs` was checked
+  the same way across its 355 files and has none of them either, which is why the
+  table above lists `ext4, f2fs, ubifs, cephfs` and not xfs - an earlier version
+  of it did list xfs, on recollection rather than measurement. The kernel's own
+  `Documentation/filesystems/fscrypt.rst` agrees: "integrated directly into
+  supported filesystems --- currently ext4, F2FS, UBIFS, and CephFS". Where a
+  filesystem does not implement it, `FS_IOC_SET_ENCRYPTION_POLICY` returns
+  `ENOTTY`, which is the `Inappropriate ioctl for device` behind the refusal.
 - **`fscrypt status` exits 0 with nothing useful** when no filesystem supports
   encryption, printing `filesystems supporting encryption: 0`, even though its
   own `--help` says "This command will fail if no there is no support for
@@ -77,9 +92,49 @@ contents it reads are four kernel/systemd interfaces, behind a single
 parameters are dropped rather than displayed, even though that command is
 documented as stripping them.
 
-**Read-only.** Nothing here sets anything up, unlocks anything, and no command
-on this page runs privileged; `fscrypt setup`, `gocryptfs -init` and
-`ecryptfs-migrate-home` are named instead.
+**This page is read-only, and that is now its final answer rather than a first
+draft.** It used to be read-only, then gained six actions through
+`pkexec /usr/local/bin/shani-cassini-crypto`, and now has none: the helper was
+removed on 2026-10-09 because the reasoning behind it did not survive contact
+with the kernel.
+
+**Three of the six operations could never run here at all.** They were the
+fscrypt ones - encrypt, unlock, lock - and btrfs, which is what Shanios root
+*is*, cannot do fscrypt. `FS_IOC_SET_ENCRYPTION_POLICY` returns `ENOTTY` there.
+So a third of the surface was a button that collected a passphrase and then
+could not do the thing.
+
+**The other three worked, and removing them is a real cost, recorded here so it
+is not mistaken for a free cleanup.** gocryptfs-init / -mount / -unmount are
+FUSE and run on btrfs perfectly well; that is the whole reason gocryptfs was
+the primary tool. They are gone because the helper was the *only* way to reach
+them, and a helper that also carries three dead operations is a helper that has
+to be privileged, audited and polkit-granted to serve one. So the page names the
+commands in "Doing it yourself" and reports what state each tool is in, which is
+what the rest of this file has always done.
+
+**fscrypt cannot do btrfs, confirmed at the source level rather than by asking
+the tool.** btrfs calls `fscrypt_setup_filename` 47 times in
+`fs/btrfs/inode.c`, which makes it look supported and is not - that call answers
+whether a *name needs escaping*. The symbols that would constitute support
+(`set_encryption_policy`, `get_encryption_policy`, `btrfs_crypt_*`,
+`FS_ENCRYPT_FL`) are absent from all 141 `.c`/`.h` files of `fs/btrfs` in current
+Linux, and the same four are absent from all 355 files of `fs/xfs` - which is why
+xfs was removed from a list that had carried it on recollection.
+`Documentation/filesystems/fscrypt.rst` agrees: "currently ext4, F2FS, UBIFS, and
+CephFS". Note what this costs the *reporting* half too: fscrypt's configuration
+is still read and reported, because a machine with an fscrypt directory on a
+mounted ext4 volume is a real state this page can see and name.
+
+**gocryptfs, for the record, is the tool that works here.** FUSE, so it runs on
+any filesystem including the btrfs Shanios root is, and it needs **no root** -
+init, mount, read/write and unmount were all measured as an unprivileged uid.
+That was measured *before* the helper was built, and it is the fact the helper's
+existence contradicted: a privileged program for work that needed none.
+
+**ecryptfs has no action.** It is deprecated upstream and it is not encrypted by
+default, so the third row stays a reporter; `sudo ecryptfs-migrate-home` is
+named in "Doing it yourself" below.
 """
 
 from __future__ import annotations
@@ -87,6 +142,7 @@ from __future__ import annotations
 import glob
 import logging
 import os
+import subprocess
 import re
 from typing import Callable, Final, Optional
 
@@ -95,6 +151,98 @@ from gi.repository import Adw, GLib, Gtk  # type: ignore
 from shani_cassini import system_status as ss
 
 logger = logging.getLogger(__name__)
+
+# ── the privileged helper ───────────────────────────────────────────────────
+#
+# This page changed from read-only to actionable, which reverses a deliberate
+# position the module docstring used to state and a test used to enforce. Both
+# are replaced rather than quietly dropped, and the reason is written down here
+# so the next reader does not have to rediscover it.
+#
+# WHAT CHANGED, PRECISELY. Before: this page ran no privileged command at all,
+# and `tests/test_userspace_crypto_page.py::test_the_page_never_runs_anything_
+# privileged` asserted that by forbidding `subprocess` and `pkexec`. Now: the
+# page can create, mount, unmount, encrypt, unlock and lock, and the AST gate
+# asserts the *new* boundary instead - one named program, a fixed operation
+# list, a passphrase that never reaches argv, and no shell.
+#
+# WHAT THAT COSTS, stated plainly. A passphrase used to be typed into a TTY by
+# `fscrypt` or `gocryptfs` themselves, where it never passes through a widget's
+# memory or a toolkit's event loop. Here it is typed into an `Adw.EntryRow`.
+# That is a real weakening of where the secret lives, and it is the price of
+# doing this from a settings panel at all. What has NOT been given up: the
+# passphrase never reaches argv (it is world-readable in /proc for the life of
+# the process), never reaches a log, and is written to exactly one child.
+#
+
+
+
+# ---------------------------------------------------------------------------
+# Acting: gocryptfs, unprivileged and direct
+# ---------------------------------------------------------------------------
+#
+# **No root, no helper, no polkit rule.** All three steps measured as uid 1001
+# with no capabilities on this host, `/dev/fuse` present and `fusermount3`
+# setuid-root:
+#
+#     $ printf 'correcthorsebattery\n' | gocryptfs -init DIR
+#       Reading Password from stdin (connected to "pipe:[...]")
+#       The gocryptfs filesystem has been created successfully.        # exit 0
+#     $ printf 'correcthorsebattery\n' | gocryptfs CIPHERDIR MOUNT
+#       Filesystem mounted and ready.                                  # exit 0
+#     $ fusermount3 -u MOUNT                                           # exit 0
+#
+# and the plaintext was absent from CIPHERDIR afterwards, under an encrypted
+# filename (`qJqwnK6_VmH3zdDnot_EEw`). So the tool reads the passphrase off a
+# pipe, which is what makes a passphrase dialog possible at all.
+#
+# The page used to reach these three operations through
+# `pkexec /usr/local/bin/shani-cassini-crypto`. That was privilege wrapping a
+# capability that never needed it: the three gocryptfs operations need no root,
+# and the three fscrypt operations that did need root could not run on btrfs at
+# all (Shanios root *is* btrfs). So the helper's privilege was required only by
+# the half that was dead, and the half that worked was paying for it.
+#
+# What the helper did give, and is kept here because none of it needed root:
+# the path is confined to one root, the passphrase never reaches argv, and each
+# failure keeps its own exit code instead of collapsing to "operation failed".
+
+# One tree this page will touch, and it is NOT /var/lib: on Shanios `/var` is a
+# tmpfs ("/var -> tmpfs (volatile, cleared on reboot)" in every image profile's
+# fstab) and only the ~34 explicitly bind-mounted directories under /var/lib
+# persist to @data. A new one is not added to that list by existing, so anything
+# under /var/lib/shani-crypto would be deleted on every reboot and every
+# blue/green deploy - the passphrase still right and the files gone.
+# `~/.local/share` is under /home, which IS the persistent @home subvolume.
+STATE_ROOT: Final = os.path.join(
+    os.path.expanduser("~"), ".local", "share", "shani-crypto")
+
+# The programs this page may run, and the ONLY ones. Compared by exact
+# basename+path by the gate at the bottom of the test module.
+GOCRYPTFS: Final = "gocryptfs"
+FUSERMOUNT3: Final = "fusermount3"
+
+# gocryptfs reads the passphrase from stdin only when stdin is not a terminal,
+# and says so ("Reading Password from stdin"). A GUI child is a pipe, so that
+# holds; a terminal invocation would not, which is why the argv has no
+# `-extpass` and no passphrase anywhere in it.
+#
+# A mount blocks until FUSE is ready and an init reads a salt, so it runs off
+# the GTK thread. Nothing here waits on a person: there is no password prompt,
+# because nothing is privileged.
+OP_TIMEOUT: Final = 120
+
+
+def _within(path: str, root: str) -> bool:
+    """Is `path` `root` or something inside it?
+
+    Refused here rather than after gocryptfs has already acted, so the page
+    cannot be talked into running a tool over somewhere else on the machine.
+    """
+    root = os.path.realpath(root)
+    real = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+    return real == root or real.startswith(root.rstrip("/") + "/")
+
 
 # Kernel and systemd interfaces. Each one is a fact about the running machine,
 # none of them is a tool's own configuration.
@@ -534,7 +682,12 @@ def userspace_crypto_state(
 SUMMARY_NOTE = (
     "Three filesystem-encryption systems ship in every Shanios install, and "
     "neither desktop's settings has a panel for any of them. This reports what "
-    "each one is doing. It changes nothing."
+    "each one is doing, and can create, mount and unmount a gocryptfs volume "
+    "for you - as you, with no password, because gocryptfs is a FUSE "
+    "filesystem and works on btrfs. It does nothing privileged: fscrypt cannot "
+    "do btrfs at all, so it is reported and never offered, and ecryptfs is "
+    "reported too. The commands for all three are named at the bottom, because "
+    "each belongs to the tool that owns it."
 )
 
 NOT_THE_ENCRYPTION_PAGE = (
@@ -559,6 +712,14 @@ TOOLS_NOTE = (
     "The keys themselves are never read: fscrypt's protectors and gocryptfs's "
     "config hold wrapped key material and ecryptfs holds a wrapped passphrase. "
     "This page reports that a configuration exists and nothing more."
+)
+
+ACTIONS_NOTE = (
+    "These run gocryptfs as you, on your own machine, with no password and no "
+    "administrator rights - which is all gocryptfs needs, because it is a FUSE "
+    "filesystem and works on btrfs. The passphrase goes to the tool over a "
+    "pipe, never onto a command line where any process could read it, and this "
+    "page does not keep it. A volume stays where it is until you mount it."
 )
 
 READ_NOTE = (
@@ -672,7 +833,13 @@ class UserspaceCryptoTab(Gtk.Box):
         self._state = state
         self._auth_manager = auth_manager
         self._page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
-        self.append(self._page)
+        # A ToastOverlay, because this page now runs gocryptfs and has to say
+        # what happened. It wraps rather than replaces self._page so `_page`
+        # stays the plain container the rest of the page appends to.
+        self._toasts = Adw.ToastOverlay()
+        self._toasts.set_child(self._page)
+        self._toast = self._toasts
+        self.append(self._toasts)
         self._build()
         GLib.idle_add(self.load)
 
@@ -699,7 +866,7 @@ class UserspaceCryptoTab(Gtk.Box):
                 "Encrypts individual files and directories, using the "
                 "filesystem's own support and a key held in the kernel "
                 "keyring. Which filesystems can do it is the kernel's answer, "
-                "not this tool's: ext4, xfs, f2fs and ubifs can, and the "
+                "not this tool's: ext4, f2fs, ubifs and cephfs can, and the "
                 "table below says so for each one mounted here."))
         self._page.append(self._fscrypt_group)
 
@@ -726,7 +893,191 @@ class UserspaceCryptoTab(Gtk.Box):
         self._page.append(Adw.PreferencesGroup(
             title="Doing it yourself", description=READ_NOTE))
 
-        self._dynamic: list[tuple[Adw.PreferencesGroup, Adw.ActionRow]] = []
+        self._dynamic: list[tuple[Adw.PreferencesGroup, adw.ActionRow]] = []
+
+        # -- acting: gocryptfs only ----------------------------------------
+        self._actions = Adw.PreferencesGroup(
+            title="Create a gocryptfs volume", description=ACTIONS_NOTE)
+        self._page.append(self._actions)
+
+        # Through _row(), not Adw.ActionRow(...): the gate
+        # `test_there_is_exactly_one_row_constructor_and_one_subtitle_setter`
+        # counts ActionRow call sites so every row's subtitle is escaped by
+        # _set(). Building one inline bypasses that.
+        self._name_row = Adw.EntryRow(title="Volume name", text="")
+        self._name_row.set_tooltip_text(
+            f"A directory under {STATE_ROOT}, holding ciphertext. Nothing is "
+            f"created until you press Create, and it stays on this machine "
+            f"because {STATE_ROOT} is under your home.")
+        self._actions.add(self._name_row)
+        create = Gtk.Button(label="Create", valign=Gtk.Align.CENTER,
+                            css_classes=["suggested-action"])
+        create.connect("clicked", self._on_create_clicked)
+        self._name_row.add_suffix(create)
+
+        self._mount_row = _row("Mounted volumes", "Reading…")
+        self._actions.add(self._mount_row)
+        # Widgets added to _mount_row, so a re-read removes exactly those.
+        self._mount_buttons: list[Gtk.Widget] = []
+
+    # -- asking for a passphrase --------------------------------------------
+
+    def _ask(self, title: str, confirm: bool,
+             on_ok) -> None:
+        """A passphrase in a modal, then straight into a pipe.
+
+        `echo=False`, because this is a secret. The value is handed to `_run`
+        and never stored on the page - not in a field that survives a re-read,
+        not in a local that outlives the call. It goes into the child's **stdin**
+        and never into argv, which is world-readable in /proc for the life of
+        the process.
+        """
+        dialog = Adw.Dialog(title=title, content_width=420)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
+                      margin_top=18, margin_bottom=18,
+                      margin_start=18, margin_end=18)
+        entry = Gtk.Entry(hexpand=True, show_peek=False,
+                          input_purpose=Gtk.InputPurpose.PASSWORD)
+        confirm_entry = Gtk.Entry(hexpand=True, show_peek=False,
+                                  input_purpose=Gtk.InputPurpose.PASSWORD)
+
+        def submit(*_a) -> None:
+            value = entry.get_text()
+            if not value:
+                self._toast.add_toast(
+                    Adw.Toast(title="A passphrase is required"))
+                return
+            if confirm and value != confirm_entry.get_text():
+                self._toast.add_toast(
+                    Adw.Toast(title="The two passphrases are different"))
+                return
+            dialog.close()
+            on_ok(value)
+
+        entry.connect("activate", submit)
+        confirm_entry.connect("activate", submit)
+        box.append(Gtk.Label(label=title, xalign=0.0))
+        box.append(entry)
+        if confirm:
+            box.append(Gtk.Label(label="And again, to be sure", xalign=0.0))
+            box.append(confirm_entry)
+        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                          spacing=8, halign=Gtk.Align.END)
+        cancel = Gtk.Button(label="Cancel")
+        cancel.connect("clicked", lambda _b: dialog.close())
+        ok = Gtk.Button(label="Continue", css_classes=["suggested-action"])
+        ok.connect("clicked", submit)
+        buttons.append(cancel)
+        buttons.append(ok)
+        box.append(buttons)
+        dialog.set_child(box)
+        ok.connect("clicked", lambda _b: entry.set_text(""))
+        dialog.present(self.get_root())
+
+    # -- running gocryptfs --------------------------------------------------
+
+    def _run(self, argv: list[str], passphrase: str, operation: str,
+             on_done) -> None:
+        """Off the GTK main thread, with the passphrase on stdin.
+
+        A mount blocks until FUSE is ready, and doing that on the main loop
+        freezes the window for the length of it. Nothing here waits on a
+        person - there is no password prompt, because nothing is privileged.
+        """
+        def worker() -> None:
+            try:
+                proc = subprocess.run(
+                    argv, input=passphrase.encode("utf-8"),
+                    capture_output=True, timeout=OP_TIMEOUT, check=False)
+                out = (proc.stderr + b"\n" + proc.stdout).decode(
+                    "utf-8", errors="replace")
+                GLib.idle_add(on_done, proc.returncode, out)
+            except FileNotFoundError:
+                GLib.idle_add(on_done, 127,
+                              f"{argv[0]} is not installed\n")
+            except subprocess.TimeoutExpired:
+                GLib.idle_add(on_done, 124,
+                              f"{operation} did not answer in {OP_TIMEOUT}s\n")
+            except (OSError, subprocess.SubprocessError) as exc:
+                GLib.idle_add(on_done, 1, f"{operation} could not be run: {exc}\n")
+        GLib.Thread.new(f"crypto-{operation}", worker).start()
+
+    def _report(self, code: int, out: str, success: str) -> bool:
+        """A toast, and a re-read. Returns whether it worked.
+
+        gocryptfs's own words, trimmed: it says exactly which of "already
+        encrypted", "wrong passphrase" and "not a gocryptfs directory" happened,
+        and a generic "operation failed" would throw that away.
+        """
+        if code == 0:
+            self._toast.add_toast(
+                adw.Toast(title=GLib.markup_escape_text(success)))
+        else:
+            message = " ".join(
+                line for line in out.splitlines() if line.strip())[-320:]
+            self._toast.add_toast(adw.Toast(
+                title=GLib.markup_escape_text(message or f"exit {code}")))
+        self.load()
+        return code == 0
+
+    # -- handlers -----------------------------------------------------------
+
+    def _on_create_clicked(self, _button) -> None:
+        name = (self._name_row.get_text() or "").strip()
+        if not name:
+            self._toast.add_toast(
+                adw.Toast(title="Give the volume a name first"))
+            return
+        if "/" in name or name in (".", ".."):
+            self._toast.add_toast(
+                adw.Toast(title="One name only, no path separators"))
+            return
+        cipher = os.path.join(STATE_ROOT, name)
+        # Checked before the passphrase is asked for, not after: collecting a
+        # secret for an operation that cannot run is the failure this avoids.
+        if not _within(cipher, STATE_ROOT):
+            self._toast.add_toast(adw.Toast(title="That path is not allowed"))
+            return
+        os.makedirs(cipher, exist_ok=True)
+        self._ask(f"Passphrase for {name}", True, lambda pw: self._run(
+            [GOCRYPTFS, "-init", cipher], pw, "gocryptfs-init",
+            lambda code, out: self._report(
+                code, out, f"Created {name}. Mount it to use it.")))
+
+    def _on_unmount_clicked(self, _button, mountpoint: str) -> None:
+        self._run([FUSERMOUNT3, "-u", mountpoint], "", "fusermount3 -u",
+                  lambda code, out: self._report(code, out, "Unmounted"))
+
+    # -- showing what can be unmounted ---------------------------------------
+
+    def _render_mounts(self, gocryptfs: dict) -> None:
+        """A button per live gocryptfs mount, but only under STATE_ROOT.
+
+        Every other gocryptfs mount on the machine belongs to somebody else -
+        another tool, another session. Only the ones this page could have
+        created are offered, and offering somebody else's would be offering to
+        unmount it.
+        """
+        # Adw.ActionRow exposes only one child through the ActionRow API, so
+        # the widgets added here are tracked by this page and removed from that
+        # list rather than walked.
+        for widget in self._mount_buttons:
+            self._mount_row.remove(widget)
+        self._mount_buttons = []
+        mine = [m for m in (gocryptfs.get("mounts") or [])
+                if _within(m.get("mountpoint") or "", STATE_ROOT)]
+        if not mine:
+            _set(self._mount_row, "Nothing this page created is mounted")
+            return
+        _set(self._mount_row,
+             f"{len(mine)} mounted: " + ", ".join(
+                 m["mountpoint"] for m in mine))
+        for mount in mine:
+            button = Gtk.Button(label="Unmount", valign=Gtk.Align.CENTER)
+            button.connect("clicked", self._on_unmount_clicked,
+                           mount["mountpoint"])
+            self._mount_row.add_suffix(button)
+            self._mount_buttons.append(button)
 
     # -- reading -----------------------------------------------------------
 
@@ -752,6 +1103,7 @@ class UserspaceCryptoTab(Gtk.Box):
         fscrypt = state.get("fscrypt") or {}
         gocryptfs = state.get("gocryptfs") or {}
         ecryptfs = state.get("ecryptfs") or {}
+        self._render_mounts(gocryptfs)
 
         for row, (css, sentence) in (
                 (self._row_fscrypt, _fscrypt_state(fscrypt)),
@@ -786,7 +1138,7 @@ class UserspaceCryptoTab(Gtk.Box):
             kernel = (
                 "No filesystem mounted here supports fscrypt, so it cannot "
                 "encrypt anything. A filesystem has to offer the support "
-                "itself: ext4, xfs, f2fs and ubifs do, btrfs does not, and "
+                "itself: ext4, f2fs, ubifs and cephfs do, btrfs does not, and "
                 "the vfat ESP is refused outright")
         else:
             kernel = (f"{supporting} filesystem"

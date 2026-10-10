@@ -1793,12 +1793,41 @@ class TestRendering:
                      "the kernel's own", "PCI-MSI-0000:00:14.0 0-edge i915"):
             assert irqbalance_mod._plain(name) == name, name
 
-    def test_the_page_has_no_button_of_any_kind(self):
-        """There is no start, no stop and no "balance now". A page that could
-        rebalance the machine is the thing this page is not."""
+    def test_the_page_has_exactly_one_button_and_it_only_writes_a_file(self):
+        """Re-scoped, not deleted: this was "no button of any kind", and it was
+        enforcing a property that is now false on purpose.
+
+        The page gained one control - Save, for `/etc/default/irqbalance`. What
+        must remain impossible is the thing this gate was really for: **a button
+        that makes the machine do something.** So this asserts the buttons are
+        exactly the one Save plus the two `Adw.EntryRow` controls libadwaita
+        builds in (edit / apply), and separately that nothing on the page starts,
+        stops or rebalances anything.
+        """
         found = [n for n in _collect(IrqBalanceTab())
                  if isinstance(n, Gtk.Button)]
-        assert found == [], [b.get_label() for b in found]
+        labels = sorted((b.get_label() or "<entry control>") for b in found)
+        # Exactly one EntryRow, and libadwaita gives it one built-in control
+        # (the "edit" affordance) besides the Save button this page adds.
+        assert labels == ["<entry control>", "Save"], labels
+
+        # The reason the original gate existed: no button that acts on the
+        # daemon or the machine. The page's own ACTIONS_NOTE sends the user to
+        # `irqbalance --debug` and `irqtop` rather than running either.
+        banned = ("balance", "start", "stop", "restart", "debug", "irqtop",
+                  "reboot", "shutdown", "apply")
+        for label in labels:
+            for word in banned:
+                assert word not in label.lower(), (
+                    f"a button labelled {label!r} could act on the machine")
+
+    def test_the_only_write_is_the_banlist_file(self):
+        """One file, one helper, one target. The boundary the previous gate
+        generalised from."""
+        assert irqbalance_mod.LOCAL_ENV == "/etc/default/irqbalance"
+        from shani_cassini import config_io
+        assert config_io.helper_target_for(
+            irqbalance_mod.LOCAL_ENV) == "irqbalance_env"
 
     def test_every_icon_this_page_uses_exists_in_the_installed_theme(self):
         """Checked against the theme that is actually installed, at runtime.
@@ -1827,7 +1856,18 @@ class TestRendering:
         """CONTROL for the theme gate above: `has_icon` is asked about names the
         page might have stopped using."""
         rendered = _rendered()[2]
-        images = [n for n in _collect(rendered) if isinstance(n, Gtk.Image)]
+        # **Only the images the page itself put there.** The banlist row is an
+        # `Adw.EntryRow`, and libadwaita builds `adw-entry-edit-symbolic` and
+        # `adw-entry-apply-symbolic` into every one of them. Those are the
+        # toolkit's icons, not this page's, and holding them against
+        # `irqbalance_mod.ICONS` failed the gate the moment the page gained an
+        # entry - a false positive that says nothing about the page's own icons.
+        inside_entry = set()
+        for node in _collect(rendered):
+            if isinstance(node, Adw.EntryRow):
+                inside_entry.update(id(n) for n in _collect(node))
+        images = [n for n in _collect(rendered)
+                  if isinstance(n, Gtk.Image) and id(n) not in inside_entry]
         used = {img.get_icon_name() for img in images if img.get_icon_name()}
         assert used, "the page put no icon on anything at all"
         assert used <= set(irqbalance_mod.ICONS), used - set(irqbalance_mod.ICONS)

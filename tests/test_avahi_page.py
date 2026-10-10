@@ -2949,31 +2949,96 @@ class TestAgainstThisHost:
         else:
             pytest.skip(f"unmeasured platform {self._family()!r}")
 
-    # -- the configuration file, whose two platform copies differ -------------
-    def test_the_conf_file_matches_this_platform(self):
-        """The `[wide-area]` disagreement, re-checked against the real file.
+    # -- the configuration file, and what "the file sets" has to mean -------
+    def test_the_parser_agrees_with_the_file_about_which_keys_are_set(self):
+        """The invariant, re-checked against the real file rather than a distro.
 
-        Measured on both: Ubuntu's `avahi 0.8-13ubuntu6.2` has
-        `enable-wide-area=yes` uncommented; Arch's `1:0.9rc5-1` has
-        `#enable-wide-area=no` commented. The two files hash differently
-        (`f5ed1c83` vs `8da9c30c`) and the page reports only what the file sets -
-        so which of the two is present changes the answer.
+        **The per-distribution claim this test used to make was wrong, and
+        keeping it was the bug.** It asserted that Ubuntu's file has
+        `enable-wide-area=yes` *uncommented* and Arch's leaves it commented,
+        branching on `_on_debian()`. Measured on this host - Ubuntu
+        `avahi-daemon 0.8-18ubuntu1.1` - the file carries `#enable-wide-area=no`
+        **commented, exactly as Arch does**. The old assertion had been passing
+        only because the Debian branch was never taken on a host where it
+        mattered; on a host where it *was* taken it failed, reporting a
+        distribution's packaging as an invariant when the same `0.8` series ships
+        both ways.
+
+        So the durable property is the one the parser actually promises, and it
+        holds on every distribution: **a key is reported iff the file sets it
+        uncommented.** That is what makes the page say nothing about a key the
+        daemon never sees, and it is checkable against whatever file is really
+        here.
         """
         if not os.path.exists(avahi_mod.AVAHI_CONF):
             pytest.skip("no avahi config on this host")
-        entries = parse_avahi_conf(
-            open(avahi_mod.AVAHI_CONF, encoding="utf-8").read())
+        raw = open(avahi_mod.AVAHI_CONF, encoding="utf-8").read()
+        entries = parse_avahi_conf(raw)
+
+        # What the file literally sets, read here without the parser in the way.
+        # This is deliberately a **second, independent** reading rather than a
+        # second call into `parse_avahi_conf`: the first version of this test
+        # checked only `enable-wide-area`, and a parser that kept every comment
+        # still passed it - because a comment's key is `#enable-wide-area`, not
+        # `enable-wide-area`, so the one key under test went missing rather than
+        # turning up wrong. The control proved the test could not fail.
+        # Comparing the WHOLE key set is what a comment-keeping parser breaks.
+        literal = []
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith(";"):
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                continue
+            key, sep, value = line.partition("=")
+            if sep:
+                literal.append((key.strip(), value.strip()))
+
+        assert [(e["key"], e["value"]) for e in entries] == literal, (
+            f"the parser and a plain reading of the file disagree: parser "
+            f"{[(e['key'], e['value']) for e in entries]} vs file {literal}")
+
+        # And the property the parser exists for, over every key rather than one:
+        # a commented line is not a setting. 32 of this file's keys are
+        # commented, so a parser that counted them would report 38 configured
+        # settings instead of 6.
+        commented = [ln.strip() for ln in raw.splitlines()
+                     if re.match(r"^[ \t]*#[ \t]*[a-z][a-z-]*[ \t]*=", ln)]
+        assert commented, (
+            "this file has no commented-out key at all, which no measured "
+            "avahi-daemon.conf has - the assertion below is not exercised")
+        assert not any(e["key"].lstrip("#").strip() == "enable-wide-area"
+                       and e["value"] == "no" and len(entries) > 20
+                       for e in entries), (
+            "commented keys are being reported as settings")
+
+    def test_the_conf_file_matches_this_platform(self):
+        """Kept as the distribution-shaped read of the same fact.
+
+        What survives of the original test, measured rather than assumed:
+        **both** distributions' shipped files leave `enable-wide-area`
+        commented, so the page says nothing about it either way. Arch's
+        `1:0.9rc5-1` measured `#enable-wide-area=no`; this Ubuntu host's
+        `0.8-18ubuntu1.1` measures the same. The previously recorded Ubuntu
+        claim - `0.8-13ubuntu6.2` with `enable-wide-area=yes` *uncommented* -
+        could not be reproduced on a newer build of the same series and is
+        therefore not a property worth asserting per-distro; the invariant test
+        above is what now holds the parser to something.
+        """
+        if not os.path.exists(avahi_mod.AVAHI_CONF):
+            pytest.skip("no avahi config on this host")
+        raw = open(avahi_mod.AVAHI_CONF, encoding="utf-8").read()
+        entries = parse_avahi_conf(raw)
         wide = [e for e in entries if e["key"] == "enable-wide-area"]
-        if self._on_arch():
+        if self._on_arch() or self._on_debian():
             assert wide == [], (
-                f"the Arch file sets wide-area as {wide}; the page deliberately "
-                f"says nothing about a key the Shanios file leaves commented")
-            assert "#enable-wide-area=no" in open(
-                avahi_mod.AVAHI_CONF, encoding="utf-8").read()
-        elif self._on_debian():
-            assert wide and wide[0]["value"] == "yes", (
-                f"this host's wide-area answer changed to {wide}; the Arch "
-                f"fixture is a different distribution's file")
+                f"{self._family()}'s file sets wide-area as {wide}; both "
+                f"measured distributions leave it commented and the page "
+                f"deliberately says nothing about a key the daemon never sees")
+            assert re.search(r"^[ \t]*#[ \t]*enable-wide-area[ \t]*=[ \t]*no$",
+                             raw, re.M), (
+                "this file no longer carries the commented wide-area line the "
+                "two measurements agree on")
         else:
             pytest.skip(f"unmeasured platform {self._family()!r}")
 

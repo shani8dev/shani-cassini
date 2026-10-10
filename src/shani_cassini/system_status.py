@@ -4585,10 +4585,20 @@ def inbound_access_state(done: Callable[[dict, str], None]) -> None:
     **No secret is read or shown.** A Cloudflare tunnel token and a Tailscale
     auth key are credentials; their presence is reported, their value is not.
 
-    Read-only, and deliberately not offering to switch anything on. Enabling an
-    inbound path is not a decision a settings panel should make on the user's
-    behalf, and the configuration each of these needs (a tunnel token, a tailnet
-    login, a peer key) does not belong in a generic settings window either.
+    **This function is read-only; the PAGE it feeds is not.** It reports what is
+    installed, configured and running, and stops there. `inbound_access.py` now
+    also offers switches that enable and disable these units, so an earlier
+    version of this docstring - "Read-only, and deliberately not offering to
+    switch anything on" - was false the moment that landed, and worse than
+    useless: it was in the reader, so the next person adding a second writer
+    would read it as policy.
+
+    The split is deliberate and worth keeping. Nothing here *decides* anything:
+    the configuration each of these needs - a tunnel token, a tailnet login, a
+    peer key - still does not belong in a generic settings window, and is still
+    the user's to provide. What the page adds is the ability to start a unit
+    that is already configured, which is what `systemctl enable --now` is for,
+    and which systemd authorises through polkit like any other unit change.
     """
     rows: list[dict] = []
     for label, tool, unit, cfg, effect in _REACHABILITY:

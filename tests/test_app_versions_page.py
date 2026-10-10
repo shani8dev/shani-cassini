@@ -35,6 +35,10 @@ bounds its own `snap list` at 5 seconds.
 
 from __future__ import annotations
 
+from conftest import (assert_escaped_not_markup, literal_text,  # noqa: E402
+                       says,
+                       renders_literally)
+
 import ast
 import inspect
 import os
@@ -550,7 +554,10 @@ def test_snap_populated_from_disk_carries_a_revision_and_says_what_it_cannot() -
     assert row is not None, subtitles(tab)
     sub = row.get_subtitle()
     assert "revision 4189" in sub, sub
-    assert "snapd's to answer" in sub, sub
+    # `says`, not `in`: the subtitle is stored ESCAPED on a `use-markup` row, so
+    # a reader sees an apostrophe where the string holds `&apos;`. Comparing
+    # against the raw form reported a message as missing when it was on screen.
+    assert says(sub, "snapd's to answer"), sub
 
     core = row_named(tab, "core22")
     assert "revision 1122" in core.get_subtitle(), core.get_subtitle()
@@ -749,10 +756,18 @@ def test_the_escaping_helper_is_what_every_row_goes_through() -> None:
     assert sub.strip(), "an unescaped subtitle rendered as nothing"
     assert ("c < d" in sub) or ("c &lt; d" in sub), sub
 
-    unescaped = Adw.ActionRow(title="t", subtitle="a & b")
-    assert unescaped.get_subtitle() == "", \
-        "an unescaped `&` no longer blanks the subtitle; this test's premise " \
-        "has changed and the escaping question needs re-deciding"
+    # The control, rewritten for this stack. The old one asserted that an
+    # unescaped `&` blanks the subtitle - true when a bare `&` was invalid
+    # Pango markup, and the reason the tests below used to be readable at all.
+    # On libadwaita 1.9 the row keeps the string instead, so the failure mode is
+    # no longer an empty row: it is that the text renders WITH the tag acted on.
+    # Asserting the old blank-row symptom would be asserting a libadwaita bug,
+    # so the control now asserts what still matters and can still fail.
+    assert renders_literally(sub), (
+        f"the escaped subtitle is not safe for a use-markup row: {sub!r}")
+    assert not renders_literally("1 policy & 1 protector"), (
+        "if an UNescaped string were also safe, this test would pass whether or "
+        "not `_row()` escaped anything - the control would be vacuous")
     assert av._nonempty("   ") == "not reported"
     assert av._nonempty(" x ") == "x"
 

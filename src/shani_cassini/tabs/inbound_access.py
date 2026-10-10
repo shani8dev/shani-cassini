@@ -69,7 +69,13 @@ class InboundAccessTab(Gtk.Box):
         self._state = state
         self._auth_manager = auth_manager
         self._page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
-        self.append(self._page)
+        # A ToastOverlay, because _show_error() used to walk the widget tree
+        # looking for one: there was none, so every failure reverted the switch
+        # in silence and told the user nothing. A failure with no message is
+        # indistinguishable from a click that did nothing.
+        self._toasts = Adw.ToastOverlay()
+        self._toasts.set_child(self._page)
+        self.append(self._toasts)
         self._build()
         GLib.idle_add(self.load)
 
@@ -90,7 +96,9 @@ class InboundAccessTab(Gtk.Box):
         self._group = Adw.PreferencesGroup(
             title="Installed mechanisms",
             description="Each row reports what is installed and whether it is "
-                        "running. Use the switch to enable or disable the service.")
+                        "running. Use the switch to enable or disable the "
+                        "service: that asks systemd, which authorises it "
+                        "through polkit and shows your own password dialog.")
         self._page.append(self._group)
         self._rows: list[Adw.ActionRow] = []
         self._unit_for_row: dict[int, str] = {}
@@ -160,7 +168,7 @@ class InboundAccessTab(Gtk.Box):
                 sw = Gtk.Switch()
                 sw.set_active(switch_active)
                 # Pass both the unit and the current desired state
-                sw.connect("state-set", self._on_service_switch, unit, switch_active)
+                sw.connect("state-set", self._on_service_switch, unit)
                 row.add_suffix(sw)
             
             if service in ("active", "activating"):
@@ -170,19 +178,35 @@ class InboundAccessTab(Gtk.Box):
             self._rows.append(row)
             self._unit_for_row[id(row)] = unit
 
-    def _on_service_switch(self, sw, state, unit, current_state) -> bool:
-        """Handle enable/disable switch for a service."""
-        # If state didn't actually change (due to rapid clicks), ignore
-        if bool(state) == current_state:
-            return False
-            
+    def _on_service_switch(self, sw, state, unit) -> bool:
+        """Enable or disable one unit.
+
+        **No comparison against a remembered state.** The first version took a
+        `current_state` captured when the switch was connected and compared
+        every click to it. That value is from page load and is never refreshed,
+        so the guard silently stopped meaning anything after the first change:
+        it was either always or never true, depending on how the page was
+        found. `systemctl` is the only thing that knows the real state, and the
+        re-read after the call is what corrects the switch.
+        """
         verb = "enable" if state else "disable"
         # Use --now to also start/stop immediately
         argv = ["systemctl", verb, "--now", unit]
         
-        def done(rc):
+        def done(rc, err=""):
             if rc != 0:
-                self._show_error(f"Could not {verb} {unit}", sw, not state)
+                # 126 is a dismissed polkit dialog and 127 is a refusal. Saying
+                # "could not enable" for either tells a user who cancelled a
+                # dialog that something is wrong.
+                if rc == 126:
+                    message = "Cancelled at the password prompt, so nothing changed"
+                elif rc == 127:
+                    message = "Not authorised, so nothing changed"
+                else:
+                    message = " ".join(
+                        line for line in (err or "").splitlines()
+                        if line.strip())[-240:] or f"systemctl exited {rc}"
+                self._show_error(message, sw, not state)
             # Refresh to show updated state
             GLib.timeout_add(1000, lambda: (self.refresh(), False)[1])
             
@@ -190,18 +214,28 @@ class InboundAccessTab(Gtk.Box):
         return False
         
     def _show_error(self, message: str, sw: Gtk.Switch, expected_state: bool) -> None:
-        """Show error toast and revert switch."""
-        # Find the toast overlay - walk up the widget tree
-        widget = sw
-        while widget and not isinstance(widget, Adw.ToastOverlay):
-            widget = widget.get_parent()
-        if widget:
-            toast = Adw.Toast(title=GLib.markup_escape_text(message))
-            toast.set_timeout(5000)
-            widget.add_toast(toast)
-        # Revert switch
+        """Show the message, and put the switch back.
+
+        `systemctl` is the authority on whether the unit is enabled, so on
+        failure the switch is restored rather than left showing a state that did
+        not happen. **The message must also actually appear:** this used to walk
+        the widget tree looking for a ToastOverlay, and the page had none, so
+        every failure reverted the switch and told the user nothing - a failure
+        with no message is indistinguishable from a click that did nothing.
+        `tests/test_service_toggle_pages.py` constructs this page for real to
+        prove a toast arrives.
+        """
+        self._toasts.add_toast(Adw.Toast(
+            title=GLib.markup_escape_text(message), timeout=5))
+        # `expected_state` is the state to GO BACK TO, and it arrives as `not
+        # state` from `done()`, where `state` is what the user asked for - so the
+        # parameter already holds the OLD state. A first version wrote
+        # `not expected_state` here and double-negated it, which left a failed
+        # enable showing "enabled" and a failed disable showing "disabled": the
+        # exact lie this method exists to prevent, and it survived every earlier
+        # test because none of them drove a real failure through a real switch.
         sw.handler_block_by_func(self._on_service_switch)
-        sw.set_active(not expected_state)
+        sw.set_active(expected_state)
         sw.handler_unblock_by_func(self._on_service_switch)
         
     def refresh(self) -> None:

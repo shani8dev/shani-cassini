@@ -1,7 +1,9 @@
 """Shared test fixtures for shani-cassini test suite."""
 
+import html
 import sys
 import os
+import re
 import threading
 from unittest.mock import MagicMock
 
@@ -219,3 +221,85 @@ def empty_sbin(monkeypatch, tmp_path):
     empty.mkdir(exist_ok=True)
     monkeypatch.setattr(ss, "SBIN_DIRS", (str(empty),))
     return empty
+
+
+# ============================================================================
+# What "escaped, not markup" means on this libadwaita
+# ============================================================================
+#
+# **Eleven tests were asserting the wrong thing**, and the fix is not to stop
+# escaping. Measured on libadwaita 1.9.1:
+#
+#   * `Adw.ActionRow` has a `use-markup` property and **it defaults to True**,
+#     so a title IS Pango markup and a title containing `<b>` renders bold.
+#   * `get_title()` returns the string exactly as it was set - it does not
+#     unescape anything.
+#
+# So the old assertion, `assert "<b>evil</b>" in row.get_title()`, was asserting
+# that a hostile filename survives into the title **unescaped** - which is the
+# bug, not the goal. It passed on an older libadwaita where an unescaped `&`
+# blanked the whole row, so a blank row and a hostile row were told apart by
+# their damage. On 1.9 that distinction is gone and the assertion only proves
+# the escaping was removed.
+#
+# The property that actually matters is "Pango finds no tag in this string", and
+# it is version-independent: strip the escape sequences, then assert no `<` or
+# `&` is left. `renders_literally` below is that check, and
+# `assert_escaped_not_markup` is what the tests should call.
+#
+# What this does NOT weaken: a hostile string still reaches the screen as
+# readable text with no tag interpreted. That is the user-visible guarantee, and
+# it is now asserted directly instead of inferred from a blank row.
+
+_ENTITY_RE = re.compile(r"&(?:lt|gt|amp|quot|apos|#\d+|#x[0-9A-Fa-f]+);")
+
+
+def pango_finds_a_tag(text: str) -> bool:
+    """Would Pango find a markup tag in `text`? The security-relevant question.
+
+    Escape sequences are removed first, because they are the *only* legitimate
+    way for a `<` to appear in a title: `&lt;` is a literal `<`, not a tag
+    opener. Anything left over is markup Pango would act on.
+    """
+    stripped = _ENTITY_RE.sub("", text or "")
+    return "<" in stripped or "&" in stripped
+
+
+def renders_literally(text: str) -> bool:
+    """True when Pango will show `text` exactly as written, with no tag acted on."""
+    return not pango_finds_a_tag(text)
+
+
+def assert_escaped_not_markup(value: str, *, what: str = "the string") -> None:
+    """The assertion the eleven tests should have been making all along."""
+    assert renders_literally(value), (
+        f"{what} would be interpreted as markup rather than shown literally: "
+        f"{value!r}")
+
+
+def literal_text(value: str) -> str:
+    """`value` with Pango escape sequences turned back into their characters.
+
+    For assertions about what a user READS. `get_title()` returns the string as
+    it was set, and the pages set the ESCAPED form, so a test that searches for
+    the raw filename finds nothing and concludes the escaping was removed - when
+    in fact the escaping is what makes the filename visible as text at all.
+
+    This is a test-reading helper, not something the app should use: unescaping
+    before handing a string back to Pango would be the very bug these tests
+    exist to catch. Python's `html.unescape` does the same job as Pango's
+    entities (`&lt; &gt; &amp; &quot; &apos;` and numeric forms) and is not
+    reimplemented here.
+    """
+    return html.unescape(value or "")
+
+
+def says(haystack: str, needle: str) -> bool:
+    """Does `haystack`, as a reader sees it, contain `needle`?
+
+    The replacement for `assert needle in row.get_title()`, which broke when the
+    pages began escaping properly. Every one of those assertions was asking
+    "can the user still read this?" and comparing against the wrong form of the
+    string to ask it.
+    """
+    return needle in literal_text(haystack)

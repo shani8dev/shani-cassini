@@ -11,6 +11,10 @@ from pathlib import Path
 import pytest
 from gi.repository import GLib
 
+from conftest import (assert_escaped_not_markup, literal_text,  # noqa: E402
+                       renders_literally)
+
+
 STATUS = {"version": "20260921", "profile": "gnome", "channel": "stable", "booted_slot": "blue",
           "current_slot": "blue", "previous_slot": "green", "boot_failure": "",
           "boot_hard_failure": False, "auto_rollback_done": False, "candidate_boot": True,
@@ -1321,14 +1325,36 @@ def test_biometrics_escapes_every_string_fprintd_hands_over(fake_bin, fake_fprin
     fake_fprintd.daemon.fingers = ["left-index-finger"]
     tab = BiometricsTab()
     assert spin(lambda: tab._row_fingers.get_subtitle() == "1 enrolled")
-    # Adw parses the row's markup on set, so get_subtitle() gives back what a
-    # person sees: the exact string fprintd sent, entities consumed as markup.
-    assert tab._row_device.get_subtitle().startswith('Sync & <hold> "reader" ')
-    assert "&amp;" not in tab._row_device.get_subtitle()
-    # get_title() hands back the markup as stored, so this is the escaping
-    # itself: the entity form can only be there because _esc() ran.
+    # `literal_text`, not the raw string: on a `use-markup` row `get_subtitle()`
+    # returns the form as STORED, which is escaped - that is what makes the
+    # device name render as `Sync & <hold> "reader"` instead of as a tag. The old
+    # `startswith` compared against the unescaped form and so asserted the
+    # escaping had been removed. What the user must read is the raw name.
+    assert literal_text(tab._row_device.get_subtitle()).startswith(
+        'Sync & <hold> "reader" '), tab._row_device.get_subtitle()
+    assert_escaped_not_markup(tab._row_device.get_subtitle(),
+                              what="the fprintd device name")
+    # Two assertions removed here, both broken the same way.
+    #
+    # `assert "&amp;" not in subtitle` read "the escaping did not happen" - the
+    # exact opposite of what the comment above it claimed. On a `use-markup` row
+    # the STORED form *must* contain `&amp;`, because that is what makes the name
+    # render as `Sync & <hold> "reader"`. So this line asserted a defect.
+    #
+    # `assert "&amp;" not in " ".join(titles)` was worse: the finger names are
+    # "Left Index Finger", which contain no `&` at all, so the line passed
+    # whether `_esc()` ran or not. That is a control that cannot fail - it looks
+    # like coverage of the finger group and covers nothing.
+    #
+    # What replaces it is a control that can fail, and a positive assertion of
+    # the escaping on the one string that actually needs it.
     titles = _action_row_titles(tab._fingers_group)
-    assert "&amp;" not in " ".join(titles)
+    assert renders_literally(" ".join(titles)), titles
+    # The control: `_esc()` must be able to produce an entity, or every
+    # `assert_escaped_not_markup` above is passing on plain text alone.
+    assert literal_text("Sync &amp; &lt;hold&gt;") == 'Sync & <hold>', (
+        "the escaping helpers do not round-trip, so the assertions above are "
+        "not proving what they claim")
 
 
 def test_biometrics_says_not_known_when_the_daemon_is_gone(fake_bin, fake_fprintd):

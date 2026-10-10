@@ -66,6 +66,8 @@ The controls were run in a scratch copy of `src/` and `tests/` under
 
 from __future__ import annotations
 
+from conftest import says  # noqa: E402
+
 import ast
 import inspect
 import json
@@ -1143,7 +1145,11 @@ class TestRendering:
         # were escaped on the way in rather than refused.
         plain = " ".join(s for _t, s in rows)
         for hostile in ("a&b", "vmlinuz-7.0<x>", "a&<b>", "<b>yama</b>"):
-            assert hostile in plain, (
+            # `plain` is the STORED (escaped) text on a use-markup row, so the
+            # raw comparison reported a hostile string that was in fact on screen
+            # as absent - which would make the escaping assertions below vacuous
+            # for the wrong reason.
+            assert says(plain, hostile), (
                 f"{hostile!r} did not reach the page; the escaping assertions "
                 f"above would have been vacuous")
         escaped = " ".join(verbatim)

@@ -45,6 +45,7 @@ Format notes worth knowing before reading a caller:
 from __future__ import annotations
 
 import logging
+import hashlib
 import os
 import re
 import stat
@@ -708,11 +709,87 @@ def write_staged_unprivileged(staged: Staged) -> str:
     return str(path)
 
 
+
+# ── the helper path, instead of `pkexec install` ──────────────────────────────
+#
+# **Why this exists.** The install above is `pkexec /usr/bin/install` over a
+# temp file this page created in a directory the user owns. That is a
+# wait-for-root-to-read-my-file window: the caller can swap the bytes between
+# writing them and root reading them. It also has no polkit rule, so it falls
+# through to admin auth for a generic `install`.
+#
+# `shani-cassini-save` closes both. It takes a SYMBOLIC target from a fixed
+# allowlist, receives the content on stdin rather than a path the caller named -
+# which removes the window by removing the name - validates the fragment before
+# installing, and has its own polkit rule granting wheel + AUTH_SELF.
+#
+# **These three targets, and why they are the ones that moved.** Every target
+# has to have a validator, because the helper fails closed without one. The
+# three here are the last pages writing root-owned files through `install`, and
+# each has a validator now:
+#
+#   subject_mapping  three whitespace-separated fields per line
+#   pam_yubico       INI, sections optional
+#   krb5_conf        INI with krb5's `REALM = { ... }` blocks, sections required
+#
+# What these validators do NOT claim is that PAM or Kerberos will accept the
+# values - nothing can check that without the whole stack, and a validator
+# implying otherwise would be worse than an honest structural one.
+SAVE_HELPER: Final[str] = "/usr/local/bin/shani-cassini-save"
+
+# path -> the helper's symbolic target. Empty for every path that is NOT in the
+# allowlist below, which is what routes a caller to the install path instead:
+# a file not named here is not a file this helper has a validator for, and
+# writing a root-owned file the helper cannot check is the thing the helper's
+# own fail-closed design exists to reject.
+HELPER_TARGETS: Final[dict[str, str]] = {
+    "/etc/pam_pkcs11/subject_mapping": "subject_mapping",
+    "/etc/security/pam_yubico.conf": "pam_yubico",
+    "/etc/krb5.conf": "krb5_conf",
+    # irqbalance's whole configuration surface. The package ships NO /etc
+    # directory at all, so this is a file Cassini creates rather than edits -
+    # which is why it needs a validator: nothing else would ever check it.
+    "/etc/default/irqbalance": "irqbalance_env",
+    # apcupsd's ONE config file, with no drop-in mechanism. Unlike the four
+    # above this one is NOT shipped by shani-settings, and cannot be: UPSCABLE,
+    # UPSTYPE and DEVICE are per-machine, so a default would name a device that
+    # is not there. The page therefore edits what apcupsd's own package put
+    # there, in place.
+    "/etc/apcupsd/apcupsd.conf": "apcupsd_conf",
+}
+
+
+def helper_target_for(path: str) -> str:
+    """The helper's symbolic target for `path`, or "" if there is none."""
+    return HELPER_TARGETS.get(os.path.realpath(path), "")
+
+
+def save_argv(target: str, digest: str) -> list[str]:
+    """`pkexec shani-cassini-save --target TARGET --expect-sha256 HEX`.
+
+    The content travels on stdin and nothing about it is in argv. The digest is
+    mandatory for the same reason as everywhere else: stdin shares the tty with
+    the polkit password prompt, so without it a prompt can consume part of the
+    payload and install a valid-looking wrong file.
+    """
+    return ["pkexec", SAVE_HELPER, "--target", target, "--expect-sha256", digest]
+
+
 def write_staged_privileged(staged: Staged, done: Callable[[str, str], None]) -> None:
     """Install through pkexec, then read the target back. Anything that is not
     the bytes we staged - a failed install or a wrong file - is put back from
     the backup. ``done(error_text, note)``: the first argument is "" on success.
     Blocking: the caller runs it off the main loop."""
+
+    # **The helper, for any target it has a validator for.** Before the temp
+    # file is written, because that file is the whole problem: the caller owns it
+    # and root reads it later, which is the window. Content on stdin removes the
+    # window by removing the name, so the install below runs on the pipe and the
+    # `install(1)` path is skipped entirely for these three targets.
+    target = helper_target_for(staged.path)
+    if target:
+        return _write_via_helper(staged, target, done)
+
     temp = Path(_staging_path(staged.path))
     _write_file(temp, staged.text.encode("utf-8"), 0o600)
     try:
@@ -743,6 +820,49 @@ def write_staged_privileged(staged: Staged, done: Callable[[str, str], None]) ->
                  f"be put back - check {staged.path} by hand", note)
     finally:
         temp.unlink(missing_ok=True)
+
+
+def _write_via_helper(staged: Staged, target: str,
+                      done: Callable[[str, str], None]) -> None:
+    """The same promise, different writer: bytes on stdin, then read the target.
+
+    The read-back decides, not the exit code - the same rule the install path
+    uses, and for the same measured reason: pkexec returns 126 for a dismissed
+    dialog AND for a polkit that is unreachable AND when the program does not
+    exist. Only whether the target now holds the right bytes can tell those
+    apart.
+    """
+    digest = hashlib.sha256(staged.text.encode("utf-8")).hexdigest()
+    try:
+        proc = subprocess.run(
+            save_argv(target, digest), input=staged.text.encode("utf-8"),
+            capture_output=True, timeout=180, check=False)
+    except OSError as exc:
+        done(f"could not run {SAVE_HELPER}: {exc}", "")
+        return
+    except Exception:  # subprocess.TimeoutExpired
+        done(f"{SAVE_HELPER} did not answer; check {staged.path} before "
+             "trying again", "")
+        return
+
+    code = proc.returncode
+    said = " ".join(part for part in (proc.stderr + b"\n" + proc.stdout)
+                    .decode("utf-8", errors="replace").splitlines() if part.strip())
+    note = f"The copy of the file you had before is in {staged.backup}"
+    if _holds(staged.path, staged.text):
+        done("", f"Saved {staged.path}")
+        return
+    # The helper rolls itself back, so a failure should leave the old bytes; if
+    # it does not, that is stated rather than assumed.
+    if code in (126, 127) and _holds(staged.path, _read_text(staged.backup)):
+        done("Authorization was cancelled, so nothing was written", note)
+        return
+    if _holds(staged.path, _read_text(staged.backup)):
+        done(f"{_label(staged.path)} was not saved and the original is unchanged. {said[-200:]}".replace("  ", " "),
+             note)
+        return
+    done(f"{_label(staged.path)} was not saved and the original could not be "
+         f"verified - check {staged.path} by hand. {said[-160:]}", note)
 
 
 def restore_backup(backup: str, path: str, *, done: Callable[[str, str], None]) -> None:

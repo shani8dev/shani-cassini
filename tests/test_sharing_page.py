@@ -44,6 +44,11 @@ from gi.repository import Adw, GLib, Gtk  # noqa: E402
 
 from shani_cassini.tabs import sharing as sh  # noqa: E402
 
+# `says` / `assert_escaped_not_markup` read a row's text the way a user
+# does - see conftest for why `needle in row.get_title()` stopped working
+# when the pages began escaping properly.
+from conftest import assert_escaped_not_markup, says  # noqa: E402
+
 
 def spin(cond, timeout=20.0) -> bool:
     """Iterate the main loop until cond() holds - the shape every other suite
@@ -730,8 +735,9 @@ def test_markup_off_disk_is_escaped_not_rendered(env):
     write_dropin(env, "<b>evil</b> *(ro)\n")
     page = build(env)
     said = " ".join(f"{t} {s}" for t, s in texts(group_titled(page, "kept")))
-    assert "<b>evil</b>" in said, \
-        f"the line is not shown, so markup reached the title unescaped: {said!r}"
+    assert_escaped_not_markup(said, what="the share path")
+    assert says(said, "<b>evil</b>"), (
+        f"the line is not shown at all: {said!r}")
 
 
 # --- 4. the dialogs --------------------------------------------------------

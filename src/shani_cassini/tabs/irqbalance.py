@@ -96,10 +96,12 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 from typing import Callable, Final, Optional
 
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
+from shani_cassini import config_edit as ce
 from shani_cassini import system_status as ss
 
 logger = logging.getLogger(__name__)
@@ -194,6 +196,16 @@ CONFIG_NOTE = (
     "listed so that their absence is not mistaken for a deleted file."
 )
 
+EDIT_NOTE = (
+    "irqbalance reads its settings from `/etc/default/irqbalance`, which this "
+    "image does not ship - the package has no `/etc` directory at all, only "
+    "`/usr/share/irqbalance/irqbalance.env`. Saving writes that file.\n"
+    "The daemon reads it once, at startup, so **restart irqbalance.service for "
+    "this to take effect.** A save on its own changes the file and not the "
+    "machine; the page says so again after it succeeds rather than implying the "
+    "interrupts have moved."
+)
+
 ACTIONS_NOTE = (
     "Deliberately not run here: `irqbalance --debug` shows what the daemon is "
     "doing by doing it, and what it does is write an IRQ's "
@@ -213,7 +225,8 @@ SOURCES_NOTE = (
     "  /proc/irq/N/smp_affinity_list             the CPUs an IRQ may run on\n"
     "  /sys/devices/system/cpu/online            the CPUs that are up\n"
     "\n"
-    "This page changes nothing, writes nothing, and starts nothing."
+    "Nothing here is started or stopped. The one thing this page writes is "
+    "/etc/default/irqbalance, and only when you press Save."
 )
 
 # `is-enabled` answers that are not a state. Kept verbatim and worded where they
@@ -618,7 +631,13 @@ class IrqBalanceTab(Gtk.Box):
         self._state = state
         self._auth_manager = auth_manager
         self._page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
-        self.append(self._page)
+        # A ToastOverlay because this page now has one thing to report. It wraps
+        # rather than replaces `_page`, so `_page` stays the plain container
+        # every group below appends to.
+        self._toasts = Adw.ToastOverlay()
+        self._toasts.set_child(self._page)
+        self._toast = self._toasts
+        self.append(self._toasts)
         self._build()
         GLib.idle_add(self.load)
 
@@ -640,6 +659,22 @@ class IrqBalanceTab(Gtk.Box):
         self._config_rows: list[Adw.ActionRow] = []
         self._page.append(self._config)
 
+        # The one group on this page that writes. Every other group is a report.
+        self._edit = Adw.PreferencesGroup(
+            title="Set the banlist", description=_plain(EDIT_NOTE))
+        self._page.append(self._edit)
+
+        self._ban_row = Adw.EntryRow(title="CPUs irqbalance must not use",
+                                    text="")
+        self._ban_row.set_tooltip_text(
+            "A CPU list like 0-3 or 0,2,4. Empty means no CPU is excluded, "
+            "which is the shipped behaviour. This is IRQBALANCE_BANNED_CPULIST.")
+        save = Gtk.Button(label="Save", valign=Gtk.Align.CENTER,
+                          css_classes=["suggested-action"])
+        save.connect("clicked", self._on_save_clicked)
+        self._ban_row.add_suffix(save)
+        self._edit.add(self._ban_row)
+
         self._affinity = Adw.PreferencesGroup(
             title="Where each IRQ is pinned",
             description=_plain(AFFINITY_NOTE))
@@ -654,6 +689,74 @@ class IrqBalanceTab(Gtk.Box):
 
         self._page.append(Adw.PreferencesGroup(
             title="Where this comes from", description=_plain(SOURCES_NOTE)))
+
+    # -- the one write on this page ------------------------------------------
+
+    def _on_save_clicked(self, _button) -> None:
+        """Validate here, then hand it to the helper.
+
+        The CPU list is checked **before** pkexec is asked for a password, so a
+        typo costs a red border rather than an administrator authentication.
+        The helper re-checks it anyway - this is for the user's benefit, not for
+        the file's.
+        """
+        wanted = (self._ban_row.get_text() or "").strip()
+        if wanted and not ce.cpu_list_ok(wanted):
+            self._ban_row.add_css_class("error")
+            self._toast.add_toast(Adw.Toast(
+                title=f"'{wanted}' is not a CPU list - try 0-3 or 0,2,4"))
+            return
+        self._ban_row.remove_css_class("error")
+
+        current = ce.read_config(LOCAL_ENV)
+        if current is None:
+            current = ""
+        if wanted:
+            new_text, what = ce.set_key(current, "IRQBALANCE_BANNED_CPULIST",
+                                        wanted)
+        else:
+            new_text, removed = ce.remove_key(current,
+                                              "IRQBALANCE_BANNED_CPULIST")
+            what = "removed" if removed else "unchanged"
+        if what == "duplicate":
+            self._toast.add_toast(Adw.Toast(
+                title="That key is set more than once in the file, so this "
+                      "page cannot tell which one irqbalance reads"))
+            return
+        if what in ("unchanged",) and not wanted:
+            self._toast.add_toast(Adw.Toast(title="Already empty"))
+            return
+
+        def done(error: str, note: str) -> None:
+            if not error:
+                self._toast.add_toast(Adw.Toast(
+                    title="Saved. Restart irqbalance.service to make it live"))
+                return
+            self._toast.add_toast(Adw.Toast(title=GLib.markup_escape_text(
+                error[:300])))
+
+        # Same shape as every other writer in this app: the child waits for a
+        # human to type a password, so it must not run on the GTK main loop,
+        # and its answer has to be handed back onto it.
+        self._ban_row.set_sensitive(False)
+
+        def run() -> None:
+            def done(error: str, note: str) -> None:
+                GLib.idle_add(self._saved, error, note)
+            ce.save(LOCAL_ENV, new_text, done)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _saved(self, error: str, note: str) -> bool:
+        self._ban_row.set_sensitive(True)
+        if error:
+            self._toast.add_toast(Adw.Toast(
+                title=GLib.markup_escape_text(error[:300])))
+            return False
+        self._toast.add_toast(Adw.Toast(
+            title="Saved. Restart irqbalance.service to make it live"))
+        self.load()
+        return False
 
     def load(self) -> bool:
         irqbalance_state(self._on_state)

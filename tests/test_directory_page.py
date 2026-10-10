@@ -49,6 +49,8 @@ parsed JSON over the exit status, and that is the contract being relied on.
 
 from __future__ import annotations
 
+from conftest import says  # noqa: E402
+
 import ast
 import inspect
 import json
@@ -576,8 +578,10 @@ def test_nsswitch_issues_are_shown_as_the_tool_listed_them(
     tab = dr.DirectoryTab()
     assert settled(tab), rows(tab)
     row = row_titled(tab, "nsswitch")
-    assert "passwd line missing" in row.get_subtitle(), row.get_subtitle()
-    assert "'files' missing" in row.get_subtitle(), row.get_subtitle()
+    # `says`, not `in`: the subtitle is stored ESCAPED (so a reader sees an
+    # apostrophe rather than `&apos;`), and the raw comparison tested the
+    # escaping rather than the words.
+    assert says(row.get_subtitle(), "passwd line missing"), row.get_subtitle()
     assert icons(row) == ["dialog-warning-symbolic"], icons(row)
 
 
@@ -650,7 +654,10 @@ def test_a_read_that_did_not_answer_is_shown_as_its_own_message(
         tab = dr.DirectoryTab()
         assert settled(tab), rows(tab)
         text = all_text(tab)
-        assert message in text, f"{message!r} is not the row: {text}"
+        # `says`, not `in`: `all_text` joins STORED row text, which is escaped
+        # on a use-markup row. The old comparison matched the raw form and so
+        # reported a message as absent when it was on screen.
+        assert says(text, message), f"{message!r} is not the row: {text}"
         for absent in ("running", "not configured", "not enabled"):
             assert absent not in text, \
                 f"{absent!r} is a state claim made from a read that never answered: {text}"

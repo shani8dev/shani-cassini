@@ -93,13 +93,28 @@ so the settings actually in effect are six uncommented lines and nothing else:
                ratelimit-interval-usec=1000000  ratelimit-burst=1000
     [publish]  publish-hinfo=no  publish-workstation=no
 
-**The host this was measured on disagrees with Shanios on exactly the line that
-matters most for a privacy question.** Ubuntu's `avahi-daemon 0.8-13ubuntu6.2`
-ships `enable-wide-area=yes` **uncommented** under `[wide-area]`, while Arch's
-0.9rc5 file leaves it commented out (`#enable-wide-area=no`). So "wide-area DNS
-unicast is on" is true of this host and **not** a Shanios fact. The page reports
-only keys the file actually sets, and says so where the file is silent, rather
-than inheriting a value from the other distribution's copy of the same file.
+**This paragraph previously claimed a per-distribution difference that does not
+exist, and the correction matters more than the original claim.** It said
+Ubuntu's `avahi-daemon 0.8-13ubuntu6.2` ships `enable-wide-area=yes`
+**uncommented** under `[wide-area]` while Arch's `0.9rc5` leaves it commented, so
+that "wide-area DNS unicast is on" was a fact about this host and not about
+Shanios. Re-measured on a *newer* Ubuntu of the same `0.8` series -
+`avahi-daemon 0.8-18ubuntu1.1` - the file carries `#enable-wide-area=no`
+**commented, exactly as Arch does**. So that was never a property of the
+distribution; it was a property of one build of one package, recorded as a
+generalisation. Both distributions' shipped files leave the key commented, so the
+page says nothing about wide-area on either, and the honest statement is the
+weaker one below.
+
+**What survives, and is the reason this parser exists.** Whether wide-area DNS
+unicast is in effect depends on whether the line is commented **on the machine in
+front of you**, and the page reports only keys the file actually sets - saying so
+where the file is silent - rather than inheriting a value from a distribution's
+usual copy. On the file measured here that is **6 keys set and 33 commented**, so
+a reader that kept the comments would report 39 configured settings instead of 6.
+`tests/test_avahi_page.py::test_the_parser_agrees_with_the_file_about_which_keys_are_set`
+holds that against a plain independent reading of the real file, and its control -
+a parser that keeps comments - reports exactly 39.
 
 Three more paths, all measured, all reported by whether they exist:
 
@@ -458,21 +473,21 @@ def parse_avahi_conf(text: str) -> list[dict]:
         use-ipv6=yes
 
     A line whose first non-space character is `#` is a comment and is not a
-    setting, which is the whole point of this parser: on a Shanios install six
-    keys are uncommented and about thirty are not, and a reader that kept the
-    comments would report `#enable-wide-area=no` as a configured value while the
-    daemon never saw it.
+    setting, which is the whole point of this parser: on the file measured here
+    **6 keys are uncommented and 33 are not**, and a reader that kept the
+    comments would report 39 configured settings while the daemon saw 6.
 
     Section headers carry no `=`, and a key outside any section is kept with an
     empty section rather than dropped - a key the daemon reads is a fact about
     this machine even if this parser has not seen the header it sits under.
 
-    The wide-area case is the one that makes this worth stating plainly. Ubuntu's
-    `avahi-daemon 0.8-13ubuntu6.2` ships `enable-wide-area=yes` **uncommented**;
-    Arch's `0.9rc5` file leaves it commented. So whether wide-area DNS unicast is
-    in effect differs between the two platforms' copies of the same file, and
-    this parser reports what it finds rather than what the distribution usually
-    ships.
+    What this reports is **what the file on this machine sets**, not what a
+    distribution usually ships. That distinction used to be argued from a
+    per-distribution table that turned out to be wrong: an earlier version of
+    this docstring claimed Ubuntu shipped `enable-wide-area=yes` uncommented while
+    Arch left it commented, which a newer Ubuntu of the same series contradicts -
+    it leaves it commented too. Two builds of one package shipping both ways is
+    exactly why the parser asks the file rather than the distribution.
     """
     entries: list[dict] = []
     section = ""

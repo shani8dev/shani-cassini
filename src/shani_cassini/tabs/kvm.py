@@ -610,12 +610,22 @@ def save_argv(digest: str) -> list[str]:
     digest here and bytes on the pipe there, so a process listing cannot read it
     and a password prompt sharing the tty cannot corrupt it silently.
 
-    **This call is refused today** and the page shows the helper's own words:
-    the allowlist in shani-deploy/scripts/shani-cassini-save.sh (line 63)
-    has three targets - sudoers, sshd_config, exports - and no modules_load;
-    line 157 is the refusal it answers with. No polkit
-    rule needs adding for it: 99-shani.rules grants that program by path, so a
-    new target is covered the moment the helper learns it.
+    **This call used to be refused on every attempt.** The ``modules_load``
+    target was never in the helper's allowlist - ``target_path()`` in
+    shani-deploy/scripts/shani-cassini-save.sh knew only ``sudoers``,
+    ``sshd_config`` and ``exports`` - so the save died at
+    ``die "unknown target 'modules_load'"`` and the page reported that as the
+    reason nothing loaded. Nothing here noticed, because the refusal is a
+    plausible-looking message rather than an exception.
+
+    The target exists now, writing ``/etc/modules-load.d/50-shani-kvm.conf``,
+    validated before install by ``modprobe --show-depends`` on every module
+    named (systemd-modules-load has no check mode, and a name that cannot
+    resolve is silently ignored at boot). Verified against the real helper in
+    ``shani-deploy/tests/modules-load-target.sh``.
+
+    No polkit rule needed adding: 99-shani.rules grants that program by path,
+    so the new target was covered the moment the helper learned it.
     """
     return [PKEXEC, HELPER, "--target", TARGET, "--expect-sha256", digest]
 

@@ -22,6 +22,11 @@ from gi.repository import Adw, GLib, Gtk  # noqa: E402
 from shani_cassini import system_status as ss  # noqa: E402
 from shani_cassini.tabs import smartcard as sc  # noqa: E402
 
+# `says` / `assert_escaped_not_markup` read a row's text the way a user
+# does - see conftest for why `needle in row.get_title()` stopped working
+# when the pages began escaping properly.
+from conftest import assert_escaped_not_markup, says  # noqa: E402
+
 
 def spin(cond, timeout=5.0):
     """Iterate the main loop until cond() holds - the shape test_tabs and
@@ -337,8 +342,9 @@ def test_a_subject_full_of_markup_is_escaped_not_rendered(fake):
     # markup at all: libadwaita fails to parse it, logs a Gtk-WARNING and leaves
     # the subtitle empty. So the plain text coming back is the proof that the
     # escaped form is what the label was given.
-    assert row.get_subtitle() == "ops<1>", \
-        f"the account was not escaped into the label: {row.get_subtitle()!r}"
+    assert_escaped_not_markup(row.get_subtitle(), what="the account")
+    assert says(row.get_subtitle(), "ops<1>"), \
+        f"the account was not shown to the user: {row.get_subtitle()!r}"
 
 
 def test_every_mapping_offers_edit_and_remove(fake):
