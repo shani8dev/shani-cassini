@@ -3844,7 +3844,7 @@ def _parse_exim_queue(text: str) -> list[dict]:
     return rows
 
 
-APCUPSD_CONF: Final = "/etc/apcupsd/apcupsd.conf"
+NUT_UPSMON_CONF: Final = "/etc/nut/upsmon.conf"
 # The directives whose value is worth showing, in the order they are asked
 # about. Only UPSNAME, DEVICE, LISTEN/HOSTPORT and MONITOR are read: the rest
 # of the shipped file is template text, and none of the remaining directives
@@ -3852,62 +3852,85 @@ APCUPSD_CONF: Final = "/etc/apcupsd/apcupsd.conf"
 _UPS_DIRECTIVES: Final = ("UPSNAME", "DEVICE", "LISTEN", "HOSTPORT", "MONITOR")
 
 
-def _parse_apcupsd_conf(text: str) -> dict[str, str]:
-    """The uncommented apcupsd.conf directives, as {name: value}.
+# The upsmon.conf directives this app names. The page edits exactly these, so
+# these are exactly what the collector reads: a reader that parsed every
+# directive would return a dict the page cannot use and would grow silently with
+# each NUT release. Kept beside the parser, not in the page, because the page's
+# own POLICY tuple is the editable half and a second list in the page would be
+# two lists to keep in step.
+_NUT_DIRECTIVES: Final[frozenset[str]] = frozenset({
+    "MONITOR", "MINSUPPLIES", "SHUTDOWNCMD", "POWERDOWNFLAG", "DEADTIME",
+    "FINALDELAY", "POLLFREQ", "POLLFREQALERT", "HOSTSYNC",
+})
 
-    A commented line is not a setting, and this file is mostly comments: the
-    Arch 4.15.2 package ships three `#UPSNAME` lines and **every one of them
-    is commented**, while `DEVICE /dev/usb/hid/hiddev[0-9]` at line 92 is not.
-    So out of the box there is a device pattern to watch and nothing to call
-    it, and the honest report of that is "no UPS configured" - which is a
-    different thing from apcupsd being broken or absent, and a different thing
-    again from a UPS that is present and reporting.
 
-    The last occurrence of a directive wins, which is how apcupsd itself reads
-    the file: a later line replaces an earlier one rather than both applying.
+def _parse_nut_directives(text: str) -> dict[str, str]:
+    """The uncommented upsmon.conf directives, as {name: value}.
+
+    A DIRECTIVE file: `KEY value` per line, no `=` and no sections. That is not
+    the shape of the INI-like ups.conf and upsd.users that sit beside it, and
+    writing one format's parser for the other file is how the previous apcupsd
+    reader came to misread its own config - it split on `=` because the
+    neighbouring systemd EnvironmentFile target uses them, and apcupsd.conf has
+    no `=` in it at all.
+
+    The last occurrence of a directive wins, which is how upsmon itself reads
+    the file, so a duplicate does not silently hide behind the first one.
+
+    Read-only, and deliberately not a policy parser: it does not judge whether
+    the values are sane, because that is the deploy helper's validator and a
+    second opinion assembled here would only be able to disagree. What matters
+    here is `MONITOR`, which is the one line that says a UPS is watched at all.
     """
     found: dict[str, str] = {}
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
             continue
-        # apcupsd's own syntax allows whitespace around '=' as well as spaces.
-        name, _, value = line.partition(" ")
-        if not value:
+        parts = stripped.split(None, 1)
+        if len(parts) != 2:
             continue
-        value = value.strip()
-        if value and name.upper() in _UPS_DIRECTIVES:
-            found[name.upper()] = value
+        name, value = parts[0], parts[1].strip()
+        # Only the directives this app actually names. upsmon.conf documents
+        # ~30 of them and the file is mostly template prose, so reading every
+        # uppercase word would fill the page with daemon tuning nobody asked
+        # about - NOTIFYMSG, COMMBAD and ALARM say nothing about the machine.
+        if name.isupper() and name in _NUT_DIRECTIVES:
+            found[name] = value
     return found
 
 
 def ups_state(done: Callable[[dict, str], None]) -> None:
-    """What the machine knows about a UPS, from its own files and daemon.
+    """What the machine knows about a UPS, from NUT's own files and daemon.
 
-    Read-only, and deliberately not a status parser. `apcaccess status` prints
-    a block of `KEY : VALUE` lines whose exact shape could not be observed
-    here - there is no UPS on this host and apcupsd cannot be made to answer
-    without one - and a settings panel that guessed the format would be
-    reporting numbers no tool produced. So the live figures are shown as the
-    tool's own words, and this function parses only what it has read: the
-    shipped config file, and systemd's answer about the daemon.
+    Read-only, and deliberately not a status parser. `upsc` prints a block of
+    `KEY : VALUE` lines whose exact shape could not be observed here - there is
+    no UPS on this host and no driver can be made to answer without one - and a
+    settings panel that guessed the format would be reporting numbers no tool
+    produced. So the live figures are shown as the tool's own words, and this
+    function parses only what it has read: NUT's upsmon.conf, and systemd's
+    answer about the daemon.
 
-    `apcaccess` lives in /usr/sbin, so it is resolved with tool_path_or_self()
-    rather than handed a bare name - the same trap as `smartctl`, and getting
-    it wrong makes a working daemon read as missing.
+    `upsc` lives in /usr/bin, so it is resolved with tool_path_or_self() rather
+    than handed a bare name - the same trap as `smartctl`, and getting it wrong
+    makes a working daemon read as missing.
     """
     conf: dict[str, str] = {}
     conf_error = ""
     try:
-        with open(APCUPSD_CONF, encoding="utf-8", errors="replace") as fh:
-            conf = _parse_apcupsd_conf(fh.read())
+        with open(NUT_UPSMON_CONF, encoding="utf-8", errors="replace") as fh:
+            conf = _parse_nut_directives(fh.read())
     except FileNotFoundError:
-        conf_error = "apcupsd is not installed (no %s)" % APCUPSD_CONF
+        conf_error = "NUT is not configured (no %s)" % NUT_UPSMON_CONF
     except OSError as e:
-        conf_error = f"could not read {APCUPSD_CONF}: {e}"
+        conf_error = f"could not read {NUT_UPSMON_CONF}: {e}"
 
-    name = conf.get("UPSNAME", "")
-    configured = bool(name)
+    # The MONITOR line is the one thing that says a UPS is being watched at all:
+    # `MONITOR <system> <powervalue> <user> <password> (master|slave)`. Without
+    # one, upsmon has nothing to act on no matter what the policy says.
+    monitor = conf.get("MONITOR", "")
+    configured = bool(monitor)
+    name = monitor.split("@", 1)[0] if monitor else ""
 
     def on_service(text: Optional[str], err: str) -> None:
         service: Optional[bool] = None
@@ -3922,19 +3945,19 @@ def ups_state(done: Callable[[dict, str], None]) -> None:
             "installed": not conf_error,
             "configured": configured,
             "name": name,
-            "device": conf.get("DEVICE", ""),
-            "listen": conf.get("LISTEN") or conf.get("HOSTPORT", ""),
-            "monitor": conf.get("MONITOR", ""),
+            "device": "",
+            "listen": "",
+            "monitor": monitor,
             "service": service,
             "status": "",
             "error": conf_error,
         }
 
-        # The status read is only worth attempting when there is something to
-        # ask about. Running it with no UPSNAME configured produces a
-        # connection error that says more about the absence than about any
-        # fault, and would render as a failure on a machine that is fine.
-        if not configured or not have_tool("apcaccess"):
+        # The status read is only worth attempting when there is something to ask
+        # about. Running it with no MONITOR line produces a connection error that
+        # says more about the absence than about any fault, and would render as a
+        # failure on a machine that is fine.
+        if not configured or not have_tool("upsc"):
             done(payload, conf_error)
             return
 
@@ -3942,10 +3965,9 @@ def ups_state(done: Callable[[dict, str], None]) -> None:
             payload["status"] = (text or "").strip()
             done(payload, conf_error)
 
-        run_text([tool_path_or_self("apcaccess"), "status"], on_status)
+        run_text([tool_path_or_self("upsc"), f"{name}@localhost"], on_status)
 
-    run_text(["systemctl", "is-active", "apcupsd"], on_service)
-
+    run_text(["systemctl", "is-active", "nut-monitor.service"], on_service)
 
 SYS_CLASS_NET: Final = "/sys/class/net"
 

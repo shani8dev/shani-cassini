@@ -359,7 +359,7 @@ def parse_unit_file(text: str) -> dict:
 
     `systemctl cat` prefixes each fragment with `# <path>` and a blank line.
     That header is **not observed on this host, which has no unit files at all**
-    (`systemctl cat apcupsd.service` answers `No files found.` here too), so it
+    (`systemctl cat nut-monitor.service` answers `No files found.` here too), so it
     is stripped if present and its absence is equally fine: the parser runs on
     the bare unit file, which *is* the real capture.
 

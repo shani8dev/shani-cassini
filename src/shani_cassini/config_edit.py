@@ -3,7 +3,7 @@
 This exists because two pages now need the same shape of edit and neither owns
 any of the machinery:
 
-* **UPS** edits `/etc/apcupsd/apcupsd.conf` — the shutdown policy, and warns
+* **UPS** edits `/etc/nut/upsmon.conf` — the shutdown policy, and warns
   that the daemon has to be restarted for it to matter.
 * **IRQ Balance** edits `/etc/default/irqbalance` — the CPU banlist.
 
@@ -19,14 +19,14 @@ decides the outcome rather than the exit code.
 
 **Two rules that are easy to get wrong and are therefore structural here.**
 
-1. **A key that is commented out is set, not replaced.** apcupsd ships
-   ``#BATTERYLEVEL 5`` in its template and ``irqbalance.env`` ships
+1. **A key that is commented out is set, not replaced.** NUT ships
+   ``#MINSUPPLIES 1`` in its template and ``irqbalance.env`` ships
    ``#IRQBALANCE_BANNED_CPULIST=`` commented. A naive replace finds nothing and
    silently does nothing, which is the failure this module exists to prevent:
    the user clicks Save, gets a success toast, and the setting is still off.
    So ``set_key`` uncomments as a fallback and says which it did.
 2. **The last occurrence of a key wins**, and only the last is changed.
-   apcupsd's template mentions several of these keys in its prose comments and
+   NUT's template mentions several of these keys in its prose comments and
    sets a few more than once. Changing the first and leaving the second in
    place produces a file where the value the daemon reads is not the one the
    user just chose - a save that reports success and changes nothing. The
@@ -46,10 +46,11 @@ from . import config_io
 def _split_directive(line: str) -> tuple[str, str, bool]:
     """``KEY VALUE`` or ``KEY=VALUE`` -> (key, value, was_commented).
 
-    Both spellings occur in real files: apcupsd.conf is ``KEY VALUE`` with no
+    Both spellings occur in real files: apcupsd.conf was ``KEY VALUE`` with no
     ``=`` anywhere in it, and irqbalance's env file is ``KEY=VALUE`` because
-    systemd parses it. Guessing one shape here is how the first apcupsd
-    validator came to refuse the distribution's own file.
+    systemd parses it. Guessing one shape here is how that first validator came
+    to refuse the distribution's own file — which is why this function reads
+    the separator off the file rather than assuming one.
     """
     stripped = line.strip()
     commented = stripped.startswith("#")
@@ -67,17 +68,17 @@ def separator(text: str) -> str:
     """``"="`` or ``" "`` - whichever this file already uses for a live directive.
 
     **This is not a style preference, it is correctness, and getting it wrong is
-    silent.** apcupsd splits ``apcupsd.conf`` on whitespace, so a line written as
-    ``BATTERYLELV=15`` names a key ``BATTERYLELV=15`` and is ignored: the save
-    succeeds, the page says it worked, and the threshold has not moved. The
-    shipped file has **zero** ``=`` in it (``grep -cE '^[A-Z][A-Z0-9_]*='``
-    returns 0 across all 344 lines). irqbalance's env file is the opposite,
+    silent.** apcupsd splits its config on whitespace, so a line written as
+    ``BATTERYLEVEL=15`` names a key ``BATTERYLEVEL=15`` and is ignored: the save
+    succeeds, the page says it worked, and the threshold has not moved. That
+    shipped file had **zero** ``=`` in it (``grep -cE '^[A-Z][A-Z0-9_]*='``
+    returned 0 across all 344 lines). irqbalance's env file is the opposite,
     ``KEY=VALUE``, because systemd parses it.
 
     So the separator is read off the file rather than chosen here. A file with no
     uncommented directive yet falls back to ``"="``, which is right for a systemd
     EnvironmentFile and harmless for apcupsd: the first line written is the one
-    that decides, and it is always a key apcupsd's own template already contains
+    that decides, and it is always a key NUT's own template already contains
     as a comment to be uncommented.
     """
     for line in text.splitlines():

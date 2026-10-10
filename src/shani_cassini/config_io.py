@@ -750,12 +750,14 @@ HELPER_TARGETS: Final[dict[str, str]] = {
     # directory at all, so this is a file Cassini creates rather than edits -
     # which is why it needs a validator: nothing else would ever check it.
     "/etc/default/irqbalance": "irqbalance_env",
-    # apcupsd's ONE config file, with no drop-in mechanism. Unlike the four
-    # above this one is NOT shipped by shani-settings, and cannot be: UPSCABLE,
-    # UPSTYPE and DEVICE are per-machine, so a default would name a device that
-    # is not there. The page therefore edits what apcupsd's own package put
-    # there, in place.
-    "/etc/apcupsd/apcupsd.conf": "apcupsd_conf",
+    # NUT's upsmon.conf - the shutdown policy, and the file the UPS page edits.
+    # shani-settings ships a baseline for it, so unlike the four above there IS
+    # a default, but the MONITOR line inside it is generated per-install by that
+    # package's install hook along with the matching upsd.users credential.
+    # ups.conf is deliberately NOT here: which driver and which port are facts
+    # about the hardware, `nut-scanner -U` writes the right one, and upsd.users
+    # holds the credential that can force a UPS power-down.
+    "/etc/nut/upsmon.conf": "nut_upsmon_conf",
 }
 
 

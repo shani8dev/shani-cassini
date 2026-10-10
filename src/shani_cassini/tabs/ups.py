@@ -1,33 +1,38 @@
-"""UPS: whether the machine will survive losing power.
+"""The UPS page, now against NUT.
 
-`apcupsd` is in every image profile's package list and there is **no panel for
-it in either desktop** - GNOME's 28 panels and Plasma's 62 System Settings
-modules were both enumerated from the packages themselves, and neither contains
-anything about a UPS. Plasma's `powerdevilprofilesconfig` is about power
-*profiles* (performance vs. balanced), which is a different question from
-whether the machine is about to shut down.
+What changed and why: apcupsd had had no upstream release since 3.14.14
+(2016/2017) while NUT is at 2.8.5 with its data model published as IETF RFC
+9271, 170+ manufacturers across serial/USB/SNMP/IPMI, and an `apcupsd-ups` driver
+that still reaches apcupsd-controlled hardware. So the daemon and the file this
+page edits both changed, and the page was rewritten against the real thing
+rather than assumed.
 
-The fact that makes this page worth having is what the shipped configuration
-actually says. Arch's `apcupsd` package writes a `DEVICE
-/dev/usb/hid/hiddev[0-9]` line and leaves **every `UPSNAME` line commented
-out** - so out of the box there is a device pattern to watch and nothing to
-call it. That is not a broken daemon, and it is not a healthy UPS either; it
-is the third state, and it is the one a desktop gives a user no way to see.
+**What this page can and cannot configure, stated plainly.** apcupsd's page
+offered BATTERYLEVEL / MINUTES / TIMEOUT / KILLDELAY - a percentage-based
+shutdown threshold you could move. **NUT has no direct equivalent, and that is a
+real reduction rather than a rename.** upsmon acts on the UPS *hardware's own*
+low-battery signal: the driver reports the device's own LOWBATT state and
+upsmon responds. Getting a charge- or runtime-based trigger instead requires
+`dummy-ups` with overridden `battery.charge`/`battery.runtime` plus `upssched`,
+which is a deliberate advanced setup and not a default this page should build.
 
-**No status values are parsed, on purpose.** `apcaccess status` prints a block
-of `KEY : VALUE` lines, but there is no UPS on any machine this was written on
-and apcupsd cannot be made to answer without one, so the exact shape was never
-observed. A panel that guessed it would put numbers on screen that no tool
-produced - the failure this repo has removed more than once. The tool's own
-output is shown verbatim instead, and only the configuration file and
-systemd's answer about the daemon are interpreted.
+So what is configurable here is the SHAPE of the response - how long to wait,
+what to run, and what counts as "the UPS has gone away" - and that is what
+`upsmon.conf` holds. The page says this rather than implying a battery
+percentage knob that does not exist, because a page whose row promises a
+threshold it cannot set is the exact failure this repo keeps finding.
 
-Read-only. Configuring a UPS means plugging one in and naming it.
+The device itself (`ups.conf`) is deliberately NOT editable here. Which driver
+and which port are facts about the hardware, and `nut-scanner -U` writes the
+right section without the user having to know their own UPS's protocol - so the
+page points at it instead of offering a field to get wrong.
 """
 
 from __future__ import annotations
 
 import logging
+import pathlib
+import re
 import threading
 
 from gi.repository import Adw, GLib, Gtk  # type: ignore
@@ -35,90 +40,99 @@ from gi.repository import Adw, GLib, Gtk  # type: ignore
 from shani_cassini import config_edit as ce
 from shani_cassini import system_status as ss
 
-logger = logging.getLogger(__name__)
 
 SUMMARY_NOTE = (
-    "What the machine knows about a UPS: the shipped configuration, whether "
-    "the daemon is running, and what apcupsd itself reports. The shutdown "
-    "policy below is the one thing here you can change."
+    "Whether the daemon is running, what it is monitoring, and the policy that "
+    "decides what happens when the power goes. The policy is editable below."
 )
 
 SETUP_NOTE = (
-    "Out of the box no UPS is configured, so there is nothing here to report "
-    "and nothing is wrong.\n"
-    "The device line is already in the file in a form that matches any hiddev, "
-    "so a UPS is usually detected without configuration. Two things still need "
-    "a name - the UPS itself, and which shutdown policy you want - and both are "
-    "below.\n"
-    "**A restart is required.** apcupsd reads this file once, at startup; its own "
-    "header says so. Saving changes the file and not the machine until you run "
-    "`sudo systemctl restart apcupsd.service`."
+    "Out of the box nothing is configured, so there is nothing to report and "
+    "nothing is wrong.\n"
+    "**Find your UPS first** - NUT ships a scanner that needs no guessing from "
+    "you:\n"
+    "  sudo nut-scanner -U\n"
+    "It prints a ready-to-paste section for `/etc/nut/ups.conf`, naming the "
+    "driver and port your hardware actually needs. That is why this page does "
+    "not offer those two as fields: which protocol a UPS speaks is a fact about "
+    "the device, and a wrong value fails as a driver that exits silently.\n"
+    "**A restart is required.** NUT reads these files once, at startup. Saving "
+    "changes the file and not the machine until you run "
+    "`sudo systemctl restart nut-server.service nut-monitor.service`."
 )
-
-EDIT_NOTE = (
-    "What the machine does when the power goes, which is the part people come "
-    "here to set and the part with consequences either way.\n"
-    "Every value is apcupsd's own setting in `/etc/apcupsd/apcupsd.conf`, edited "
-    "where apcupsd's package put it and checked before it is written: a value "
-    "that would not parse is refused rather than saved.\n"
-    "**The daemon reads this file once, at startup.** After a save, run "
-    "`sudo systemctl restart apcupsd.service` - the page will say so again rather than "
-    "imply the machine has already changed."
-)
-
-# apcupsd's own configuration file, edited in place. There is no drop-in
-# mechanism and no reason to want one: this is the only file apcupsd reads, and
-# its DEVICE/UPSCABLE/UPSTYPE lines are per-machine, so shani-settings cannot
-# ship a default that would be right on someone else's hardware.
-APCUPSD_CONF: str = "/etc/apcupsd/apcupsd.conf"
-
-# The shutdown policy, and the reason it is these four.
-#
-# The keys come from apcupsd 3.14.8's own shipped file - `grep -nE '^[A-Z]'`
-# gives 25 live settings across 344 lines, the rest being per-key documentation -
-# and NOT from the ArchWiki page, which documents the path and `TIMEOUT` and
-# then points at the file. **apcupsd.conf is `KEY VALUE`, whitespace-separated,
-# with zero `=` characters in it**, which is why the writer picks the separator
-# off the file rather than assuming one. (An earlier version of this page's
-# validator assumed `KEY=VALUE`, imported from a neighbouring systemd
-# EnvironmentFile target, and refused the distribution's own file on its first
-# live line.)
-#
-# These four are what a UPS owner actually comes to set, and each fails in the
-# direction worth naming:
-#   BATTERYLEVEL - too high and the machine shuts down while the battery is
-#                  nearly full; too low and it stays up until the UPS dies.
-#   MINUTES      - the same decision expressed as remaining runtime.
-#   TIMEOUT      - whether a *timed-out* UPS (nothing said for N seconds) counts
-#                  as a failure at all. apcupsd ships this 0, which ignores it.
-#   KILLDELAY    - how long before the last resort.
-POLICY: tuple[tuple[str, str, str, str], ...] = (
-    ("BATTERYLEVEL", "Shut down at this battery percentage", "5", "1-100"),
-    ("MINUTES", "...or with this many minutes of runtime left", "3", "whole seconds"),
-    ("TIMEOUT", "Treat a timed-out UPS as a failure", "0", "whole seconds"),
-    ("KILLDELAY", "Then force it after this many seconds", "0", "whole seconds"),
-)
-
-# Every value is whole seconds or a percentage, so one rule covers the four.
-# The bounds are the ones the helper's validator enforces; they are repeated
-# here so the user gets the answer without an administrator authentication for a
-# value that was never going to be accepted.
-POLICY_BOUNDS: dict[str, tuple[int, int]] = {
-    "BATTERYLEVEL": (1, 100),
-    "MINUTES": (0, 9999),
-    "TIMEOUT": (0, 9999),
-    "KILLDELAY": (0, 9999),
-}
 
 READ_NOTE = (
     "Nothing here changes the daemon, and nothing here talks to the UPS.\n"
-    "  apcaccess status       everything apcupsd reports, as it reports it\n"
-    "  systemctl status apcupsd"
+    "  upsc myups@localhost   everything NUT reports, as it reports it\n"
+    "  systemctl status nut-monitor.service"
 )
 
 
 def _row(title: str, subtitle: str = "") -> Adw.ActionRow:
     return Adw.ActionRow(title=title, subtitle=subtitle)
+
+
+# NUT's shutdown policy. This is a DIRECTIVE file: `KEY value`, one per line,
+# with no `=` and no sections - which is a different shape from the INI-like
+# ups.conf and upsd.users sitting beside it, and the reason the writer picks the
+# separator per file instead of assuming one.
+#
+# These are the settings that decide what the machine DOES, and each fails in the
+# direction worth naming:
+#   MINSUPPLIES  - how many supplies must be on battery before shutdown starts.
+#                  0 is accepted by upsmon and can then never fire.
+#   SHUTDOWNCMD  - the command that brings the machine down. Unquoted, only its
+#                  first word is a command and the rest become arguments nothing
+#                  reads, so a shutdown that silently never happens.
+#   POWERDOWNFLAG- the flag file telling the driver to cut UPS power once the
+#                  machine is down.
+#   DEADTIME     - seconds of no answer before the UPS is declared gone. When it
+#                  fires, upsmon treats that as on-battery, because an
+#                  unreachable UPS is indistinguishable from a dead one.
+#   FINALDELAY   - seconds between running SHUTDOWNCMD and exiting.
+POLICY: tuple[tuple[str, str, str], ...] = (
+    ("MINSUPPLIES", "Supplies that must fail before shutting down", "1"),
+    ("SHUTDOWNCMD", "Command that brings the machine down", '"/sbin/shutdown -h +0"'),
+    ("POWERDOWNFLAG", "Flag file telling the UPS to cut power", "/etc/killpower"),
+    ("DEADTIME", "Seconds of silence before the UPS counts as gone", "15"),
+    ("FINALDELAY", "Seconds after shutdown before upsmon exits", "0"),
+    ("POLLFREQ", "Seconds between checks on mains", "5"),
+    ("POLLFREQALERT", "Seconds between checks on battery", "5"),
+)
+
+# What each key accepts. INT keys are whole seconds or a count; CMD is a quoted
+# shell command; PATH must be absolute. The bounds are the ones the helper's
+# validator enforces; they are repeated here so the user gets the answer without
+# an administrator authentication for a value that was never going to be
+# accepted.
+POLICY_KIND: dict[str, str] = {
+    "MINSUPPLIES": "INT",
+    "SHUTDOWNCMD": "CMD",
+    "POWERDOWNFLAG": "PATH",
+    "DEADTIME": "INT",
+    "FINALDELAY": "INT",
+    "POLLFREQ": "INT",
+    "POLLFREQALERT": "INT",
+}
+
+POLICY_BOUNDS: dict[str, tuple[int, int]] = {
+    "MINSUPPLIES": (1, 8),
+    "DEADTIME": (1, 600),
+    "FINALDELAY": (0, 600),
+    "POLLFREQ": (1, 600),
+    "POLLFREQALERT": (1, 600),
+}
+
+# The keys this page never offers. `upsd.users` holds the credential that can
+# force a UPS power-down, so it is generated once by shani-settings' install
+# hook and is not something a settings window should be able to rewrite; the
+# device section in ups.conf is nut-scanner's job for the reason above.
+NOT_EDITABLE: tuple[tuple[str, str], ...] = (
+    ("upsd.users", "holds the credential that can force a UPS power-down. "
+                   "Generated once at install; not editable from a window."),
+    ("ups.conf", "the device - which driver, which port. `sudo nut-scanner -U` "
+                 "writes the right one for your hardware."),
+)
 
 
 class UpsTab(Gtk.Box):
@@ -128,8 +142,6 @@ class UpsTab(Gtk.Box):
         self._auth_manager = auth_manager
         self._page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         # A ToastOverlay because this page now has a Save that can be refused.
-        # It wraps rather than replaces `_page`, so `_page` stays the plain
-        # container every group below appends to.
         self._toasts = Adw.ToastOverlay()
         self._toasts.set_child(self._page)
         self._toast = self._toasts
@@ -138,27 +150,32 @@ class UpsTab(Gtk.Box):
         GLib.idle_add(self.load)
 
     def _build(self) -> None:
-        self._summary = Adw.PreferencesGroup(title="UPS", description=SUMMARY_NOTE)
-        self._row_config = _row("Configuration", "Reading…")
-        self._summary.add(self._row_config)
-        self._row_service = _row("apcupsd service", "Reading…")
+        self._summary = Adw.PreferencesGroup(
+            title="Uninterruptible power", description=SUMMARY_NOTE)
+        self._row_state = _row("Status", "Reading…")
+        self._row_service = _row("nut-monitor service", "Reading…")
+        self._summary.add(self._row_state)
         self._summary.add(self._row_service)
         self._page.append(self._summary)
 
-        self._setup_group = Adw.PreferencesGroup(
-            title="Setting one up", description=SETUP_NOTE)
-        self._page.append(self._setup_group)
+        self._not_editable = Adw.PreferencesGroup(
+            title="Not editable from here", description="Two NUT files are deliberately absent, and saying why beats a "
+                           "page that looks like it can do something it cannot.")
+        for name, why in NOT_EDITABLE:
+            self._not_editable.add(_row(name, why))
+        self._page.append(self._not_editable)
 
-        # The one group that writes.
         self._edit = Adw.PreferencesGroup(
-            title="Shutdown policy", description=EDIT_NOTE)
+            title="What happens when the power goes",
+            description="NUT has no battery-percentage threshold: upsmon responds to "
+                "the UPS's own low-battery signal. What is set here is the "
+                "shape of the response - how long to wait, what to run, and "
+                "when an unreachable UPS counts as gone.")
         self._entries: dict[str, Adw.EntryRow] = {}
         self._saves: dict[str, Gtk.Button] = {}
-        for key, subtitle, _default, _hint in POLICY:
+        for key, subtitle, _default in POLICY:
             row = Adw.EntryRow(title=key, text="")
-            row.set_tooltip_text(
-                f"{subtitle}. Left empty, the file keeps no {key} line and "
-                f"apcupsd uses its own default.")
+            row.set_tooltip_text(subtitle)
             save = Gtk.Button(label="Save", valign=Gtk.Align.CENTER,
                               css_classes=["suggested-action"])
             save.connect("clicked", self._on_save_clicked, key)
@@ -169,47 +186,46 @@ class UpsTab(Gtk.Box):
         self._page.append(self._edit)
 
         self._raw_group = Adw.PreferencesGroup(
-            title="Reported by apcupsd",
-            description=("Shown exactly as the tool prints it. No value on "
-                         "this page is interpreted, so nothing here can be "
-                         "misread as a measurement Cassini made."))
-        self._raw_label: Gtk.Label | None = None
+            title="Reported by NUT", description=READ_NOTE)
+        self._raw_rows: list[Adw.ActionRow] = []
         self._page.append(self._raw_group)
 
-        self._page.append(Adw.PreferencesGroup(
-            title="Reading it yourself", description=READ_NOTE))
+    def load(self) -> bool:
+        ss.ups_state(self._on_state)
+        return False
 
     # -- the one write on this page ------------------------------------------
 
     def _on_save_clicked(self, _button, key: str) -> None:
-        """Range-check here, so a typo costs a message rather than a password.
-
-        These values decide whether the machine goes down when the power does.
-        The helper re-checks the same bounds on the far side - this is for the
-        user's benefit, not for the file's.
-        """
+        """Validate here, so a typo costs a message rather than a password."""
         row = self._entries[key]
         raw = (row.get_text() or "").strip()
-        low, high = POLICY_BOUNDS[key]
-        # **Empty is a legitimate value and means "remove the line"**, so it is
-        # checked before the numeric test rather than after it. The first version
-        # tested `raw.isdigit()` unconditionally, so an empty entry - which is
-        # exactly how an unset key is shown - was rejected as malformed and the
-        # user could never go back to "apcupsd's own default". The error message
-        # in that version even advertised "or empty to leave it unset" while the
-        # code refused it.
-        if raw and (not raw.isdigit() or not (low <= int(raw) <= high)):
+        kind = POLICY_KIND[key]
+
+        bad = None
+        if kind == "INT":
+            low, high = POLICY_BOUNDS[key]
+            if not raw.isdigit() or not (low <= int(raw) <= high):
+                bad = f"{key} takes a whole number from {low} to {high}"
+        elif kind == "PATH":
+            if not raw.startswith("/"):
+                bad = f"{key} must be an absolute path"
+        elif kind == "CMD":
+            # Quoted, because unquoted only the first word is a command and the
+            # rest become arguments nothing reads - a shutdown that never runs.
+            if not (raw.startswith('"') and raw.endswith('"') and len(raw) >= 2):
+                bad = f"{key} must be quoted, e.g. \"/sbin/shutdown -h +0\""
+
+        if bad is not None:
             row.add_css_class("error")
-            self._toast.add_toast(Adw.Toast(title=GLib.markup_escape_text(
-                f"{key} takes a whole number from {low} to {high}, or empty "
-                f"to leave it unset")))
+            self._toast.add_toast(Adw.Toast(title=GLib.markup_escape_text(bad)))
             return
         row.remove_css_class("error")
 
-        current = ce.read_config(APCUPSD_CONF)
+        current = ce.read_config(LOCAL_UPSMON_CONF)
         if current is None:
             self._toast.add_toast(Adw.Toast(
-                title="There is no /etc/apcupsd/apcupsd.conf on this machine"))
+                title="There is no /etc/nut/upsmon.conf on this machine"))
             return
         if raw:
             new_text, what = ce.set_key(current, key, raw)
@@ -219,7 +235,7 @@ class UpsTab(Gtk.Box):
         if what == "duplicate":
             self._toast.add_toast(Adw.Toast(
                 title=f"{key} is set more than once in that file, so this page "
-                      "cannot tell which one apcupsd reads"))
+                      "cannot tell which one upsmon reads"))
             return
         if what == "unchanged":
             self._toast.add_toast(Adw.Toast(title="Already at that value"))
@@ -231,7 +247,7 @@ class UpsTab(Gtk.Box):
         def run() -> None:
             def done(error: str, note: str) -> None:
                 GLib.idle_add(self._saved, key, error)
-            ce.save(APCUPSD_CONF, new_text, done)
+            ce.save(LOCAL_UPSMON_CONF, new_text, done)
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -243,74 +259,63 @@ class UpsTab(Gtk.Box):
                 title=GLib.markup_escape_text(error[:300])))
             return False
         self._toast.add_toast(Adw.Toast(
-            title=f"{key} saved. Restart apcupsd.service to make it live"))
+            title=f"{key} saved. Restart nut-monitor.service to make it live"))
         self.load()
         return False
+
+    # -- reporting -------------------------------------------------------------
 
     def _render_policy(self) -> None:
         """What each setting is set to now, read from the file rather than from
         what this page last wrote - so a hand-edit in a terminal shows up here.
-
-        An absent line reads as an empty entry, which is honest: the file sets
-        nothing and apcupsd is using its own default.
         """
-        for key, _subtitle, default, _hint in POLICY:
-            value = ce.conf_value(APCUPSD_CONF, key)
+        for key, _subtitle, _default in POLICY:
+            value = ce.conf_value(LOCAL_UPSMON_CONF, key)
             row = self._entries[key]
             if row.get_text() != value:
                 row.set_text(value)
-            row.set_tooltip_text(
-                f"apcupsd's own default is {default}. Empty means this file "
-                f"sets nothing for {key}.")
-
-    def load(self) -> bool:
-        ss.ups_state(self._on_state)
-        return False
-
-    def _clear_raw(self) -> None:
-        if self._raw_label is not None:
-            self._raw_group.remove(self._raw_label)
-            self._raw_label = None
-
-    def _show_raw(self, text: str) -> None:
-        self._clear_raw()
-        label = Gtk.Label(label=text, selectable=True, xalign=0.0, wrap=True)
-        label.add_css_class("monospace")
-        label.add_css_class("dim-label")
-        self._raw_group.add(label)
-        self._raw_label = label
 
     def _on_state(self, state: dict, err: str) -> None:
         self._render_policy()
-        if not state.get("installed"):
-            self._row_config.set_subtitle(err or "apcupsd is not installed")
+
+        # not installed is its own answer, and not a fault: a machine with no
+        # /etc/nut/upsmon.conf has nothing monitored and nothing wrong.
+        if not state.get("installed", True):
+            self._row_state.set_subtitle(
+                state.get("error") or "NUT is not configured on this machine")
             self._row_service.set_subtitle("Not installed")
-            self._clear_raw()
             return
 
-        if state.get("configured"):
-            name = state.get("name") or "(unnamed)"
-            self._row_config.set_subtitle(f"UPS configured as {name}")
-            self._setup_group.set_visible(False)
+        monitor = state.get("monitor", "")
+        name = state.get("name", "")
+        if monitor:
+            self._row_state.set_subtitle(f"Monitoring {name or '(unnamed)'}")
         else:
-            # The common case, and the one worth stating plainly rather than
-            # leaving as an empty row: a DEVICE pattern with no name.
-            device = state.get("device") or ""
-            self._row_config.set_subtitle(
-                f"No UPS configured (device pattern {device}, no name)"
-                if device else "No UPS configured")
-            self._setup_group.set_visible(True)
+            self._row_state.set_subtitle(
+                "No UPS configured - nothing is being watched")
 
+        # systemctl's failure to say is not evidence the daemon is down, so the
+        # three outcomes are kept apart rather than folded into "stopped".
         service = state.get("service")
-        if service is True:
-            self._row_service.set_subtitle("Running")
-        elif service is False:
-            self._row_service.set_subtitle("Not running")
-        else:
+        if service is None:
             self._row_service.set_subtitle("Unknown")
-
-        raw = (state.get("status") or "").strip()
-        if raw:
-            self._show_raw(raw)
+        elif service:
+            self._row_service.set_subtitle("Running")
         else:
-            self._clear_raw()
+            self._row_service.set_subtitle("Not running")
+
+        # The tool's own output, verbatim. `upsc` prints `KEY : VALUE` lines, but
+        # no UPS was available to observe the exact shape, so deriving a number
+        # from them would put a figure on screen that no tool produced.
+        status = (state.get("status") or "").strip()
+        if status:
+            row = _row("Reported by upsc", status)
+            row.set_selectable(True) if hasattr(row, "set_selectable") else None
+            self._raw_rows.append(row)
+            self._raw_group.add(row)
+
+
+# NUT's upsmon.conf - the shutdown policy. The device section in ups.conf is
+# nut-scanner's job, and upsd.users is generated at install, so neither is
+# editable from here (see NOT_EDITABLE).
+LOCAL_UPSMON_CONF: str = "/etc/nut/upsmon.conf"
