@@ -362,7 +362,9 @@ wrong from memory:
 - **Plasma 6.7 ships no printer or scanner module.** `grep -i 'print|cups|paper'`
   over all 62 matches only `wallpaper`, and no cached package contains a printer
   KCM. GNOME *does* have `gnome-printers-panel`. So CUPS administration is a
-  real Cassini gap for Plasma users and a duplicate for GNOME users.
+  real gap for Plasma users and a duplicate for GNOME users — **and Cassini now
+  has a `printers` page for the Plasma half, which is the one the table below
+  row said "none" for until it was corrected 2026-10-10.**
 
 Shipped-but-unrepresented, checked against both sets (verified present in the
 built image's package list, and absent from GNOME's 28 and Plasma's 62):
@@ -372,20 +374,41 @@ built image's package list, and absent from GNOME's 28 and Plasma's 62):
 | UPS | **NUT** (was `apcupsd`) | **page added 2026-10-03**, given a shutdown-policy editor 2026-10-09, and **switched apcupsd → NUT 2026-10-10**. `MINSUPPLIES`/`SHUTDOWNCMD`/`POWERDOWNFLAG`/`DEADTIME`/`FINALDELAY`/`POLLFREQ`/`POLLFREQALERT` are written into `/etc/nut/upsmon.conf` through `shani-cassini-save --target nut_upsmon_conf`; shani-settings ships a baseline for it. **The switch was made on evidence**: apcupsd has had no upstream release since 3.14.14 (2016/2017) — Arch still ships that version, repackaged nine times with the code unmoved — while NUT is at 2.8.5 with its data model published as **IETF RFC 9271**, 170+ manufacturers across serial/USB/SNMP/IPMI, and an `apcupsd-ups` driver that still reaches apcupsd hardware. **One honest cost:** upsmon has **no battery-percentage threshold** — apcupsd's `BATTERYLEVEL`/`MINUTES` have no equivalent; upsmon acts on the UPS *hardware's own* low-battery signal, and a charge/runtime trigger needs `dummy-ups` + `upssched`. So no test asserts one and the page says so. `ups.conf` is deliberately *not* offered (`nut-scanner -U` writes the driver/port; a wrong one is a driver that exits silently) and `upsd.users` is deliberately *not editable* (it holds the credential that can force a UPS power-down, generated once per install) |
 | Outbound mail | `exim` | **page added 2026-10-03** |
 | Local DNS resolver | `bind`, `dnsmasq`, `openresolv`, `dnscrypt-proxy`, `systemd-resolved` | **page added 2026-10-03** |
-| Software RAID | `mdadm` | none |
-| TOTP / 2FA | `oath-toolkit` | none |
-| Password quality | `libpwquality`, `cracklib` | none |
+| Software RAID | `mdadm` | **page** (`raid`): "mdadm arrays, their members, and which slot is degraded or failed" |
+| TOTP / 2FA | `oath-toolkit` | **page** (`totp`): one-time password tokens, and whether any login stack loads one |
+| Password quality | `libpwquality`, `cracklib` | **page** (`password-policy`): whether a password policy is configured, and whether any login stack loads one |
 | zram | `zram-generator` | **row added 2026-10-07** on System Info; the collector had existed unused |
 | Userspace fs encryption | `fscrypt`, `gocryptfs`, `ecryptfs-utils` | **page added** (Userspace Encryption): reports all three, and can create/mount/unmount a gocryptfs volume unprivileged. **fscrypt is report-only and cannot ever act here — btrfs does not support it** (see the crypto-helper entry under Known issues) |
-| CPU microcode | `amd-ucode`, `intel-ucode` | Firmware is `fwupd` only |
-| EFI boot entries | `efibootmgr` | none (`bootctl` still unshown) |
+| CPU microcode | `amd-ucode`, `intel-ucode` | **the Firmware page has a "CPU microcode" group** reading sysfs, not fwupd — the two update by different mechanisms, and Shanios' UKI bakes the revision in at build time so `fwupdmgr` cannot change it |
+| EFI boot entries | `efibootmgr` | **page** (`boot-entries`): "What the firmware will boot, and where the slot is really decided" |
 | IRQ balancing | `irqbalance` | **page added**, and **given a banlist editor 2026-10-09**: `IRQBALANCE_BANNED_CPULIST` is written into `/etc/default/irqbalance`, which the package does not ship at all (it has no `/etc` directory). **`IRQBALANCE_ARGS` is refused by the helper and never offered** — the unit uses an *unquoted* `$IRQBALANCE_ARGS` and systemd passes an unquoted `$VAR` as exactly one argument, so any flags in it arrive as a single unrecognised option |
-| Process priority | `ananicy-cpp` | none |
-| polkit policies | `polkit` | none |
-| Camera | `libcamera`, `v4l-utils` | none |
-| mDNS | `avahi` | none |
-| Third-party app versions | `flatpak`, `snapd`, `ostree` | none |
-| Printers / CUPS | `cups`, `cups-browsed` | none (Plasma has no panel either) |
+| Process priority | `ananicy-cpp` | **page** (`ananicy-cpp`): "The priority daemon: what it runs, the rules it loads, and the privileges it holds" |
+| polkit policies | `polkit` | **page** (`privileges`): "The system's polkit rules and admin groups - not Cassini's own, which installs none" |
+| Camera | `libcamera`, `v4l-utils` | **page** (`camera`): "Capture devices, their formats and controls - read-only, because neither PipeWire nor the legacy stack runs as a service" |
+| mDNS | `avahi` | **page** (`avahi`, "Service Discovery"): "mDNS and DNS-SD: the socket that decides whether the daemon runs at all" |
+| Third-party app versions | `flatpak`, `snapd`, `ostree` | **page** (`app-versions`): what version of each app is installed across flatpak, snapd and ostree |
+| Printers / CUPS | `cups`, `cups-browsed` | **page** (`printers`): "Queues, jobs and scan hardware - read-only, because the daemon is socket-activated and usually not running" |
+
+> **Corrected 2026-10-10: ten of these rows said `none` while the page
+> existed, and one said "fwupd only" while the page read the thing itself.** The
+> table was written once, in `a44a642` (2026-10-03, the UPS
+> entry), and was never re-checked after `d52583b` added a RAID page and
+> `8775a45`/`c1b5356` registered the rest. Ten rows claimed a subsystem had no
+> page while `SECTIONS` registered one — `raid`, `totp`, `password-policy`,
+> `boot-entries`, `ananicy-cpp`, `privileges`, `camera`, `avahi`, `app-versions`,
+> `printers` — plus the CPU-microcode row, which said "fwupd only" while
+> `firmware.py` reads the revision from sysfs in a group of its own. Every
+> correction above is taken from the page's own `notebook.py` registration
+> string, not from a recollection of what the page does.
+> **58 pages are registered today**, and `tests/test_documented_pages_exist.py`
+> asserts that number against `SECTIONS` on every run — so the next page that
+> lands without this note being re-read gets a red line. The "32 sections" claim
+> further down this file is wrong by 26 and is corrected there too. The table's
+> heading is now a
+> misnomer — nothing in the image is shipped-but-unrepresented — so it is kept
+> as the record of what was measured and what it turned into, which is the only
+> reason a corrected row is still in a table called *unrepresented*.
+
 | btrfs compression | `compsize` (its own package, like `bees` and `duperemove` - **not** in `btrfs-progs`) | Btrfs page, not this |
 | SMART test schedule | `smartmontools`'s `smartd` | Disk Health reads only, cannot schedule |
 
@@ -396,6 +419,58 @@ not a resolver, so the DNS row above is real. `bind` shipping on a workstation
 image is itself worth a look.
 
 ## Known issues (current state, 2026-10-01)
+
+- **A whole committed page was overwritten by a session that believed it was
+  new work, and only `git status` caught it. 2026-10-10.**
+
+  This session started a Software RAID page from the gap table's "none" row,
+  wrote a reader into `system_status.py` and a page into `tabs/raid.py`, and
+  **deleted 647 lines of an existing, registered, 39-test page** in doing it.
+  `raid.py` had been in HEAD since `d52583b`, and its registration in
+  `notebook.py` was reached by a `grep -n RaidTab` that returned two hits — one
+  import and one entry — while the session's own edit tool call had just failed
+  on a typo'd path. Two hits read as "the registration worked", when the second
+  hit was the *pre-existing* one. It was restored with
+  `git checkout -- src/shani_cassini/tabs/raid.py` and the appended collector
+  removed by hand to the byte (`git diff --exit-code` now clean); the existing
+  suite's 39 RAID tests pass unchanged.
+
+  **The page that was nearly destroyed is strictly better than the replacement**,
+  on one axis worth naming: its fixtures are verbatim `cat -A /proc/mdstat`
+  captures from a real Arch array on kernel 7.0.0-34, and its docstring records
+  that a raid1 line has **no percentage field** — a parser that insists on one
+  matches no raid1 array ever built. The replacement's fixtures were also real
+  (a genuine RAID1 loop-backed array), but its reader was smaller, sat against
+  this module's convention, and duplicated a page that already existed.
+
+  **The reusable lesson, and it is a `git status` one, not a planning one:**
+  `git status --porcelain` before writing into any file, and
+  `git log --oneline -- <path>` before assuming a gap is a gap. The gap table
+  that started this said `none` for a page that had existed for a week; the
+  table was the stale artefact, not the code. Both are now corrected in place,
+  with the ten affected rows rewritten from each page's own `notebook.py`
+  registration string.
+
+  **The correction is now enforced, not just written — and finding that out
+  took five controls.** `tests/test_documented_pages_exist.py` re-checks the
+  corrected rows on every run: every `` `page-id` `` the table cites must be
+  registered in `SECTIONS`, and the note's "**58 pages are registered**" claim
+  must equal the real count. A prose correction is not a verified correction,
+  and this repo's whole discipline is that a change nobody can re-check has not
+  landed. **All five controls were run, and all five fail the file when broken:**
+  a row citing a nonexistent id; a page renamed in `notebook.py` while the doc
+  kept the old slug; a wrong count in the note; the count claim deleted; and
+  every citation stripped so the regex matches nothing (the last is the gate's
+  own control — without it the other four would pass by inspecting an empty
+  set, which is the "an absence" this repo keeps finding, here aimed at the doc
+  rather than the page). **What the gate deliberately cannot do is stated in its
+  docstring and asserted by a test of its own:** it cannot detect a row claiming
+  `none`, because that was an *absence* and no regex finds a citation that was
+  never written. The count is the partial substitute — it is the one number that
+  moves when a page lands. Six tests were added on the way to four: two regexes
+  first matched `bootctl` (my own "this row said…" meta-commentary inside the
+  table) and a wrapped `**58 pages are\nregistered**`, both found by running the
+  gate rather than by reading it.
 
 - **Two of the 16 pre-existing failures were not the libadwaita class at all, and
   one of them was a false claim in the source, not just in the test. Fixed
@@ -1460,12 +1535,15 @@ image is itself worth a look.
     `CASSINI-CAPABILITY-AUDIT-2026-09-26.md` §4.3 originally ruled the sshd
     and NFS surfaces "**Never**". The human overrode that: *"never isn't
     absolute — make the decision to add it since it might be required."* They
-    are now in `SECTIONS` and the notebook lists **32** sections. Nothing about
+    are now in `SECTIONS` and the notebook lists **32** sections *as of that
+    2026-09-27 decision* — it lists **58** pages today, so this count is a
+    dated measurement, not the current one. Nothing about
     the pages themselves changed: same modules, same tests, same drop-in write
     path through `config_io`.
   - **They are not duplicates of GNOME Control Center** (surveyed
     2026-09-27 against `gnome-control-center` 46.7, 27 panels; 29 of Cassini's
-    32 sections have no GCC counterpart). The three that share a subsystem
+    32 sections have no GCC counterpart — **measured when there were 32; at 58
+    pages that ratio has not been re-measured and is not claimed here**). The three that share a subsystem
     differ in what they can express: GCC's sharing panel is **SMB only**
     (`smb://`, no NFS) vs Cassini's NFS exports; GCC's Remote Login is a boolean
     (`cc_remote_login_get_enabled`) vs Cassini editing `sshd_config.d`
