@@ -96,7 +96,12 @@ def health_pkexec_log(fake_bin):
 def test_health_exposes_supported_report_modes(health_pkexec_log):
     from shani_cassini.tabs.health import HealthTab
     tab = HealthTab()
-    modes = {"security", "boot", "hardware", "network", "packages", "storage-info"}
+    # `history` is the deploy event log. It is listed here rather than left to
+    # the set literal below so that adding a mode has to be a decision: this gate
+    # is what says "these are the shani-health modes the app exposes", and a new
+    # one that nobody thought about would be exactly the silent-wiring gap.
+    modes = {"security", "boot", "hardware", "network", "packages",
+             "storage-info", "history"}
     assert set(tab._run_rows) == {"verify", *modes}
     for mode in sorted(modes):
         tab._run(mode)

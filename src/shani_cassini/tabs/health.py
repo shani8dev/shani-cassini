@@ -31,6 +31,15 @@ CHECKS = [
      "NetworkManager, DNS, VPN, firewall, SSH and servers"),
     ("packages", "Package report",
      "Flatpak, Snap, Nix, containers and virtualisation"),
+    # The deploy event log: what shani-deploy actually did, in order. It is a
+    # different question from `boot` (what state the slots are in now) and from
+    # Boot and Recovery's backup listing (what you could go back to), and until
+    # now nothing asked it. `shani-health --history --json` used to answer an
+    # empty document - the tool printed its events with printf and recorded no
+    # rows - which is why it was never wired; that was fixed in shani-health, so
+    # this row was only ever a one-liner.
+    ("history", "Deploy history",
+     "Every deploy and rollback, newest first, with the version each moved to"),
     ("storage-info", "Storage analysis",
      "Btrfs subvolumes, compression and snapshots"),
 ]
@@ -157,9 +166,36 @@ class HealthTab(Gtk.Box):
         bad = sum(1 for c in checks if STATUS.get(c.get("status"), ("", ""))[1] == "error")
         warn = sum(1 for c in checks if STATUS.get(c.get("status"), ("", ""))[1] == "warning")
         title = dict((m, t) for m, t, _s in CHECKS)[mode]
-        summary = (f"{bad} problem{'s' * (bad != 1)}" if bad else "No problems") + \
-                  (f", {warn} warning{'s' * (warn != 1)}" if warn else "") + f" · {len(checks)} checks in {secs:.0f} s"
+        if mode == "history":
+            deploys = sum(1 for c in checks if c.get("message", "").startswith("DEPLOY"))
+            rollbacks = sum(1 for c in checks
+                            if c.get("message", "").startswith("ROLLBACK"))
+            summary = (f"{len(checks)} event{'' if len(checks) == 1 else 's'}, "
+                       f"newest first · {deploys} deployed, "
+                       f"{rollbacks} rolled back · {secs:.0f} s")
+        else:
+            summary = (f"{bad} problem{'s' * (bad != 1)}" if bad else "No problems") + \
+                      (f", {warn} warning{'s' * (warn != 1)}" if warn else "") + f" · {len(checks)} checks in {secs:.0f} s"
         group = Adw.PreferencesGroup(title=title, description=summary)
+        # The deploy log is the one mode whose order IS the information. Every
+        # other mode is a set of findings and wants the worst first; a log wants
+        # "what happened most recently", and the tool writes it oldest-first.
+        # Sorting it like a findings list would put every rollback above every
+        # deploy and read as a machine that only ever rolled back.
+        if mode == "history":
+            for c in reversed(checks):
+                row = Adw.ActionRow(title=GLibMarkupSafe(c.get("key") or "?"),
+                                    subtitle=GLibMarkupSafe(c.get("message") or ""))
+                row.set_subtitle_selectable(True)
+                icon, cls = STATUS.get(c.get("status"),
+                                       ("dialog-information-symbolic", "dim-label"))
+                img = Gtk.Image.new_from_icon_name(icon)
+                img.add_css_class(cls)
+                row.add_prefix(img)
+                group.add(row)
+            setattr(self, f"_group_{mode}", group)
+            self._results.prepend(group)
+            return
         # problems first, then warnings, then the rest
         order = {"error": 0, "warning": 1, "success": 3}
         for c in sorted(checks, key=lambda c: order.get(STATUS.get(c.get("status"), ("", ""))[1], 2)):
