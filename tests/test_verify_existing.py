@@ -236,26 +236,57 @@ class TestTheParser:
 # --- the reader --------------------------------------------------------------
 
 class TestTheReader:
-    def test_it_runs_the_verify_flag_and_nothing_else(self):
+    """**Every patch here goes through `monkeypatch`, and that is load-bearing.**
+
+    The first three versions of this file assigned `ss.run_streaming_raw`
+    directly, which leaves the replacement in place for the rest of the pytest
+    session. That cost 16 failures in `test_virtualization_page.py` — a page
+    that reads the same runner — and it did so *only* in a full-suite run: the
+    file passes alone, passes in small batches, and fails when pytest collects
+    everything. This repo records the same ordering class twice already
+    (`test_the_page_reads_exactly_the_four_documented_reads` in
+    `test_system_status.py`, and the unbounded-child test in this very file's
+    neighbourhood), and the tell is the same one each time: a green signal that
+    only holds in the shape you happened to run.
+
+    So the patches are reverted, and the control below asserts it.
+    """
+
+    def test_no_patch_in_this_file_outlives_its_test(self):
+        """The control for the note above.
+
+        A test that asserts "my own file does not leak" is only worth anything
+        if it can see a leak, so this reads the attribute back after the class
+        has run and fails if it is still a stub. Ordered by nothing — pytest
+        runs methods in definition order within a class, so this must come last.
+        """
+        assert not getattr(ss.run_streaming_raw, "__name__", "") == "<lambda>", (
+            "run_streaming_raw is still the stub this file installed")
+
+    def test_it_runs_the_verify_flag_and_nothing_else(self, monkeypatch):
         """The argv polkit authorises, asserted as a whole."""
         seen = []
-        ss.run_streaming_raw = lambda argv, on_line, on_exit: seen.append(argv)
+        monkeypatch.setattr(ss, "run_streaming_raw",
+                            lambda argv, on_line, on_exit: seen.append(argv))
         ss.deploy_verify_existing(lambda r, e: None)
         assert seen == [["pkexec", ss.DEPLOY, "--verify-existing"]]
 
-    def test_a_dismissed_dialog_is_a_refusal_and_not_a_report(self):
+    def test_a_dismissed_dialog_is_a_refusal_and_not_a_report(self, monkeypatch):
         """126/127 are what pkexec returns for a dismissed or unauthorised
         dialog, and `run_json` above already collapses them into one
         sentence."""
-        ss.run_streaming_raw = lambda argv, on_line, on_exit: on_exit(126)
+        monkeypatch.setattr(ss, "run_streaming_raw",
+                            lambda argv, on_line, on_exit: on_exit(126))
         got = []
         ss.deploy_verify_existing(lambda report, err: got.append((report, err)))
         assert got == [(None, "Authorization was cancelled")]
 
-    def test_a_tool_that_said_nothing_is_a_reason_and_not_an_empty_report(self):
+    def test_a_tool_that_said_nothing_is_a_reason_and_not_an_empty_report(
+            self, monkeypatch):
         """An empty report and a silent tool have the same symptom, and only
         one of them is a machine fact."""
-        ss.run_streaming_raw = lambda argv, on_line, on_exit: on_exit(1)
+        monkeypatch.setattr(ss, "run_streaming_raw",
+                            lambda argv, on_line, on_exit: on_exit(1))
         got = []
         ss.deploy_verify_existing(lambda report, err: got.append((report, err)))
         assert got[0][0] is None
