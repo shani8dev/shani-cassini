@@ -7,22 +7,51 @@ moment: *which system am I actually running, and what is the other one?* Those
 two facts are what make a failed boot legible - you cannot reason about a
 rollback you have not looked at, and the answer lives in markers, not in a
 paragraph anybody wrote about them. So the page is a read of ``shani-deploy``'s
-own two documents and nothing else.
+own three documents and nothing else.
 
-**Two documents, and two because one of them costs a password.** ``--status`` is
-dispatched before ``check_root`` in the deploy script, so it needs no
+**Three documents, and the third is the one this page exists for.** `--status`
+and `--list-backups` both *name* slots; neither says whether the machine would
+boot. `shani-deploy --verify-existing` does, and its answer was previously only
+available in a terminal: that the booted slot matches current-slot, that each
+slot's UKI is signed by the machine's own MOK certificate
+(`sbverify --cert /etc/secureboot/keys/MOK.crt`), that the loader's default
+entry points at the slot the machine thinks it is running, and that both slots
+still hold a rollback backup. The three questions that decide a reboot, none of
+which `--status --json` carries - its 14 fields are version, channel, the slot
+names, the boot-failure markers and the rollback state.
+
+**Its severity is in the colour, and the colour is the only place it is.** The
+deploy script's `_row()` takes each row's own `OK`/`!!` mark off in order to
+decide an SGR code and then prints only the remainder, so two rows that disagree
+about whether the machine can boot reach the terminal as the same text in
+different colours. That is why the reader here is `run_streaming_raw` and the
+parse lives beside it (`system_status.parse_verify_existing`) rather than in
+this module: every other streaming caller in this app strips the escapes, and a
+page that wanted the severity had to not ask for the stripping.
+
+**Two documents are free, and two of the three cost a password.** ``--status``
+is dispatched before ``check_root`` in the deploy script, so it needs no
 privilege, takes no deploy lock and can run the moment this page is shown.
 ``--list-backups`` calls ``check_root()`` as its very first line: it mounts the
 subvolume table to reach each slot's own ``/etc/shani-version``, and that is the
 only place a slot's version appears - which is also why the version is
-deliberately not folded into ``--status``. A system manager that put a polkit
-prompt behind merely *opening a section* would be asking for authority nobody
-clicked on, so the listing runs when the button is pressed and never before.
+deliberately not folded into ``--status``. ``--verify-existing`` calls
+``check_root()`` too, and mounts both the ESP (to `sbverify` the UKIs) and
+subvolume 5 (to list the backup subvolumes), unmounting each afterwards. A
+system manager that put a polkit prompt behind merely *opening a section* would
+be asking for authority nobody clicked on, so both privileged reads run when
+their button is pressed and never before.
 
-**Nothing here changes anything.** Rollback, channel switching and restart all
-live on Updates & Rollback, where the confirmation dialogs are; a second route to
-them would be two places to keep honest about the most dangerous button in the
-app. What the root *is* worth saying plainly: the deployed system is a
+**Nothing here changes anything - and that now needs saying precisely.** No
+read on this page writes a file, changes a slot or touches a service. What
+`--verify-existing` does do is mount the boot partition and the subvolume table
+for the length of its own run and unmount them again, which is a transient
+change to the mount table rather than to the machine, and the row says so
+rather than leaving the page's older "changes nothing" to be read as "does
+nothing at all". Rollback, channel switching and restart all live on Updates &
+Rollback, where the confirmation dialogs are; a second route to them would be
+two places to keep honest about the most dangerous button in the app. What the
+root *is* worth saying plainly: the deployed system is a
 **read-only Btrfs snapshot** of a verified image, and an update installs into
 the other slot rather than over the running one. That is the whole of the
 immutability story, and this page does not dress it up - there is no
@@ -130,6 +159,45 @@ HISTORY_FAILED: Final = (
 HISTORY_EMPTY: Final = "The listing named no slot, so none is shown here."
 SLOT_VERSION: Final = "Version {version}"
 NO_VERSION: Final = "The listing carried no version for this slot."
+
+# --- deployment integrity ---------------------------------------------------
+#
+# `--status` and `--list-backups` both name slots; neither says whether the
+# machine would boot. That answer is `shani-deploy --verify-existing`, and
+# before this it existed only in a terminal.
+INTEGRITY_NOTE: Final = (
+    "Read with shani-deploy --verify-existing, which asks for your password. It "
+    "checks that the booted slot matches current-slot, that each slot's UKI is "
+    "signed by the machine's own MOK certificate, and that both slots still "
+    "hold a rollback backup. It mounts the boot partition and the subvolume "
+    "table to do that and unmounts both; it writes nothing."
+)
+INTEGRITY_IDLE: Final = (
+    "Not checked yet - the check needs your account password, so it runs only "
+    "when you press the button."
+)
+INTEGRITY_ASKING: Final = "Asking shani-deploy --verify-existing…"
+INTEGRITY_FAILED: Final = (
+    "shani-deploy --verify-existing did not answer, so nothing about this "
+    "deployment's integrity is claimed here"
+)
+INTEGRITY_CANCELLED: Final = "Authorization was cancelled"
+# What a summary the page cannot read looks like. This is not a pass and is not
+# drawn as one: the deploy script gaining a new summary line should show up as
+# a page that says so, not as a green tick.
+INTEGRITY_UNREADABLE: Final = (
+    "This build's wording is not one this page reads, so no verdict is claimed."
+)
+
+# Severity, from the colour `_row()` emits and from nothing else - the tool's
+# own OK/!! marks are consumed before the text is printed (see
+# `system_status.run_streaming_raw`).
+_SEVERITY_ICON = {
+    "ok": "object-select-symbolic",
+    "bad": "dialog-error-symbolic",
+    "warn": "dialog-warning-symbolic",
+}
+_SEVERITY_CSS = {"ok": "success", "bad": "error", "warn": "warning"}
 
 # shani-deploy ships with the image, so its absence is a development host rather
 # than a broken machine, and there is no state to read. run_json's own wording
@@ -272,6 +340,9 @@ class BootRecoveryTab(Gtk.Box):
         self._status_busy = False
         self._history: dict | None = None
         self._history_busy = False
+        self._verify: dict | None = None
+        self._verify_busy = False
+        self._verify_error = ""
         # Counted, never timed: a test and a user both need to be able to say
         # "nothing is in flight" without sleeping, and "nothing is wrong" is
         # exactly the reading that must not come from an answer that has not
@@ -287,6 +358,8 @@ class BootRecoveryTab(Gtk.Box):
                                                 description=DEPLOYMENT_NOTE)
         self._markers = Adw.PreferencesGroup(title="Boot markers",
                                               description=MARKERS_NOTE)
+        self._integrity = Adw.PreferencesGroup(title="Deployment integrity",
+                                               description=INTEGRITY_NOTE)
         self._history_group = Adw.PreferencesGroup(title="Deployment history",
                                                    description=HISTORY_NOTE)
         self._about = Adw.PreferencesGroup(title="What this page does not do",
@@ -314,16 +387,29 @@ class BootRecoveryTab(Gtk.Box):
         self._history_group.add(self._row_history)
         self._permanent.append(self._row_history)
 
+        self._row_verify = _row("Integrity", INTEGRITY_IDLE)
+        self._btn_verify = Gtk.Button(label="Verify", valign=Gtk.Align.CENTER)
+        self._btn_verify.add_css_class("suggested-action")
+        self._btn_verify.connect("clicked", lambda *_: self.verify())
+        self._row_verify.add_suffix(self._btn_verify)
+        self._integrity.add(self._row_verify)
+        self._permanent.append(self._row_verify)
+
+        # The checks themselves land in a group of their own, below the button,
+        # which starts hidden and is filled per run - see _render_verify.
+        self._checks = Adw.PreferencesGroup(title="Checks", visible=False)
+        self._check_rows: list[Adw.ActionRow] = []
+
         read_only = _row(
             "This page",
-            "Reports what shani-deploy returns, and changes nothing. Neither "
-            "reading is a privileged write: one is free and one asks for your "
-            "password to read backup subvolumes.")
+            "Reports what shani-deploy returns, and changes nothing. None of "
+            "the three reads is a privileged write: one is free, and the other "
+            "two ask for your password to read what only root can reach.")
         self._about.add(read_only)
         self._permanent.append(read_only)
 
-        for group in (self._deployment, self._markers, self._history_group,
-                      self._about):
+        for group in (self._deployment, self._markers, self._integrity,
+                      self._checks, self._history_group, self._about):
             self._page.append(group)
         self.refresh()
 
@@ -401,16 +487,46 @@ class BootRecoveryTab(Gtk.Box):
 
         _read_history(done)
 
+    def verify(self) -> None:
+        """`shani-deploy --verify-existing`, and only ever from a click.
+
+        Same reasoning as `load_history` above, and one step further: this one
+        is what a user opens this page *because* they need - the booted slot, the
+        UKI signature on each slot's image and the rollback backups are the
+        three things that decide whether the next reboot succeeds, and
+        `--status --json` carries none of them. So a password prompt here is the
+        page doing the job it exists for, rather than one arriving because
+        somebody scrolled past a sidebar entry.
+
+        Not gated on a generation, for `load_history`'s reason.
+        """
+        if self._tool_missing or self._verify_busy:
+            return
+        self._verify_busy = True
+        self._render()
+
+        def done(report, error: str) -> None:
+            self._verify_busy = False
+            self._verify = report if isinstance(report, dict) else None
+            self._verify_error = error
+            self._render()
+
+        ss.deploy_verify_existing(done)
+
     # --------------------------------------------------------------- rendering
     def _render(self) -> None:
-        self._pending = int(self._status_busy) + int(self._history_busy)
+        self._pending = (int(self._status_busy) + int(self._history_busy)
+                         + int(self._verify_busy))
         self._clear()
         self._row_refresh.set_subtitle(self._status_note())
         self._btn_refresh.set_sensitive(not self._status_busy)
         self._btn_history.set_sensitive(
             not self._history_busy and not self._tool_missing)
+        self._btn_verify.set_sensitive(not self._verify_busy
+                                    and not self._tool_missing)
         for name, subtitle in self._values().items():
             self._set(name, subtitle)
+        self._render_verify()
         self._render_history()
 
     def _status_note(self) -> str:
@@ -449,6 +565,88 @@ class BootRecoveryTab(Gtk.Box):
             row.set_subtitle(subtitle)
         else:
             logger.debug("no row named %s on the boot & recovery page", name)
+
+    # ------------------------------------------------------- integrity results
+    def _verify_note(self) -> str:
+        """What the button's row says, which is one of five states.
+
+        The failed state is split in two because the reader collapses them: a
+        dismissed password dialog and a deploy script whose wording this page
+        does not recognise both arrive as "no report". Only the first is
+        something the user did, and only the second is this page's problem, so
+        they cannot share a sentence that would be wrong for one of them.
+        """
+        if self._tool_missing:
+            return MISSING_NOTE
+        if self._verify_busy:
+            return INTEGRITY_ASKING
+        if self._verify_error:
+            if self._verify_error == INTEGRITY_CANCELLED:
+                return INTEGRITY_CANCELLED
+            return INTEGRITY_FAILED
+        if self._verify is None:
+            return INTEGRITY_IDLE
+        verdict = self._verify.get("passed")
+        if verdict is True:
+            return "Every check passed"
+        if verdict is False:
+            issues = self._verify.get("issues")
+            if isinstance(issues, int):
+                return (f"{issues} issue{'s' if issues != 1 else ''} found"
+                        " - each one is listed below")
+            return "The tool reported problems; each one is listed below"
+        return INTEGRITY_UNREADABLE
+
+    def _render_verify(self) -> None:
+        """Every check the tool ran, in its own order, and nothing derived.
+
+        The rows are taken down and rebuilt each time because the check is a
+        snapshot: a green `Slot Check` from four minutes ago must not sit on
+        screen beside a freshly-read `Booted Slot`.
+        """
+        for row in self._check_rows:
+            self._checks.remove(row)
+        self._check_rows = []
+
+        self._row_verify.set_subtitle(self._verify_note())
+        report = self._verify
+        self._checks.set_visible(report is not None)
+        if report is None:
+            return
+
+        def add(row: Adw.ActionRow) -> None:
+            self._checks.add(row)
+            self._check_rows.append(row)
+
+        for check in report.get("checks") or []:
+            if not isinstance(check, dict):
+                continue
+            severity = str(check.get("severity") or "")
+            row = _row(_esc(check.get("key") or ""),
+                       _esc(check.get("text") or NOT_AVAILABLE))
+            icon_name = _SEVERITY_ICON.get(severity)
+            if icon_name:
+                image = Gtk.Image.new_from_icon_name(icon_name)
+                css = _SEVERITY_CSS.get(severity)
+                if css:
+                    image.add_css_class(css)
+                row.add_prefix(image)
+            add(row)
+
+        for advice in report.get("advice") or []:
+            row = _row("What to do about it", _esc(advice))
+            row.add_prefix(Gtk.Image.new_from_icon_name("dialog-warning-symbolic"))
+            add(row)
+
+        # Whatever the reader could not classify, shown as it arrived. Dropping
+        # it would be indistinguishable from the tool having said nothing, and
+        # on this page that difference matters.
+        for unread in report.get("unread") or []:
+            add(_row("Not read as a check", _esc(unread)))
+
+        if not self._check_rows:
+            self._checks.set_description(
+                "The tool printed nothing this page can read as a check.")
 
     def _render_history(self) -> None:
         if self._history_busy:

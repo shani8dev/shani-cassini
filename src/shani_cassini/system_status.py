@@ -455,10 +455,199 @@ def deploy_backups(done) -> None:
     run_json(["pkexec", DEPLOY, "--list-backups", "--json"], finish)
 
 
+# --- reading shani-deploy --verify-existing ---------------------------------
+#
+# This one is the odd one out in this file: every other deploy contract Cassini
+# reads is JSON, because shani-deploy grew a --json for exactly this reason. It
+# did not grow one here, and the reason is written into the script itself
+# ("no JSON/Nagios output here, unlike shani-health.sh, so the full _record_check
+# machinery isn't needed"). So this is the one deploy read that has to parse
+# prose - and the prose is the part where the tool's own severity marks do not
+# survive.
+#
+# The shapes below are measured, not inferred: `verify_existing_deployment()`
+# and its `_row`/`_rec` helpers were extracted from `scripts/shani-deploy.sh`
+# and run with stubbed `mountpoint`/`mount`/`sbverify`/`btrfs`, so the fixtures
+# in the tests are the tool's bytes. What that measurement established, and why
+# the parser looks the way it does:
+#
+# * A row is `  ` + `printf '%-16s'` of the key + one space + the rest. Every
+#   key the function uses is shorter than 16, so the key field is fixed-width
+#   and never truncated - a longer key would bleed into the body and still parse.
+# * The body starts with the SGR code, and its own severity token has been
+#   consumed (see `run_streaming_raw`). So **the code is the severity** and a
+#   body with no code is the neutral `--` state, not a parse failure.
+# * A yellow row keeps a leading space, because `_row`'s `rest="${val#*  }"`
+#   leaves the third of `!   text` behind. Everything is stripped, so the
+#   space is not a shape the parser has to know about.
+# * A recommendation (`_rec`) is indented four spaces, opens with the arrow
+#   *inside* the colour, and is the only line that is not a key/value pair.
+# * `Boot Default` is emitted **only when loader.conf exists**, so a missing row
+#   is a check that did not run, never a check that passed. Nothing here turns
+#   an absent row into a green one.
+# * The summary line is `log_success`/`log_error`, so it carries the tool's own
+#   [SUCCESS]/[ERROR] tag and the issue count. That is the only honest source
+#   for "how many issues": `Deploy State` with `!` *increments* the count and
+#   `Reboot Status` with `!` does **not**, so a yellow row is not a synonym for
+#   an issue and the row count is not the issue count.
+
+_VERIFY_SECTION_TITLE: Final = "Verify Existing Deployment"
+_VERIFY_RULE: Final = re.compile(r"^={10,}$")
+# 16 columns, then the single space `printf '%-16s' ` always leaves after it.
+_VERIFY_CHECK: Final = re.compile(r"^  (?P<key>.{16}) (?P<body>.*)$")
+_VERIFY_ADVICE: Final = re.compile(r"^\s+\x1b\[0;33m-> (?P<text>.*)$")
+_VERIFY_SUMMARY: Final = re.compile(
+    r"^\x1b\[0;3(?P<tone>[123])m(?P<stamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) "
+    r"\[(?P<tag>[A-Z]+)\] (?P<message>.*)$")
+# The only three codes `_row` can emit, measured. Anything else is not mapped:
+# a new colour in the deploy script must show up as `info`, not as a guess.
+_VERIFY_TONE: Final = {"1": "bad", "2": "ok", "3": "warn"}
+_VERIFY_ISSUES: Final = re.compile(r"found (\d+) issue")
+
+
+def parse_verify_existing(lines: list[str]) -> dict:
+    """`shani-deploy --verify-existing`'s own output, as a value.
+
+    Returns `checks`, `advice`, `issues`, `passed` and `unread`.
+
+    **`unread` is not a debugging leftover.** A line this parser does not
+    recognise is kept and shown, because the alternative - dropping it - is
+    indistinguishable from the tool having said nothing, and this is the page
+    that tells someone whether their machine can boot. It is also the signal
+    that the deploy script has changed shape: the summary line stops matching
+    and `passed` becomes `None`, which the page renders as "this build's
+    wording is not one this page reads" rather than as a pass.
+    """
+    checks: list[dict] = []
+    advice: list[str] = []
+    unread: list[str] = []
+    issues: Optional[int] = None
+    passed: Optional[bool] = None
+
+    for raw in lines:
+        line = raw.rstrip("\n")
+        if not line.strip():
+            continue
+        if _VERIFY_RULE.match(line):
+            continue
+        if line.strip() == _VERIFY_SECTION_TITLE:
+            continue
+
+        found = _VERIFY_ADVICE.match(line)
+        if found:
+            advice.append(_strip_ansi(found.group("text")).strip())
+            continue
+
+        found = _VERIFY_SUMMARY.match(line)
+        if found:
+            passed = found.group("tag") == "SUCCESS"
+            count = _VERIFY_ISSUES.search(found.group("message"))
+            if count:
+                issues = int(count.group(1))
+            continue
+
+        found = _VERIFY_CHECK.match(line)
+        if found:
+            body = found.group("body")
+            # The code is the severity, and it is the *only* severity: the OK
+            # and the !! were removed from the text before it was printed.
+            tone = re.match(r"^\x1b\[0;3(?P<tone>[123])m", body)
+            checks.append({
+                "key": found.group("key").strip(),
+                "severity": (_VERIFY_TONE[tone.group("tone")] if tone
+                             else "info"),
+                "text": _strip_ansi(body).strip(),
+            })
+            continue
+
+        unread.append(_strip_ansi(line).strip())
+
+    return {"checks": checks, "advice": advice, "unread": unread,
+            "issues": issues, "passed": passed}
+
+
+def deploy_verify_existing(done) -> None:
+    """`shani-deploy --verify-existing`, shaped as a value rather than as raw
+    lines.
+
+    **This is the deployment-integrity check and nothing else in Cassini reads
+    it.** `shani-deploy --status --json` carries version, channel, the slot
+    names, the boot-failure markers and the rollback state; it carries **no**
+    UKI signature verdict, no booted-vs-current-slot consistency check and no
+    backup-availability check. So this page could show every slot field the
+    deploy tool knows about and still never answer "would this machine boot",
+    which is the one question a Boot page exists to answer.
+
+    Root, and it costs a password, for the same reason `--list-backups` does.
+    It mounts the ESP (`LABEL=shani_boot`) to `sbverify` each slot's UKI against
+    `/etc/secureboot/keys/MOK.crt`, and mounts subvolume 5 to list the backup
+    subvolumes, unmounting both. So it runs from a button and never because the
+    page was opened - a system manager that put a polkit prompt behind merely
+    *opening a section* would be asking for authority nobody clicked on.
+
+    Reads `_row`'s colour, which is why this calls `run_streaming_raw` and not
+    `run_streaming`: see `run_streaming_raw` and `parse_verify_existing`.
+    """
+    lines: list[str] = []
+
+    def finish(status: int) -> None:
+        # pkexec: 126 = dialog dismissed, 127 = not authorized - the same two
+        # codes, and the same one sentence, as `run_json` above.
+        if status in (126, 127):
+            done(None, "Authorization was cancelled")
+            return
+        report = parse_verify_existing(lines)
+        if not report["checks"] and not report["unread"]:
+            done(None, "shani-deploy --verify-existing did not answer")
+            return
+        done(report, "")
+
+    run_streaming_raw(["pkexec", DEPLOY, "--verify-existing"], lines.append,
+                      finish)
+
+
 def run_streaming(argv: list[str], on_line: Callable[[str], None],
                   on_exit: Callable[[int], None]) -> Optional[Gio.Subprocess]:
     """Run argv (merged stdout+stderr), feeding each line to on_line; then
-    on_exit(exit_status). Returns the process (to cancel), or None."""
+    on_exit(exit_status). Returns the process (to cancel), or None.
+
+    ANSI is stripped. **Not every caller wants that**, which is why the
+    subprocess plumbing lives in `run_streaming_raw` and this is a thin wrapper
+    rather than a second copy - the alternative is two copies of the read loop
+    to keep in step, and this file already carries the argument about duplicated
+    argv twice. See `run_streaming_raw` for who needs the escapes.
+    """
+    return run_streaming_raw(argv, lambda line: on_line(_strip_ansi(line)),
+                             on_exit)
+
+
+def run_streaming_raw(argv: list[str], on_line: Callable[[str], None],
+                      on_exit: Callable[[int], None]) -> Optional[Gio.Subprocess]:
+    """`run_streaming` **with the escape sequences left on**, for a tool whose
+    severity is carried by nothing else.
+
+    Measured on `shani-deploy --verify-existing`: its `_row()` takes the row's
+    first token off to decide a colour and then prints only the remainder, so
+
+        _row "Slot Check"  "!!  booted (@blue) != current-slot (@green)"
+        _row "Deploy State" "OK  no pending deployment"
+
+    reach the terminal as
+
+        "  Slot Check       \\x1b[0;31mbooted (@blue) != current-slot (@green)\\x1b[0m"
+        "  Deploy State     \\x1b[0;32mno pending deployment\\x1b[0m"
+
+    The `!!` and the `OK` are **gone from the text**. Two rows that disagree
+    about whether your machine can boot differ only in `\x1b[0;31m` versus
+    `\x1b[0;32m`, so a reader that strips the escapes first - which is what
+    every other streaming caller here needs - has already thrown away the only
+    thing it came for. The colour is emitted unconditionally (there is no
+    `[[ -t 2 ]]` guard on these lines), so it is present when the output is a
+    pipe and not just in a terminal.
+
+    A neutral row (`--  @blue`) is emitted with **no opening code at all** and a
+    dangling reset, so "no code" is a real state rather than a parse failure.
+    """
     try:
         proc = Gio.Subprocess.new(argv, Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE)
     except GLib.Error as e:
@@ -478,7 +667,7 @@ def run_streaming(argv: list[str], on_line: Callable[[str], None],
         if line is None:
             proc.wait_async(None, lambda p, r: (p.wait_finish(r), on_exit(p.get_exit_status())))
             return
-        on_line(_strip_ansi(line))
+        on_line(line)
         read_next()
 
     read_next()

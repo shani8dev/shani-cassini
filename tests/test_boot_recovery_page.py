@@ -42,6 +42,8 @@ import inspect
 import json
 import os
 import re
+import sys
+import textwrap
 import time
 
 import pytest
@@ -299,7 +301,6 @@ def value(tab, name: str) -> str:
     while the page is still being built (the call that shipped blank pages on
     2026-09-25) and GTK4 has no get_descendant_by_name at all.
     """
-    br = the_module()
     from shani_cassini.widgets import find_named
     row = find_named(tab, name)
     assert row is not None, (
@@ -570,23 +571,99 @@ def test_a_cancelled_password_dialog_is_not_shown_as_a_fault(
 
 # --- 5. the page changes nothing --------------------------------------------
 
-def test_the_page_offers_exactly_two_buttons_and_neither_one_changes_anything(
+def test_the_page_offers_exactly_three_buttons_and_none_changes_anything(
         fake_deploy) -> None:
+    """Two became three, and **the count is not the point - the class is.**
+
+    The third is "Verify", which runs `shani-deploy --verify-existing`. It was
+    not added because the page lacked a button but because it lacked an answer:
+    `--status --json` and `--list-backups --json` both *name* slots, and neither
+    says whether the machine would boot, so a page whose subject is a failed
+    boot could not answer the only question a user opens it with.
+
+    What keeps this the same test is that all three are reads. So the assertion
+    is widened to three labels, and then driven on all three - **a button that is
+    added and never clicked is unverified**, which is the shape this repo has
+    been caught by repeatedly.
+    """
     br = the_module()
     fake_deploy.install()
     tab = br.BootRecoveryTab()
     assert settled(tab)
-    tab._btn_history.emit("clicked")
-    assert settled(tab)
-    assert button_labels(tab) == ["Load deployment history", "Refresh"], \
-        f"a re-read and a privileged listing are all a click may do: {button_labels(tab)}"
-    for widget in descendants(tab):
-        assert not isinstance(widget, Gtk.Switch), \
-            "a switch would be a way to change a deployment"
-        assert not isinstance(widget, Gtk.Entry), \
-            "an entry would be a way to type something into the deploy engine"
-        assert not isinstance(widget, Gtk.CheckButton), \
-            "a check button would be a way to turn a marker on or off"
+    assert button_labels(tab) == ["Load deployment history", "Refresh",
+                                  "Verify"], \
+        f"a re-read, a privileged listing and a privileged check are all a " \
+        f"click may do: {button_labels(tab)}"
+
+    for button in (tab._btn_refresh, tab._btn_history, tab._btn_verify):
+        button.emit("clicked")
+        assert settled(tab), f"{button.get_label()} did not come back"
+        # None of the three may leave a way to change a deployment behind.
+        for widget in descendants(tab):
+            assert not isinstance(widget, Gtk.Switch), \
+                "a switch would be a way to change a deployment"
+            assert not isinstance(widget, Gtk.Entry), \
+                "an entry would be a way to type something into the deploy engine"
+            assert not isinstance(widget, Gtk.CheckButton), \
+                "a check button would be a way to turn a marker on or off"
+
+
+def test_no_button_on_this_page_runs_a_command_that_writes(
+        fake_deploy) -> None:
+    """**The second half of the read-only claim, stated about the readers.**
+
+    Counting buttons and refusing switches/entries says nothing about *which*
+    command a button runs - a fourth button labelled "Verify" could perfectly
+    well have been wired to `--rollback`, and every assertion above would still
+    have passed. So each reader this page delegates to is checked for its whole
+    argv, the same way `deploy_backups` already is.
+
+    The allow-list is exact rather than a block-list: a new flag appearing in
+    the deploy reader has to be somebody's deliberate decision, which is the
+    point. `--verify-existing` runs `sbverify` and mounts the ESP and subvolume
+    5, so it is not unprivileged - it is simply the integrity check, and the
+    page says so on the row rather than implying it is free.
+    """
+    ss = sys.modules["shani_cassini.system_status"]
+    for reader, expected in ((ss.deploy_backups, ["--json", "--list-backups"]),
+                             (ss.deploy_verify_existing, ["--verify-existing"])):
+        tree = ast.parse(inspect.getsource(reader))
+        flags = sorted({part for argv in _string_lists(tree) for part in argv
+                        if part.startswith("--")})
+        assert flags == expected, \
+            f"{reader.__name__} may only use these flags: {flags}"
+    # And neither may have grown a second program. **Docstrings dropped first**,
+    # because this is the trap this repo names twice: `sbverify` is named in
+    # `deploy_verify_existing`'s own docstring, describing what the *deploy
+    # script* does, and the gate fired on the documentation of the thing it
+    # forbids. A text gate cannot tell prose from behaviour; there is already a
+    # `_code_without_docstrings()` helper for exactly this, and it is used here.
+    for reader in (ss.deploy_backups, ss.deploy_verify_existing):
+        tree = _code_without_docstrings_of(reader)
+        code = ast.unparse(tree)
+        for program in ("systemctl", "bootctl", "grub2-mkconfig", "wipefs",
+                        "shani-reset", "shani-health", "smartctl", "sbverify"):
+            assert program not in code, \
+                f"{program!r} is another tool's business in {reader.__name__}"
+
+
+def _code_without_docstrings_of(reader) -> ast.AST:
+    """A reader's own AST with every docstring dropped.
+
+    `_code_without_docstrings()` below does this for the page module and reaches
+    `the_module()` itself, so it cannot be pointed at a function in another
+    module; this is the same transformation over an arbitrary callable's source.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(reader)))
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)):
+            continue
+        if (node.body and isinstance(node.body[0], ast.Expr)
+                and isinstance(node.body[0].value, ast.Constant)
+                and isinstance(node.body[0].value.value, str)):
+            node.body = node.body[1:] or [ast.Pass()]
+    return tree
 
 
 def _code_without_docstrings() -> ast.AST:
@@ -679,6 +756,66 @@ def test_this_page_can_never_roll_back_switch_slots_or_restart() -> None:
     assert br.DEPLOY == ss.DEPLOY, (br.DEPLOY, ss.DEPLOY)
 
 
+def _says_phrase(text: str, phrase: str) -> bool:
+    """Whether `text` contains `phrase` **as a word**, not as a letter run.
+
+    **This helper exists because the gate it serves was wrong, and the obvious
+    fix would have been the wrong one.** The gate refuses the word "verity" -
+    the dm-verity claim the deploy repo records as unproven - and it compared
+    with `in`, so `severity` matched it. That is this repo's recurring tell, an
+    absence, aimed at a check rather than at a page: the gate was reporting a
+    claim nobody made, and the tempting repair was to rename the page's
+    `severity` key, which would have silenced a live gate by changing the
+    thing it was guarding *away* from.
+
+    Word boundaries are applied only where the phrase actually starts or ends
+    with a word character, because `\\b` beside punctuation does not behave the
+    way it does beside a letter: `\\b\\+3-0\\b` would not match `+3-0` at all,
+    silently disarming the one entry it was most likely written for.
+    """
+    pattern = re.escape(phrase)
+    if phrase[:1].isalnum():
+        pattern = r"\b" + pattern
+    if phrase[-1:].isalnum():
+        pattern += r"\b"
+    return re.search(pattern, text, re.IGNORECASE) is not None
+
+
+def test_the_wording_gate_still_catches_what_it_was_written_for() -> None:
+    """**The control for `_says_phrase`, and the reason it is not `in`.**
+
+    A boundary-aware matcher is the kind of helper that can pass on everything
+    it is handed, so each refusal is checked against a sentence that really does
+    contain it - and against the near-miss that made the substring version
+    useless.
+    """
+    # Each refusal, against a sentence that really does contain it. The first
+    # version of this loop derived the phrase from the sentence and asserted the
+    # result against itself - which can only ever pass, because it is asking
+    # whether a word is inside a sentence that contains it and was built from
+    # that same word.
+    for phrase, sentence in (("verity", "protected by dm-verity."),
+                             ("verity", "it uses verity for the root."),
+                             ("+3-0", "a +3-0 tries fallback is enforced."),
+                             ("tries-left", "there is tries-left counting."),
+                             ("cryptographically immutable",
+                              "the root is cryptographically immutable."),
+                             ("tamper-proof", "it is tamper-proof."),
+                             ("immutable", "the root is immutable.")):
+        assert _says_phrase(sentence, phrase), \
+            f"the gate would have missed {phrase!r} in {sentence!r}"
+    assert _says_phrase("protected by dm-verity.", "verity")
+    assert _says_phrase("it uses verity.", "verity")
+    assert _says_phrase("a +3-0 tries fallback is enforced.", "+3-0")
+    assert _says_phrase("there is tries-left counting.", "tries-left")
+    assert _says_phrase("cryptographically immutable.", "cryptographically immutable")
+    assert _says_phrase("tamper-proof.", "tamper-proof")
+    assert _says_phrase("it is immutable.", "immutable")
+    # And the near-miss that made the substring version report a lie:
+    assert not _says_phrase("the row carries a severity of its own.", "verity")
+    assert not _says_phrase("INTEGRITY_CSS maps severity to a class.", "immutable")
+
+
 def test_this_page_keeps_the_wording_the_deploy_repo_actually_supports() -> None:
     """The root is a read-only Btrfs snapshot and that is the whole of the
     immutability claim.
@@ -689,12 +826,14 @@ def test_this_page_keeps_the_wording_the_deploy_repo_actually_supports() -> None
     +tries_left-tries_done entry on the systemd version verified there, so the
     counting-down half is inert), and any claim of dm-verity or cryptographic
     immutability.
+
+    Matched as words - see `_says_phrase` for why `in` is wrong here.
     """
     text = _module_text()
     assert "read-only btrfs snapshot" in text.lower(), text
     for refused in ("+3-0", "tries-left", "verity", "cryptographically immutable",
                     "tamper-proof", "immutable"):
-        assert refused.lower() not in text.lower(), \
+        assert not _says_phrase(text, refused), \
             f"{refused!r} is a claim the deploy repo does not support: {text}"
 
 
