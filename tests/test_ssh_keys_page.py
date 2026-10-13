@@ -526,8 +526,16 @@ def test_a_file_ssh_keygen_cannot_read_is_reported_not_guessed(
     fake_keygen(tmp_path, monkeypatch, out="", rc=255,
                 err=f"{home}/.ssh/authorized_keys is not a public key file.\n")
     page = build()
-    spin(lambda: "not a public key file" in subtitles(page).get("Fingerprints", ""))
+    # **The wait's own answer is asserted, not discarded.** `spin()` returns
+    # False when the answer never arrived, and the line below used to read the
+    # subtitle anyway — so a wait that timed out was reported as "ssh-keygen's
+    # own words were dropped", blaming the page for a delay. It has failed that
+    # way in a full-suite run and passed every time alone, which is the tell
+    # this file already records twice: a signal that points at the wrong thing.
+    arrived = spin(lambda: "not a public key file"
+                   in subtitles(page).get("Fingerprints", ""))
     said = subtitles(page)["Fingerprints"]
+    assert arrived, f"the answer never arrived; the row still says {said!r}"
     assert "not a public key file" in said, f"ssh-keygen's own words were dropped: {said!r}"
     row = [r for r in rows(page) if r.get_title() == "work@shani"][0]
     assert FP_A not in row.get_subtitle(), "a fingerprint was invented"

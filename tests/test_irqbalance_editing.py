@@ -160,6 +160,7 @@ def page(tmp_path, monkeypatch):
         describing a world where saves do not persist.
         """
         captured.update(path=path, text=text)
+        captured.setdefault("saves", []).append(text)
         pathlib.Path(path).write_text(text)
         done("", "")
 
@@ -168,6 +169,32 @@ def page(tmp_path, monkeypatch):
     tab = ib.IrqBalanceTab()
     tab._captured = captured
     return tab
+
+
+def wait_for_saves(page, count: int, timeout: float = 10.0) -> bool:
+    """Wait until the page's writer thread has been called `count` times.
+
+    The save runs on a `threading.Thread`, so it lands after the click that
+    started it. `time.sleep` alone would do for the thread itself, but the page's
+    own `_saved()` callback goes through `GLib.idle_add`, so the main loop has to
+    be iterated too — which is what every other async test in this suite does.
+    """
+    import time as _time
+    from gi.repository import GLib as _GLib
+    ctx = _GLib.MainContext.default()
+    end = _time.monotonic() + timeout
+
+    def seen() -> int:
+        # `.get`, not `[]`: the key only exists once the writer has been called
+        # at all, and this is called *before* the first one. The first version
+        # raised KeyError here, which the control run below found immediately -
+        # a helper that cannot be called in the state it was written for.
+        return len(page._captured.get("saves", []))
+
+    while seen() < count and _time.monotonic() < end:
+        ctx.iteration(False)
+        _time.sleep(0.005)
+    return seen() >= count
 
 
 def test_a_valid_cpu_list_is_written_with_the_files_own_separator(page):
@@ -197,12 +224,36 @@ def test_each_malformed_list_is_refused(page, bad):
 
 def test_an_empty_value_removes_the_key_rather_than_setting_it_blank(page):
     """Setting `IRQBALANCE_BANNED_CPULIST=` to empty is not the same as not
-    setting it, and the shipped state is "not set"."""
+    setting it, and the shipped state is "not set".
+
+    **Each Save is waited for before the next is issued, and both are counted.**
+    The page hands the write to a `threading.Thread` (a real user must not have
+    the GTK main loop waiting on `pkexec`), so a second Save issued immediately
+    can read the file *before* the first thread has written it — at which point
+    the key is still commented out, "already empty" is the correct answer, and
+    the page correctly writes nothing. The test then read
+    `page._captured["text"]`, still holding the *first* save's
+    `IRQBALANCE_BANNED_CPULIST=0-3`, and reported "the key was not removed".
+
+    So the red line named a defect in the page that is not there, and it appeared
+    only in a full-suite run where the thread had less scheduling luck — the
+    ordering class this repo records twice, in the one shape where it is worst:
+    a test that blames the code under test for a race with itself.
+
+    Counting the calls separates the two real defects: "the second Save never
+    reached the writer" and "the second Save wrote the key again" used to print
+    the same message.
+    """
     page._ban_row.set_text("0-3")
     page._on_save_clicked(None)
+    assert wait_for_saves(page, 1), "the first save never reached the writer"
     page._ban_row.set_text("")
     page._on_save_clicked(None)
-    assert "IRQBALANCE_BANNED_CPULIST" not in page._captured["text"]
+    assert wait_for_saves(page, 2), (
+        f"the second save never reached the writer; the first wrote "
+        f"{page._captured['saves']}")
+    assert "IRQBALANCE_BANNED_CPULIST" not in page._captured["saves"][-1], \
+        f"the second save wrote the key back: {page._captured['saves'][-1]!r}"
 
 
 def test_the_written_file_still_parses_as_the_helper_expects(page):
