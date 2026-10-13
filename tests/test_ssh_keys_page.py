@@ -532,13 +532,75 @@ def test_a_file_ssh_keygen_cannot_read_is_reported_not_guessed(
     # own words were dropped", blaming the page for a delay. It has failed that
     # way in a full-suite run and passed every time alone, which is the tell
     # this file already records twice: a signal that points at the wrong thing.
+    started = time.monotonic()
     arrived = spin(lambda: "not a public key file"
                    in subtitles(page).get("Fingerprints", ""))
+    waited = time.monotonic() - started
     said = subtitles(page)["Fingerprints"]
-    assert arrived, f"the answer never arrived; the row still says {said!r}"
+    assert arrived, (
+        f"the answer never arrived in {waited:.1f}s of waiting; the row still "
+        f"says {said!r}. If `waited` is near the spin timeout this is the "
+        f"page's worker thread losing time to a loaded machine; if it is near "
+        f"zero the answer was discarded.")
     assert "not a public key file" in said, f"ssh-keygen's own words were dropped: {said!r}"
     row = [r for r in rows(page) if r.get_title() == "work@shani"][0]
     assert FP_A not in row.get_subtitle(), "a fingerprint was invented"
+
+
+def test_output_that_is_not_text_is_reported_not_swallowed(home, tmp_path,
+                                                              monkeypatch):
+    """**`text=True` turns a non-UTF-8 answer into an exception, not a string.**
+
+    `subprocess` decodes inside `communicate()`, and `UnicodeDecodeError` is a
+    `ValueError` - which the `except (OSError, subprocess.SubprocessError)`
+    clause in `fingerprints()` does not catch. So the worker thread died, the
+    callback never ran, and the row kept its idle note "One per key, from
+    ssh-keygen -lf." **while showing no fingerprints at all** - the page telling
+    the user it was reporting something it was not.
+
+    This is not hypothetical: `ssh-keygen -lf` prints a key's comment verbatim,
+    so a stray non-UTF-8 byte in one line of an otherwise perfectly valid
+    `authorized_keys` is enough. The fixture is the real failure: bytes, written
+    as bytes, because writing the same characters through `write_text` would
+    produce a file the reader never trips over.
+    """
+    write_keys(home, f"{KEY_A}\n")
+    bindir = tmp_path / "nonutf8-bin"
+    bindir.mkdir()
+    script = bindir / "ssh-keygen"
+    script.write_bytes(b"#!/bin/sh\nprintf '\\377\\376 not text\\n'\n")
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    page = build()
+    spin(lambda: "not text" in subtitles(page).get("Fingerprints", ""))
+    said = subtitles(page)["Fingerprints"]
+    assert "not text" in said, \
+        f"a non-text answer left the row claiming otherwise: {said!r}"
+    assert FP_A not in said, "a fingerprint was invented from bytes that are not text"
+
+
+def test_a_worker_that_raises_cannot_leave_the_row_claiming_a_fingerprint(
+        home, monkeypatch):
+    """The backstop, for a failure the `fingerprints()` clauses do not name.
+
+    The worker thread is started with `GLib.Thread.new` and joined by nobody, so
+    an exception in it is swallowed by the pool: the callback never runs and the
+    row keeps the idle note for the rest of the session. The handler makes every
+    such failure a sentence on the row instead.
+    """
+    import shani_cassini.tabs.ssh_keys as sk_mod
+    write_keys(home, f"{KEY_A}\n")
+
+    def exploding(path, count):
+        raise RuntimeError("something nobody predicted")
+
+    monkeypatch.setattr(sk_mod, "fingerprints", exploding)
+    page = build()
+    spin(lambda: "could not be read" in subtitles(page).get("Fingerprints", ""))
+    said = subtitles(page)["Fingerprints"]
+    assert "could not be read" in said, \
+        f"a raised worker left the row claiming otherwise: {said!r}"
+    assert FP_A not in said
 
 
 def test_a_fingerprint_count_that_does_not_match_is_not_attributed_to_a_key(

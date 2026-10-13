@@ -427,6 +427,17 @@ def fingerprints(path: str, count: int) -> tuple[list[str], str]:
         return ([], f"{KEYGEN} is not installed, so no fingerprint can be shown")
     except (OSError, subprocess.SubprocessError) as exc:
         return ([], f"{KEYGEN} could not be run: {exc}")
+    except UnicodeDecodeError:
+        # **`text=True` makes a non-UTF-8 answer an exception, not a string.**
+        # `subprocess` decodes in `communicate()`, and `UnicodeDecodeError` is a
+        # `ValueError` - so the `except (OSError, subprocess.SubprocessError)`
+        # above does not catch it. This is not hypothetical: `ssh-keygen -lf`
+        # prints the key's *comment* verbatim, and a key added by a tool that
+        # wrote a stray byte leaves the reader raising on a perfectly healthy
+        # key file. The wording says the output was not text rather than that the
+        # command failed, because only one of those is true.
+        return ([], f"{KEYGEN} answered with something that is not text, so no "
+                    f"fingerprint can be read from it")
     if done.returncode != 0:
         said = (done.stderr or done.stdout).strip()
         return ([], said.splitlines()[0] if said
@@ -708,7 +719,32 @@ class SshKeysTab(Gtk.Box):
                         (count, self._generation))
 
     def _fingerprint_worker(self, data: tuple) -> None:
-        listed, problem = fingerprints(self._path, data[0])
+        """The one place on this page that leaves the main loop.
+
+        **Nothing may leave this thread without answering.** It is started with
+        `GLib.Thread.new` and joined by nobody, so an exception here is swallowed
+        by the pool: `_on_fingerprints` never runs, the row keeps its idle note —
+        "One per key, from ssh-keygen -lf." — and the page is telling the user it
+        is showing them fingerprints from ssh-keygen while showing them none. No
+        toast, no log line the user can see, and no way to tell from the screen
+        that anything went wrong.
+
+        That is not hypothetical. `fingerprints()` gained a `UnicodeDecodeError`
+        clause because `subprocess(text=True)` raises it on a non-UTF-8 answer,
+        and it is a `ValueError` that the `OSError`/`SubprocessError` handler
+        beside it does not catch. The clause fixes that one case; this handler is
+        what makes the *next* one a sentence on the row instead of a permanent
+        lie.
+        """
+        try:
+            listed, problem = fingerprints(self._path, data[0])
+        except BaseException as exc:   # noqa: BLE001 - argued below
+            # `BaseException` rather than `Exception` for the same reason as the
+            # writer in `irqbalance.py`: on a thread nobody joins there is no
+            # caller upstairs that could cope with any of these better than
+            # reporting them, and every one of them otherwise ends in the same
+            # silent stale row.
+            listed, problem = [], f"{KEYGEN} could not be read: {exc}"
         GLib.idle_add(self._on_fingerprints, listed, problem, data[1])
 
     def _on_fingerprints(self, listed: list[str], problem: str,
