@@ -455,6 +455,119 @@ def deploy_backups(done) -> None:
     run_json(["pkexec", DEPLOY, "--list-backups", "--json"], finish)
 
 
+# --- Shani Backup's snapshot operations ---------------------------------------
+#
+# **These delegate, and that is the whole design.** `shani-backup` already owns
+# the btrfs calls; this page does not parse `btrfs subvolume list` a second time
+# to find out the same thing, because a second parser is a second opinion that
+# drifts - the rule this repo already applies to `shani-health`'s sssd/slapd/
+# nsswitch reading, to `efibootmgr`, and to the deploy argv that polkit sees.
+# (The **Btrfs** page does run `btrfs subvolume list /` itself, and that is not a
+# duplicate: that page reports the *shape of the filesystem* - which subvolumes
+# exist and how full they are - while these answer a different question, *which
+# of them are this user's snapshots, and can this one be restored*. Neither
+# derives the other's answer.)
+#
+# The CLI is the interface, and its `--json` contract was added for this: the
+# previous version of this page parsed `shani-backup snapshot list` **output** as
+# JSON, and that output was English. `--json` is one object on stdout, an
+# `"ok": false` with a reason for anything that did not answer, and an
+# `"elsewhere"` count for the subvolumes the tool listed that are not under the
+# path asked about.
+#
+# **Nothing here is privileged.** `btrfs subvolume create/delete` runs
+# unprivileged and succeeds wherever the user owns the path, which is where their
+# backups are. Where it does not - a subvolume under the root, owned by root -
+# the page reports btrfs's own reason and **names the command** rather than
+# reaching for a `pkexec`: Cassini ships no polkit rule of its own, and granting
+# a new privileged capability to a tool that deletes data is a decision for
+# someone else to make.
+
+BACKUP: Final = "shani-backup"
+
+
+def backup_snapshot_list(path: str, done) -> None:
+    """`shani-backup snapshot list --json <path>`, shaped as a value.
+
+    The three answers that must stay apart, because collapsing them is the most
+    reassuring lie this page could tell:
+
+    * `ok` false - nothing answered (no btrfs, not a btrfs filesystem, no such
+      path). `problem` carries the reason.
+    * `ok` true, `snapshots` empty, `elsewhere` > 0 - this path holds none, and
+      the filesystem holds others that cannot be named from here.
+    * `ok` true, `snapshots` empty, `elsewhere` 0 - this path holds none.
+    """
+    empty = {"ok": False, "problem": "", "snapshots": [], "count": None,
+             "elsewhere": None, "note": ""}
+
+    def finish(payload, error: str) -> None:
+        if payload is None:
+            done({**empty, "problem": error or "shani-backup did not answer"}, "")
+            return
+        if not payload.get("ok"):
+            done({**empty, "problem": str(payload.get("error")
+                                         or "shani-backup refused the read")}, "")
+            return
+        snapshots = payload.get("snapshots")
+        if not isinstance(snapshots, list):
+            done({**empty, "problem": "shani-backup's answer has no snapshots list"}, "")
+            return
+        done({"ok": True, "problem": "",
+              "snapshots": [str(s) for s in snapshots],
+              "count": len(snapshots),
+              "elsewhere": payload.get("elsewhere"),
+              "note": str(payload.get("note") or "")}, "")
+
+    run_json([BACKUP, "snapshot", "list", "--json", path], finish)
+
+
+def backup_snapshot_create(source: str, destination: str, done) -> None:
+    """`shani-backup snapshot create --json`, shaped as a value.
+
+    A state change behind an explicit click, and the only thing this page does
+    that adds rather than removes. `shani-backup` answers with the *reason* it
+    refused - a plain directory is not a subvolume, a snapshot cannot cross a
+    filesystem - which is what the row shows, because \"Failed to create
+    snapshot\" sent people after the wrong thing every time.
+    """
+    empty = {"ok": False, "problem": "", "destination": destination}
+
+    def finish(payload, error: str) -> None:
+        if payload is None:
+            done({**empty, "problem": error or "shani-backup did not answer"}, "")
+            return
+        if not payload.get("ok"):
+            done({**empty, "problem": str(payload.get("error")
+                                         or "shani-backup refused the snapshot")}, "")
+            return
+        done({"ok": True, "problem": "", "destination": destination}, "")
+
+    run_json([BACKUP, "snapshot", "create", "--readonly", "--json",
+              source, destination], finish)
+
+
+def backup_snapshot_delete(snapshot: str, done) -> None:
+    """`shani-backup snapshot delete --json`, shaped as a value.
+
+    Destroys a subvolume and everything in it. The page asks first, naming the
+    full path, because the path *is* what is destroyed; the reader only reports.
+    """
+    empty = {"ok": False, "problem": "", "snapshot": snapshot}
+
+    def finish(payload, error: str) -> None:
+        if payload is None:
+            done({**empty, "problem": error or "shani-backup did not answer"}, "")
+            return
+        if not payload.get("ok"):
+            done({**empty, "problem": str(payload.get("error")
+                                         or "shani-backup refused the delete")}, "")
+            return
+        done({"ok": True, "problem": "", "snapshot": snapshot}, "")
+
+    run_json([BACKUP, "snapshot", "delete", "--json", snapshot], finish)
+
+
 # --- reading the fleet agent's own health and drift --------------------------
 #
 # Both of these have a `--json` mode, which is why they are read rather than
