@@ -462,6 +462,10 @@ READERS = (
     "firmware_devices", "firmware_updates",
     "loaded_modules", "journal_boots", "journal_disk_usage",
     "pipewire_status", "gpu_report",
+    # Two readers added for the fleet page's health and drift checks. They
+    # write their `done` calls in this shape and the gate is what keeps them
+    # that way - the arity has broken a page four times already.
+    "fleet_health", "fleet_drift",
 )
 
 

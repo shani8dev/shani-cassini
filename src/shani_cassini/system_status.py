@@ -455,6 +455,109 @@ def deploy_backups(done) -> None:
     run_json(["pkexec", DEPLOY, "--list-backups", "--json"], finish)
 
 
+# --- reading the fleet agent's own health and drift --------------------------
+#
+# Both of these have a `--json` mode, which is why they are read rather than
+# parsed - and both carry the agent's **own verdict** in the document:
+# `healthcheck` sends a `status` field computed by the same precedence its exit
+# code uses, and `drift-check` sends `drift_detected`. So nothing here decides
+# whether a machine is healthy. A second implementation of that precedence in
+# Python would be a second opinion that drifts from the agent, which is the one
+# thing this repo warns about for sshd_config and nsswitch.
+#
+# **Both are privileged, and that is not incidental.** The agent runs from a
+# systemd unit with no `User=`, so it is root, and its `gpg --list-keys` therefore
+# reads **root's** keyring. Called unprivileged the same command would read the
+# desktop user's keyring and report `gpg_in_keyring: false` on a perfectly
+# healthy enrolled machine - a wrong answer, not a missing one. The same applies
+# to `/data/current-slot` and to `systemctl --failed`.
+#
+# Both exit non-zero on the interesting answer (`healthcheck` 1/2/3/4/5,
+# `drift-check` 1 when drift was found) and print their JSON regardless;
+# `run_json` already prefers JSON on stdout over the exit status, for exactly
+# this shape (shani-health --verify exits 1 with results).
+
+FLEET_AGENT: Final = "shani-fleet-agent"
+
+
+def fleet_health(done) -> None:
+    """`shani-fleet-agent healthcheck --json`, shaped as a value.
+
+    Returns `{"ok": bool, "problem": str, "checks": [...], "status": str}`.
+
+    `checks` is one entry per thing the agent asked about - enrollment, the GPG
+    key in the keyring, and whether the console answered - each carrying the
+    boolean it sent and the sentence to show for it. The page renders them; it
+    does not combine them into a verdict, because the agent has sent one.
+    """
+    def finish(payload, error: str) -> None:
+        if payload is None:
+            done({"ok": False, "problem": error or "the agent did not answer",
+                  "checks": [], "status": ""}, error)
+            return
+        if not isinstance(payload.get("status"), str):
+            done({"ok": False,
+                  "problem": "shani-fleet-agent healthcheck --json has no "
+                             "status field",
+                  "checks": [], "status": ""},
+                 "no status field in the healthcheck document")
+            return
+        key_id = str(payload.get("gpg_key_id") or "")
+        checks = [
+            {"key": "Enrollment",
+             "yes": payload.get("enrolled") is True,
+             "text": ("This device is enrolled" if payload.get("enrolled") is True
+                      else "Not enrolled - this device is not reported to any "
+                           "organisation")},
+            {"key": "Signing key",
+             "yes": payload.get("gpg_in_keyring") is True,
+             "text": ((f"Key {key_id} is in the machine's keyring")
+                      if payload.get("gpg_in_keyring") is True else
+                      (f"Key {key_id or '(none configured)'} is not in the "
+                       f"machine's keyring, so every signed command would be "
+                       f"refused"))},
+            {"key": "Console",
+             "yes": payload.get("server_reachable") is True,
+             "text": ("The fleet console answered"
+                      if payload.get("server_reachable") is True else
+                      "The fleet console did not answer")},
+        ]
+        done({"ok": True, "problem": "", "checks": checks,
+              "status": str(payload.get("status") or "")}, "")
+
+    run_json(["pkexec", FLEET_AGENT, "healthcheck", "--json"], finish)
+
+
+def fleet_drift(done) -> None:
+    """`shani-fleet-agent drift-check --json`, shaped as a value.
+
+    Returns `{"ok": bool, "problem": str, "drift": [...], "detected": bool|None}`.
+
+    The category strings are the agent's own and are shown verbatim. Two of the
+    five carry a count after a colon (`failed_units:3`, `stale_heartbeat:9000s`),
+    and **splitting them here would be a second parser** - so the page shows the
+    string the agent sent.
+    """
+    def finish(payload, error: str) -> None:
+        if payload is None:
+            done({"ok": False, "problem": error or "the agent did not answer",
+                  "drift": [], "detected": None}, error)
+            return
+        drift = payload.get("drift")
+        if not isinstance(drift, list):
+            done({"ok": False,
+                  "problem": "shani-fleet-agent drift-check --json has no "
+                             "drift list",
+                  "drift": [], "detected": None},
+                 "no drift list in the drift-check document")
+            return
+        done({"ok": True, "problem": "",
+              "drift": [str(item) for item in drift],
+              "detected": payload.get("drift_detected")}, "")
+
+    run_json(["pkexec", FLEET_AGENT, "drift-check", "--json"], finish)
+
+
 # --- reading shani-deploy --verify-existing ---------------------------------
 #
 # This one is the odd one out in this file: every other deploy contract Cassini

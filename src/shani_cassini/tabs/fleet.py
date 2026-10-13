@@ -89,6 +89,28 @@ CANCELLED: str = "Authorization was cancelled"
 NOT_INSTALLED: str = "This device's fleet agent is not installed"
 
 
+DIAGNOSTICS_NOTE = (
+    "Two checks the agent can run about itself, each behind its own button "
+    "because each asks for your password. Both are read the way the agent reads "
+    "them: it runs as root, so the signing key is looked for in the machine's "
+    "own keyring rather than in yours."
+)
+NOT_CHECKED = "Not checked yet - press Check to ask"
+ASKING_HEALTH = "Asking the agent for its health…"
+ASKING_DRIFT = "Asking the agent about local drift…"
+# **The agent's own status strings, not ours.** `cmd_healthcheck` computes
+# `status` by the same precedence it uses for its exit code, and a page that
+# re-derived "healthy" from the three booleans would be a second implementation
+# of that precedence - which is the drift this repo warns about for
+# sshd_config and nsswitch. An unrecognised status renders as unrecognised.
+HEALTH_STATUS = {
+    "healthy": "Healthy - enrolled, key present, console answering",
+    "not_enrolled": "Not enrolled",
+    "unreachable": "The fleet console could not be reached",
+    "degraded": "Degraded - the agent named a reason, listed below",
+}
+
+
 def _looks_unenrolled(value: str) -> bool:
     """Whether a `status` line says this machine is not enrolled.
 
@@ -121,6 +143,9 @@ class FleetTab(Gtk.Box):
         self.append(self._toasts)
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         self._toasts.set_child(page)
+        # Kept because the diagnostics group is built by its own method, and
+        # this page appends to the inner box rather than to itself.
+        self._page = page
 
         self._enrolled: bool | None = None
         self._machine_id = ""
@@ -134,6 +159,12 @@ class FleetTab(Gtk.Box):
         # outlived the run that produced it would keep asserting facts about a
         # machine whose state has since changed.
         self._enrolled_line = ""
+        # The last answer from each of the agent's two runnable checks, kept as
+        # values rather than as widgets so a check can be re-read without a
+        # second group of rows accumulating. None means "not asked yet", which
+        # is a different answer from "asked and found nothing".
+        self._health: dict | None = None
+        self._drift: dict | None = None
 
         self._membership = Adw.PreferencesGroup(
             title="This device",
@@ -172,7 +203,176 @@ class FleetTab(Gtk.Box):
 
         self._status = Adw.PreferencesGroup(title="Status", visible=False)
         page.append(self._status)
+        self._build_diagnostics()
         self._render_membership()
+
+    # ------------------------------------------------------- health and drift
+    def _build_diagnostics(self) -> None:
+        """The two checks the agent can run and nothing had ever driven.
+
+        **Both are behind a click, and both are privileged, and the privilege is
+        the point rather than an inconvenience.** The agent's systemd unit has
+        no `User=`, so it runs as root and its `gpg --list-keys` reads root's
+        keyring - the same keyring it will verify signed commands against. Run
+        unprivileged, this check would read the desktop user's keyring and
+        report a missing signing key on a perfectly healthy enrolled machine.
+        That is a wrong answer rather than a missing one, which is why the note
+        on the row says the checks are read as the agent reads them.
+        """
+        group = Adw.PreferencesGroup(
+            title="Health and drift",
+            description=DIAGNOSTICS_NOTE)
+        self._row_health = Adw.ActionRow(title="Health", subtitle=NOT_CHECKED)
+        self._btn_health = Gtk.Button(label="Check", valign=Gtk.Align.CENTER)
+        self._btn_health.connect("clicked", lambda *_: self.check_health())
+        self._row_health.add_suffix(self._btn_health)
+        group.add(self._row_health)
+
+        self._row_drift = Adw.ActionRow(title="Local drift", subtitle=NOT_CHECKED)
+        self._btn_drift = Gtk.Button(label="Check", valign=Gtk.Align.CENTER)
+        self._btn_drift.connect("clicked", lambda *_: self.check_drift())
+        self._row_drift.add_suffix(self._btn_drift)
+        group.add(self._row_drift)
+
+        # One group of results under both buttons, rebuilt per check, so a
+        # health answer is never drawn next to a drift answer from another run.
+        self._findings = Adw.PreferencesGroup(title="Findings", visible=False)
+        self._finding_rows: list[Adw.ActionRow] = []
+        # Which check the findings currently on screen belong to. **Not
+        # inferable** from `_health`/`_drift`: the first version of this fell
+        # back to "the other result" whenever one was None, so pressing Health
+        # after Drift redrew the *drift* rows for the whole round trip and then
+        # appended the health rows to them - eight rows answering two different
+        # questions, with the stale half on top. Naming the source is the only
+        # way to keep the promise the docstring makes.
+        self._findings_from: str | None = None
+        self._page.append(group)
+        self._page.append(self._findings)
+
+    def check_health(self) -> None:
+        if self._busy:
+            return
+        self._busy = True
+        self._clear_findings()
+        self._findings_from = "health"
+        self._render_diagnostics()
+
+        def done(result, error: str) -> None:
+            self._busy = False
+            self._health = result if isinstance(result, dict) else {
+                "ok": False, "problem": error or "the agent did not answer",
+                "checks": [], "status": ""}
+            self._render_diagnostics()
+
+        ss.fleet_health(done)
+
+    def check_drift(self) -> None:
+        if self._busy:
+            return
+        self._busy = True
+        self._clear_findings()
+        self._findings_from = "drift"
+        self._render_diagnostics()
+
+        def done(result, error: str) -> None:
+            self._busy = False
+            self._drift = result if isinstance(result, dict) else {
+                "ok": False, "problem": error or "the agent did not answer",
+                "drift": [], "detected": None}
+            self._render_diagnostics()
+
+        ss.fleet_drift(done)
+
+    def _clear_findings(self) -> None:
+        """Take down the rows of the last check.
+
+        A `drift_detected: true` from three minutes ago must not sit on screen
+        beside a health answer read just now, so the group is emptied rather
+        than refilled - the same rule the Status group follows, and for the same
+        reason: a *view* of the agent's output that outlived the run that
+        produced it would keep asserting facts about a machine whose state has
+        since changed.
+        """
+        for row in self._finding_rows:
+            self._findings.remove(row)
+        self._finding_rows = []
+        self._findings.set_visible(False)
+        self._findings_from = None
+
+    def _render_diagnostics(self) -> None:
+        """Each row says what the last check found, and only that.
+
+        The agent sends its own verdict in `status` and `drift_detected`, so
+        neither is recomputed here. A page that combined the three booleans
+        itself would be a second implementation of the agent's precedence, and
+        the two would drift the first time the agent gained a check.
+        """
+        self._btn_health.set_sensitive(not self._busy)
+        self._btn_drift.set_sensitive(not self._busy)
+        self._row_health.set_subtitle(self._health_note())
+        self._row_drift.set_subtitle(self._drift_note())
+        self._render_findings()
+
+    def _health_note(self) -> str:
+        result = self._health
+        if self._busy and result is None:
+            return ASKING_HEALTH
+        if result is None:
+            return NOT_CHECKED
+        if not result.get("ok"):
+            return _esc(result.get("problem") or "the agent did not answer")
+        return HEALTH_STATUS.get(str(result.get("status") or ""),
+                                 "The agent reported a status this page does "
+                                 "not recognise")
+
+    def _drift_note(self) -> str:
+        result = self._drift
+        if self._busy and result is None:
+            return ASKING_DRIFT
+        if result is None:
+            return NOT_CHECKED
+        if not result.get("ok"):
+            return _esc(result.get("problem") or "the agent did not answer")
+        detected = result.get("detected")
+        if detected is False:
+            return "No drift detected"
+        if detected is None:
+            # `drift_detected` absent is not the same as "no drift", and the
+            # drift list may well be empty because the field was never sent.
+            return "The agent did not say whether it found drift"
+        return f"{len(result.get('drift') or [])} item(s) - each one is listed below"
+
+    def _render_findings(self) -> None:
+        """Only the check that owns the group may fill it.
+
+        Named rather than inferred - see `_findings_from`, whose comment records
+        what inferring cost.
+
+        **No guard for "no check owns it".** There was one, and its control
+        showed it could not fail: both callers set `_findings_from` before
+        rendering, and `_clear_findings()` - the only other place that changes it
+        - never runs while a render is in progress. Untestable defence implying
+        protection it did not provide is the shape this repo has removed four
+        times, so the guard went rather than being kept and believed.
+        """
+        result = (self._health if self._findings_from == "health"
+                  else self._drift)
+        if result is None or not result.get("ok"):
+            return
+        for check in result.get("checks") or []:
+            row = Adw.ActionRow(title=_esc(check.get("key") or ""),
+                                subtitle=_esc(check.get("text") or ""))
+            row.add_prefix(Gtk.Image.new_from_icon_name(
+                "object-select-symbolic" if check.get("yes") is True
+                else "dialog-warning-symbolic"))
+            self._findings.add(row)
+            self._finding_rows.append(row)
+        for item in result.get("drift") or []:
+            row = Adw.ActionRow(title="Drift", subtitle=_esc(item))
+            row.add_prefix(Gtk.Image.new_from_icon_name("dialog-warning-symbolic"))
+            self._findings.add(row)
+            self._finding_rows.append(row)
+        self._findings.set_visible(bool(self._finding_rows))
 
     # ----------------------------------------------------------------- status
     def _present(self, dialog: Adw.AlertDialog) -> None:
