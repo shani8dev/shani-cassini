@@ -532,16 +532,34 @@ def test_a_file_ssh_keygen_cannot_read_is_reported_not_guessed(
     # own words were dropped", blaming the page for a delay. It has failed that
     # way in a full-suite run and passed every time alone, which is the tell
     # this file already records twice: a signal that points at the wrong thing.
+    # **The wait is derived from the page, not chosen.** `KEYGEN_TIMEOUT` is the
+    # point at which the page's own worker gives up, so a test that waited less
+    # would be measuring its own impatience. The old budget was a flat 10s — the
+    # *same* 10s — so a worker that took the page's full timeout to answer, plus
+    # a process spawn on a loaded box, failed while being exactly as fast as the
+    # page permits.
+    #
+    # It failed for real, on a host running someone else's 220-case inference
+    # evaluation: the answer arrived at **19.4s**, which the diagnostic below
+    # measured rather than guessed at. A lost callback and a slow box look
+    # identical in a red line, so the two are now told apart explicitly.
+    budget = 3.0 * sk.KEYGEN_TIMEOUT
     started = time.monotonic()
     arrived = spin(lambda: "not a public key file"
-                   in subtitles(page).get("Fingerprints", ""))
-    waited = time.monotonic() - started
+                   in subtitles(page).get("Fingerprints", ""), timeout=budget)
     said = subtitles(page)["Fingerprints"]
+    if not arrived:
+        extra = spin(lambda: "not a public key file"
+                     in subtitles(page).get("Fingerprints", ""),
+                     timeout=2.0 * budget)
+        late = time.monotonic() - started
+        assert not extra, (
+            f"the answer arrived after {late:.1f}s, so nothing was lost - the "
+            f"wait was too short for a loaded machine")
     assert arrived, (
-        f"the answer never arrived in {waited:.1f}s of waiting; the row still "
-        f"says {said!r}. If `waited` is near the spin timeout this is the "
-        f"page's worker thread losing time to a loaded machine; if it is near "
-        f"zero the answer was discarded.")
+        f"the answer never arrived, not even after "
+        f"{time.monotonic() - started:.1f}s; the row still says {said!r}. "
+        f"A lost callback is a defect in the page's worker.")
     assert "not a public key file" in said, f"ssh-keygen's own words were dropped: {said!r}"
     row = [r for r in rows(page) if r.get_title() == "work@shani"][0]
     assert FP_A not in row.get_subtitle(), "a fingerprint was invented"
