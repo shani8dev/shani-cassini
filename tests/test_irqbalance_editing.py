@@ -171,6 +171,23 @@ def page(tmp_path, monkeypatch):
     return tab
 
 
+def wait_until_ready(page, timeout: float = 10.0) -> bool:
+    """Wait until the page is willing to be saved again.
+
+    `_saved` clears the guard and re-enables the row, and it arrives through
+    `GLib.idle_add` from the writer thread - so this is the same wait as
+    `wait_for_saves`, asked about the other half of the same round trip.
+    """
+    import time as _time
+    from gi.repository import GLib as _GLib
+    ctx = _GLib.MainContext.default()
+    end = _time.monotonic() + timeout
+    while (page._saving or not page._ban_row.get_sensitive()) and _time.monotonic() < end:
+        ctx.iteration(False)
+        _time.sleep(0.005)
+    return not page._saving and page._ban_row.get_sensitive()
+
+
 def wait_for_saves(page, count: int, timeout: float = 10.0) -> bool:
     """Wait until the page's writer thread has been called `count` times.
 
@@ -247,6 +264,13 @@ def test_an_empty_value_removes_the_key_rather_than_setting_it_blank(page):
     page._ban_row.set_text("0-3")
     page._on_save_clicked(None)
     assert wait_for_saves(page, 1), "the first save never reached the writer"
+    # And for the page to be ready for the next one - a real user's Save is
+    # greyed out until `_saved` runs, so the second click is only reachable
+    # after that. Without the wait, the second click is *refused by the page*
+    # (there is now a guard for exactly that) and the key would never be
+    # removed - so this line is the one that makes the rest of the test mean
+    # what it says.
+    assert wait_until_ready(page), "the page never became writable again"
     page._ban_row.set_text("")
     page._on_save_clicked(None)
     assert wait_for_saves(page, 2), (
@@ -254,6 +278,94 @@ def test_an_empty_value_removes_the_key_rather_than_setting_it_blank(page):
         f"{page._captured['saves']}")
     assert "IRQBALANCE_BANNED_CPULIST" not in page._captured["saves"][-1], \
         f"the second save wrote the key back: {page._captured['saves'][-1]!r}"
+
+
+class TestTheWriteItself:
+    """What the page does while a write is in flight, rather than before it.
+
+    Every other test here is about the decision - validate, refuse, choose a
+    separator. These three are about the window between the click and the
+    answer, which is where the two flakes in this file came from.
+    """
+
+    def test_a_second_save_while_one_is_in_flight_is_refused(self, page,
+                                                            monkeypatch):
+        """The invariant lives in `_on_save_clicked`, not only in the row.
+
+        **Two different values, deliberately.** The first version of this test
+        set the box to empty for the second click, and its control passed with
+        the guard removed - because emptying the box is the one change the page
+        refuses on its own merits: the file still has the key commented out, so
+        `remove_key` reports "unchanged" and `_on_save_clicked` returns before
+        the writer is reached. The test could not tell a guard that worked from
+        no guard at all, which is the shape this repo keeps finding.
+
+        Changing one valid list to another is the case the guard exists for: the
+        second click would otherwise read the pre-write file and write a value
+        derived from it, so the user's first change is lost.
+        """
+        import threading
+        release = threading.Event()
+        seen: list[str] = []
+
+        def slow_save(path, text, done):
+            seen.append(text)
+            page._captured.setdefault("saves", []).append(text)
+            release.wait(2.0)
+            pathlib.Path(path).write_text(text)
+            done("", "")
+
+        monkeypatch.setattr(ib.ce, "save", slow_save)
+        page._ban_row.set_text("0-3")
+        page._on_save_clicked(None)
+        page._ban_row.set_text("4-5")
+        page._on_save_clicked(None)
+        release.set()
+        assert wait_for_saves(page, 1)
+        assert len(seen) == 1, (
+            f"the second click was not refused; the writer saw {seen}")
+
+    def test_a_writer_that_raises_leaves_the_page_usable_and_says_so(
+            self, page, monkeypatch):
+        """**A raised exception must not grey out the page for the session.**
+
+        `ce.save` runs on a daemon thread nobody joins, so an exception there
+        killed the thread, never called back, and left the CPU-list row
+        insensitive with no toast and nothing in the log — the one control this
+        page has, permanently disabled, silently. The handler reports it through
+        the same `done` the helper uses.
+        """
+        def exploding_save(path, text, done):
+            raise OSError("pkexec could not be started")
+
+        monkeypatch.setattr(ib.ce, "save", exploding_save)
+        page._ban_row.set_text("0-3")
+        page._on_save_clicked(None)
+        assert wait_for_saves(page, 0) or True
+        # The row must come back, and the page must accept a save again.
+        ctx = ib.GLib.MainContext.default()
+        import time as _time
+        end = _time.monotonic() + 5
+        while (page._ban_row.get_sensitive() is False
+               and _time.monotonic() < end):
+            ctx.iteration(False)
+            _time.sleep(0.005)
+        assert page._ban_row.get_sensitive(), \
+            "the CPU-list row stayed greyed out after the writer raised"
+
+    def test_the_refusal_is_the_method_not_only_the_widget(self, page,
+                                                           monkeypatch):
+        """Calling `_on_save_clicked` directly while saving is a no-op.
+
+        Reachable without any keyboard or focus behaviour at all - the point of
+        putting the guard in the method rather than trusting the row.
+        """
+        monkeypatch.setattr(ib.ce, "save", lambda p, t, d: d("", ""))
+        page._saving = True
+        page._ban_row.set_text("4-5")
+        page._on_save_clicked(None)
+        assert page._captured.get("saves") in (None, []), \
+            "a save ran while one was already in flight"
 
 
 def test_the_written_file_still_parses_as_the_helper_expects(page):

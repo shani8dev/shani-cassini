@@ -666,6 +666,11 @@ class IrqBalanceTab(Gtk.Box):
 
         self._ban_row = Adw.EntryRow(title="CPUs irqbalance must not use",
                                     text="")
+        # Set for the whole of a write, and cleared in `_saved`. It exists so
+        # `_on_save_clicked` can refuse a second click itself rather than
+        # trusting the row's sensitivity to be the only thing standing between a
+        # double-click and two reads of a file one write is still changing.
+        self._saving = False
         self._ban_row.set_tooltip_text(
             "A CPU list like 0-3 or 0,2,4. Empty means no CPU is excluded, "
             "which is the shipped behaviour. This is IRQBALANCE_BANNED_CPULIST.")
@@ -699,7 +704,22 @@ class IrqBalanceTab(Gtk.Box):
         typo costs a red border rather than an administrator authentication.
         The helper re-checks it anyway - this is for the user's benefit, not for
         the file's.
+
+        **A save already in flight refuses the click, in this method rather than
+        only in the widget.** The row is greyed out until `_saved` runs, so a
+        user cannot normally get here twice - but that puts the whole invariant
+        in a sensitivity flag, and the button is reachable by keyboard while
+        insensitive in some libadwaita versions, by `set_sensitive(False)` being
+        called on a row whose child still holds focus, and by any future caller
+        that reaches this method directly.
+
+        The cost of the second click was not cosmetic: it read the file while
+        the first write was still running, found the old key, and correctly
+        reported "already empty" - so the second save was silently dropped and
+        the user was told the change they had just made was already in place.
         """
+        if self._saving:
+            return
         wanted = (self._ban_row.get_text() or "").strip()
         if wanted and not ce.cpu_list_ok(wanted):
             self._ban_row.add_css_class("error")
@@ -739,15 +759,34 @@ class IrqBalanceTab(Gtk.Box):
         # human to type a password, so it must not run on the GTK main loop,
         # and its answer has to be handed back onto it.
         self._ban_row.set_sensitive(False)
+        self._saving = True
 
         def run() -> None:
             def done(error: str, note: str) -> None:
                 GLib.idle_add(self._saved, error, note)
-            ce.save(LOCAL_ENV, new_text, done)
+            try:
+                ce.save(LOCAL_ENV, new_text, done)
+            except BaseException as exc:   # noqa: BLE001 - see below
+                # **A writer that raises must still be reported.** Without this
+                # the exception kills the thread, `done` never fires, `_saved`
+                # never runs, and the CPU-list row stays greyed out for the rest
+                # of the session - a page that has silently disabled the only
+                # control it has, with no toast and nothing in the log, because
+                # the traceback went to a daemon thread nobody joins.
+                #
+                # `BaseException` rather than `Exception` is deliberate: this is
+                # the one place on this page where a raised `SystemExit` or
+                # `KeyboardInterrupt` would otherwise leave the same permanent
+                # grey, and there is no caller upstairs that could cope with it
+                # better than "tell the user the save failed".
+                done(f"{type(exc).__name__}: {exc}", "")
 
         threading.Thread(target=run, daemon=True).start()
 
     def _saved(self, error: str, note: str) -> bool:
+        # Cleared before anything else can fail, so no path out of here leaves
+        # the page refusing its own saves for the rest of the session.
+        self._saving = False
         self._ban_row.set_sensitive(True)
         if error:
             self._toast.add_toast(Adw.Toast(
