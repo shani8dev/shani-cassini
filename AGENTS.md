@@ -1376,6 +1376,39 @@ image is itself worth a look.
   privileged `enroll-tpm2` in a disposable slot — a TPM write, deliberately not
   done here.
 
+- **The Setup page's notes typeset their own Markdown, and 35 green tests could
+  not see it. Found by rendering, 2026-10-16.**
+
+  The page's five notes went into `description=`, which is a **plain label, not
+  markup**, and they were written with `**emphasis**` markers. A real Arch render
+  (`desktop blue --local-pkg=shani-cassini --exec="(shani-cassini
+  --section=setup &); sleep 25"`, GTK 4.22.5 / libadwaita 1.9.4) showed them on
+  screen exactly as typed, asterisks included. Every one of those strings was
+  correct as a Python string and correct as a unit-test assertion, so the suite
+  was silent — **the defect lived entirely in the gap between a string being
+  right and a string being *displayed***, which is the one thing no assertion
+  about the string can observe.
+
+  Two were worse than ugly, because they are the findings the page exists for:
+  the accounts note opened with `**A machine with no account cannot run this
+  app.**` and the manifest note with `**No manifest is shipped, so drift cannot
+  be checked from here.**` Both delivered as punctuation.
+
+  **The guard reads the built widget tree, not the source**, and that is the
+  part worth keeping rather than the fix. A `**` grep over the module fires on
+  its own docstring — the page's first paragraph explains *why* the markers were
+  removed — which is this repo's recurring "a text gate cannot tell prose from
+  behaviour" trap, already documented twice above in this same file. Walking
+  `get_title()` / `get_subtitle()` / `get_description()` off the constructed page
+  is immune to that, and it asserts the property that actually matters. Its
+  control was run: restoring one `**` fails it.
+
+  **The generalisable form: a page's own note text is display surface, and no
+  test that asserts on the string can see how it is displayed.** The
+  `renders_literally` helper above covers Pango markup specifically; this was
+  neither markup nor an entity, so it sailed past every existing gate. When a
+  page writes prose for a user, the prose is worth one render.
+
 - **The `cassini-ux` container's GTK4 segfaults on the host `:1` display, and
   `xvfb-run` inside the container is the fix — found 2026-09-29 while verifying
   the advisory, and it is not caused by any app code.** A bare `Gtk.Box()`, with
