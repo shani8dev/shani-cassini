@@ -72,15 +72,25 @@ from shani_cassini import system_status as ss
 
 logger = logging.getLogger(__name__)
 
+# NOTE FOR THE NEXT AUTHOR: these notes are plain text, not markdown.
+#
+# They were written with **emphasis** markers, and a real Arch render showed
+# them on screen exactly as typed — this app puts these strings into labels that
+# do not parse Pango markup, and `**` is not a tag. A green unit suite said
+# nothing about it, because every one of these strings was correct as a string.
+# The lesson is the one this repo keeps re-learning from the other direction:
+# emphasis that does not render is indistinguishable from emphasis that was
+# never applied, and only a render can tell them apart.
+
 SUMMARY_NOTE = (
     "Shanios creates no account at install time — the desktop's first-boot "
     "wizard does that on first start. This page reports whether the "
-    "provisioning step reached *this* account, and what is installed "
+    "provisioning step reached this account, and what is installed "
     "system-wide."
 )
 
 ACCOUNTS_NOTE = (
-    "**A machine with no account cannot run this app.** Cassini needs an "
+    "A machine with no account cannot run this app. Cassini needs an "
     "authenticated graphical session, so if a factory reset has left you with "
     "nothing to log in with, nothing here can help — recovery is the "
     "first-boot wizard's job, not a settings page's. The counts below are for "
@@ -88,10 +98,10 @@ ACCOUNTS_NOTE = (
 )
 
 WIZARD_NOTE = (
-    "**The wizard is the only way back after a factory reset.** A reset deletes "
+    "The wizard is the only way back after a factory reset. A reset deletes "
     "the `/etc` overlay, which holds `/etc/passwd` and `/etc/shadow`, so every "
     "account goes — including the root password — while files in `/home` "
-    "survive. Recreating an account with the **same username** makes those files "
+    "survive. Recreating an account with the same username makes those files "
     "accessible again; a different username will not see them.\n\n"
     "That is why `shani-testbed/slot-tests/post-reset-setup.sh` exists: it "
     "checks the recovery path where it actually runs, at boot, rather than here."
@@ -99,13 +109,13 @@ WIZARD_NOTE = (
 
 APPS_NOTE = (
     "System-wide flatpaks live in the `@flatpak` subvolume, which a factory "
-    "reset does **not** touch, so this set survives a reset while the rest of "
+    "reset does not touch, so this set survives a reset while the rest of "
     "the system does not."
 )
 
 MANIFEST_NOTE = (
-    "**No manifest is shipped on the machine, so drift cannot be checked from "
-    "here.** The list the image shipped from "
+    "No manifest is shipped on the machine, so drift cannot be checked from "
+    "here. The list the image shipped from "
     "(each profile's `flatpak-packages.txt` under `image_profiles`) is a build input — "
     "`build-flatpak-image.sh` reads it into `flatpakfs.zst`, and `upload.sh` "
     "then excludes that artifact from both SourceForge and R2. Until that list "

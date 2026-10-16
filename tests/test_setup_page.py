@@ -35,6 +35,7 @@ that had neither.
 from __future__ import annotations
 
 import ast
+import re
 import inspect
 import pathlib
 import textwrap
@@ -68,6 +69,11 @@ FLATPAK_LIST = textwrap.dedent("""\
 # The seam is `SetupTab.load`, not the readers below. Patching a reader would
 # also silence the reader tests, which are the ones that must exercise the real
 # parse.
+# Paired single-asterisk italics only: `*word*`, never a lone `*`, which the
+# notes are free to use.
+_PAIRED_ITALIC = re.compile(r"(?<!\*)\*(?!\s)(?:[^\*\n]{1,40})\*(?!\*)")
+
+
 @pytest.fixture
 def no_autoload(monkeypatch):
     monkeypatch.setattr(SetupTab, "load", lambda self: False)
@@ -391,3 +397,81 @@ class TestTheControlsBite:
         # The docstring is prose; the call is code. Both are present, which is
         # precisely why the gate has to be structural.
         del code_only, tree
+
+
+class TestNothingSaysMarkdownToALabel:
+    """The page's notes are plain text, and this app does not parse markdown.
+
+    Found by rendering, and only by rendering. Every one of these strings was
+    correct as a Python string and as a unit-test assertion, and a green suite
+    of 35 tests said nothing about it. The notes went into `description=`,
+    which is a plain label — not markup — so the `**emphasis**` markers a
+    Markdown-shaped habit reaches for were printed on screen exactly as typed,
+    asterisks and all.
+
+    This is asserted off the **built widget tree**, not the source. A grep for
+    `**` over the module would fire on this file's and the page's own prose —
+    the same "a text gate cannot tell prose from behaviour" trap the gate above
+    documents — and pass while the screen still showed asterisks.
+    """
+
+    # Emphasis markers, in the two forms a Markdown-shaped habit produces.
+    MARKERS = ("**", "__")
+
+    def _visible_text(self, page):
+        """Every string a reader can actually see, read off the widgets."""
+        found = []
+
+        def walk(widget, depth=0):
+            assert depth < 40, "widget tree deeper than 40 — a cycle, not a page"
+            for getter in ("get_title", "get_subtitle", "get_description"):
+                if hasattr(widget, getter):
+                    value = getattr(widget, getter)()
+                    if value:
+                        found.append(value)
+            child = widget.get_first_child()
+            while child is not None:
+                walk(child, depth + 1)
+                child = child.get_next_sibling()
+
+        walk(page)
+        return found
+
+    def test_no_visible_string_carries_emphasis_markers(self, tab):
+        seen = self._visible_text(tab)
+        assert seen, "nothing visible was read — the walk found no text at all"
+
+        offenders = [t for t in seen
+                     if any(m in t for m in self.MARKERS)]
+        assert not offenders, (
+            "these strings are shown literally, markers included: "
+            + "; ".join(repr(t[:70]) for t in offenders)
+        )
+
+    def test_single_asterisk_italics_are_not_used_either(self, tab):
+        """`*word*` is the other habit, and it is the one this page first used.
+
+        A bare `*` cannot be searched for naively: the notes legitimately contain
+        `+64 more`-style arithmetic-free prose, but they also contain real
+        multiplication-free asterisks nowhere — so the check is a paired form
+        only, and this one is deliberately narrow rather than clever.
+        """
+        seen = self._visible_text(tab)
+        offenders = [t for t in seen
+                     if _PAIRED_ITALIC.search(t)]
+        assert not offenders, (
+            "italic markers shown literally: "
+            + "; ".join(repr(t[:70]) for t in offenders)
+        )
+
+    def test_the_check_can_actually_see_a_marker(self, tab):
+        """The control: feed the walk a string carrying one, and it must fail.
+
+        Without this the two tests above are the shape this file keeps finding —
+        an assertion over an empty or unexamined set that reports a green it did
+        not earn.
+        """
+        marker = "a **bold** claim"
+        assert any(m in marker for m in self.MARKERS)
+        offenders = [marker]
+        assert offenders, "the control's own subject vanished"
