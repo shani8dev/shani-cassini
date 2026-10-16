@@ -58,6 +58,7 @@ from shani_cassini.tabs.graphics import GraphicsTab
 from shani_cassini.tabs.inbound_access import InboundAccessTab
 from shani_cassini.tabs.password_policy import PasswordPolicyTab
 from shani_cassini.tabs.printers import PrintersTab
+from shani_cassini.tabs.setup import SetupTab
 from shani_cassini.tabs.camera import CameraTab
 from shani_cassini.tabs.avahi import AvahiTab
 from shani_cassini.tabs.irqbalance import IrqBalanceTab
@@ -118,6 +119,9 @@ SECTIONS = [
              "This machine at a glance"),
             (HealthTab, "health", "Health", "object-select-symbolic",
              "Checks and diagnostics"),
+            (SetupTab, "setup", "Setup", "system-software-install-symbolic",
+             "Whether anyone can log in, and whether the first-boot wizard can "
+             "create an account"),
         ]),
         ("Storage", [
             (StorageTab, "storage", "Storage", "drive-harddisk-symbolic",

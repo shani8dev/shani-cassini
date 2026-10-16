@@ -4205,6 +4205,234 @@ def exim_state(done: Callable[[dict, str], None]) -> None:
     run_text([tool_path_or_self(EXIM), "-bP", "transports"], on_transports)
 
 
+# ── First-run and account state ─────────────────────────────────────────────
+# Shanios installs NO user account. `os-installer-config/config.yaml` sets
+# `skip_user: yes`, so the installer's user page never renders and
+# `configure.sh`'s `useradd` block is never reached (it is additionally gated
+# on `OSI_USER_NAME`, which nothing sets with that flag). The first account is
+# created at first boot by the desktop's own wizard.
+#
+# That makes account state the one question whose answer decides whether this
+# machine is usable, and it is also the question a factory reset changes
+# without saying so. `shani-reset` wipes the /etc overlay UPPER layer, which is
+# where /etc/passwd lives, so every account disappears — including the root
+# password set at install time — while the home directories in @home survive.
+# The page therefore reports what exists and, more usefully, whether the thing
+# that would create an account is still armed.
+
+#: Shells that mark an account as non-interactive. The same set
+#: `shani-user-setup.sh` skips, and the same reasoning: nobody can log in as
+#: them, so they are not "a user" for this page's purpose.
+_NON_LOGIN_SHELLS: Final = ("/nologin", "/false", "/sync", "/halt", "/shutdown")
+
+#: The UID range `shani-user-setup.sh` treats as "regular user". Below it are
+#: system accounts; `login.defs`' own UID_MIN is 1000 on Arch, and the deploy
+#: script's awk filter uses the same 1000..59999 window.
+_FIRST_REGULAR_UID: Final = 1000
+_LAST_REGULAR_UID: Final = 59999
+
+
+def parse_passwd_accounts(text: Optional[str]) -> Optional[list[dict]]:
+    """Regular interactive accounts from /etc/passwd text.
+
+    Returns None when the text is None (the file could not be read), which is
+    deliberately NOT the same answer as an empty list. "No account exists" and
+    "nobody could tell" are opposites here: the first is a machine with no way
+    to log in, the second is a page that failed to read a file. Collapsing them
+    would let a read failure render as reassurance.
+
+    `None` is returned rather than raising so the caller can hand it straight
+    to `done`.
+    """
+    if text is None:
+        return None
+    out: list[dict] = []
+    for raw in text.splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        parts = raw.split(":")
+        if len(parts) < 7:
+            continue
+        name, _pw, uid_s, _gid_s, _gecos, home, shell = parts[:7]
+        try:
+            uid = int(uid_s)
+        except ValueError:
+            continue
+        if not (_FIRST_REGULAR_UID <= uid <= _LAST_REGULAR_UID):
+            continue
+        if shell.endswith(_NON_LOGIN_SHELLS):
+            continue
+        out.append({"name": name, "uid": uid, "home": home, "shell": shell})
+    return out
+
+
+def parse_flatpak_apps(text: Optional[str]) -> Optional[list[dict]]:
+    """Application rows from `flatpak list --app --columns=application,version`.
+
+    None when unreadable, for the same reason as above: a flatpak that could
+    not be asked has not been shown to hold no apps.
+    """
+    if text is None:
+        return None
+    out: list[dict] = []
+    for raw in text.splitlines():
+        if not raw.strip():
+            continue
+        parts = raw.split("\t")
+        app = parts[0].strip()
+        if not app:
+            continue
+        out.append({"app": app, "version": parts[1].strip() if len(parts) > 1 else ""})
+    return out
+
+
+def skel_coverage(done: Callable[[dict, str], None]) -> None:
+    """How much of /etc/skel this account's home is missing.
+
+    This is the reachable half of the post-reset problem, and it is reachable
+    *because* somebody is logged in: Cassini cannot run at all on a machine with
+    no account, so the only question it can honestly answer about provisioning
+    is "was it applied to the account in front of me".
+
+    `useradd -m` copies skel only when it CREATES a home, so a home that
+    predates the account — which is exactly what a factory reset leaves, since
+    `@home` survives while `/etc/passwd` does not — gets none of the defaults.
+    `shani-user-setup` now seeds what is missing, add-only.
+
+    Unprivileged throughout: `/etc/skel` is world-readable and the caller's own
+    home is by definition theirs.
+    """
+    out: dict = {"home": None, "user": None, "total": None, "missing": None}
+
+    try:
+        entry = pwd.getpwuid(os.getuid())
+    except KeyError:
+        # No passwd entry for our own uid — a container, or a system service
+        # running as a uid that was never in /etc/passwd. Distinct from "home
+        # has everything", so it stays None rather than becoming 0.
+        done(out, "this process has no /etc/passwd entry")
+        return
+
+    home = entry.pw_dir
+    out["user"] = entry.pw_name
+    out["home"] = home
+
+    if not os.path.isdir("/etc/skel"):
+        out["total"] = 0
+        out["missing"] = []
+        done(out, "/etc/skel is absent")
+        return
+    if not os.path.isdir(home):
+        out["total"] = 0
+        out["missing"] = None
+        done(out, f"home {home} is not a directory")
+        return
+
+    wanted: list[str] = []
+    for root, _dirs, files in os.walk("/etc/skel"):
+        for name in files:
+            rel = os.path.relpath(os.path.join(root, name), "/etc/skel")
+            wanted.append(rel)
+
+    missing = [rel for rel in wanted if not os.path.exists(os.path.join(home, rel))]
+    out["total"] = len(wanted)
+    out["missing"] = missing
+    done(out, "")
+
+
+def account_state(done: Callable[[dict, str], None]) -> None:
+    """Who can log in, and whether the wizard that creates them is armed.
+
+    Read-only and unprivileged throughout: /etc/passwd is world-readable, the
+    profile file is world-readable, and `systemctl is-enabled` needs no bus
+    credentials to answer about a unit's enablement.
+
+    Each source settles its own keys and an unreadable one leaves them None.
+    One missing file must not blank the whole card — the passwd read and the
+    wizard read fail for entirely unrelated reasons, and a shared handler
+    would let whichever finished last decide the verdict for both.
+    """
+    out: dict = {
+        "accounts": None,
+        "passwd_readable": None,
+        "profile": None,
+        "wizard_unit": None,
+        "wizard_enabled": None,
+        "wizard_flag_present": None,
+    }
+
+    # `passwd_readable` exists because `accounts` alone cannot carry the
+    # distinction. Collapsing an unreadable passwd to [] here would render
+    # "no account can log in" for a machine that may well have one — and on
+    # this page that is the difference between a warning a user should act on
+    # and a false alarm that trains them to ignore the row. The parser already
+    # returns None rather than [] for exactly this reason; flattening it here
+    # would throw that away one layer up.
+    passwd = parse_passwd_accounts(_read_text_or_none("/etc/passwd"))
+    out["passwd_readable"] = passwd is not None
+    out["accounts"] = passwd if passwd is not None else []
+
+    profile = (_read_text_or_none("/etc/shani-profile") or "").strip()
+    out["profile"] = profile or None
+
+    # The completion flag is a plain existence question — a file read, so it
+    # stays synchronous like the other /etc reads in this module. It is the
+    # single fact that decides whether Plasma will re-create an account.
+    out["wizard_flag_present"] = os.path.exists("/etc/plasma-setup-done")
+
+    def on_enabled(text: Optional[str], err: str) -> None:
+        state = (text or "").strip()
+        if not state:
+            # systemctl said nothing useful. Unknown, not "disabled" — the
+            # difference decides whether the page warns or stays quiet.
+            out["wizard_enabled"] = None
+            out["wizard_unit"] = None
+        else:
+            out["wizard_enabled"] = state
+            out["wizard_unit"] = "plasma-setup.service"
+        done(out, err if not state else "")
+
+    if profile == "plasma":
+        run_text([tool_path_or_self("systemctl"), "is-enabled",
+                  "plasma-setup.service"], on_enabled)
+    else:
+        # gnome-initial-setup and cosmic-initial-setup are per-session apps
+        # with no system unit to enable, so there is nothing to ask systemctl.
+        # The page says which wizard applies instead of inventing a unit state.
+        out["wizard_enabled"] = None
+        out["wizard_unit"] = None
+        done(out, "")
+
+
+def flatpak_system_apps(done: Callable[[dict, str], None]) -> None:
+    """System-wide flatpaks, and whether anything can say what they should be.
+
+    The honest finding here is the manifest, not the app list. The image's
+    app set lives in `image_profiles/<profile>/flatpak-packages.txt`, which is
+    a BUILD input: `build-flatpak-image.sh` reads it to install into
+    `flatpakfs.zst`, and `upload.sh` then excludes that artifact (and its
+    sidecars) from both SourceForge and R2. Nothing ships the list onto the
+    machine. So drift between what the image shipped and what is installed now
+    cannot be checked from here at all, and the page says that rather than
+    showing a count and calling it reconciled.
+    """
+    out: dict = {"apps": [], "count": 0, "manifest": None}
+
+    def on_list(text: Optional[str], err: str) -> None:
+        apps = parse_flatpak_apps(text)
+        if apps is None:
+            out["apps"] = None
+            out["count"] = None
+            done(out, err or "flatpak list said nothing")
+            return
+        out["apps"] = apps
+        out["count"] = len(apps)
+        done(out, err)
+
+    run_text([tool_path_or_self("flatpak"), "list", "--system", "--app",
+              "--columns=application,version"], on_list)
+
+
 _AGE_UNITS: Final = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 

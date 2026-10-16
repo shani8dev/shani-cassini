@@ -103,7 +103,7 @@ class TestNotebook:
     # "Access"; that ambiguity is the reason the third level exists.
     EXPECTED = [
             ('System', [
-                ('Overview & Health', ['Overview', 'Health']),
+                ('Overview & Health', ['Overview', 'Health', 'Setup']),
                 ('Storage', ['Storage', 'Disk Health', 'Btrfs', 'Software RAID', 'Persistence']),
                 ('Hardware', ['System Info', 'Drivers', 'Graphics', 'Audio', 'Kernel Modules', 'Firmware']),
                 ('Interrupts', ['irqbalance']),
@@ -148,10 +148,11 @@ class TestNotebook:
                for group, subs in SECTIONS]
         assert got == self.EXPECTED
         flat = [t for _g, subs in self.EXPECTED for _s, ts in subs for t in ts]
-        # 58 pages: WireGuard was added to Network > Reachability for the per-interface
-        # wg-quick@ switches. Kept as a literal rather than len(flat) alone so a
-        # page silently vanishing from SECTIONS fails here instead of passing.
-        assert nb.get_n_pages() == len(flat) == 58, len(flat)
+        # 59 pages: WireGuard was added to Network > Reachability for the per-interface
+        # wg-quick@ switches, and Setup to System > Overview & Health. Kept as a
+        # literal rather than len(flat) alone so a page silently vanishing from
+        # SECTIONS fails here instead of passing.
+        assert nb.get_n_pages() == len(flat) == 59, len(flat)
         assert nb.page_titles() == flat
 
     def test_no_group_is_a_wall_again(self):
