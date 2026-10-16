@@ -1619,12 +1619,31 @@ class TestRendering:
         assert "never run" in joined or "starts nothing" in joined, joined
 
     def test_the_page_has_no_button_of_any_kind(self):
-        """No share button, no start button, no password prompt. A Samba page
-        that could set a password is the thing this page is not."""
+        """RETARGETED 2026-10-17, from "no button at all" to "exactly one, and
+        it is the share writer".
+
+        This gate said the page had **no button of any kind**, and that was true
+        and worth keeping while the page was a reporter. It stopped being true
+        the moment the user asked for share creation, and the choice was between
+        deleting the gate and rewriting it to the boundary that is now real —
+        the same move this repo made for the fscrypt page's gate (read-only →
+        "exactly one named program with a fixed operation list" → "only
+        gocryptfs, never privileged"). A gate left asserting the old boundary
+        reads as protection that is not there.
+
+        What is now forbidden is the part that still matters: **no button that
+        sets a password, starts, stops, reloads or restarts Samba.** Those are
+        the actions that change what is running or create a credential, and the
+        page names them as commands in prose instead.
+        """
+        # Only LABELLED buttons are counted. `AdwEntryRow` carries unlabelled
+        # internal buttons, and counting those would make the gate describe the
+        # widget library rather than what a user can invoke — the shape of an
+        # assertion that stops meaning anything.
         found = []
 
         def walk(node):
-            if isinstance(node, Gtk.Button):
+            if isinstance(node, Gtk.Button) and node.get_label():
                 found.append(node.get_label())
             child = node.get_first_child()
             while child is not None:
@@ -1632,7 +1651,42 @@ class TestRendering:
                 child = child.get_next_sibling()
 
         walk(SmbTab())
-        assert found == [], found
+        assert set(found) <= {"Create share"}, found
+        assert found, "no button at all - the gate is inspecting nothing"
+
+    def test_the_share_button_is_insensitive_until_the_form_is_complete(self):
+        """The one button must not be a live control that does nothing.
+
+        Asserted by driving the real `_author_state`, not by reading a flag: a
+        button that is insensitive for the wrong reason passes a flag check and
+        fails a user.
+        """
+        tab = SmbTab()
+        tab._entry_name.set_text("photos")
+        tab._refresh_author_state()
+        assert tab._create.get_sensitive() is False, "no path yet"
+
+        tab._entry_path.set_text("/srv/photos")
+        tab._refresh_author_state()
+        assert tab._create.get_sensitive() is False, "no user yet"
+
+        tab._entry_users.set_text("alice")
+        tab._refresh_author_state()
+        assert tab._create.get_sensitive() is True
+
+    def test_a_guest_share_can_never_be_staged(self):
+        """The one knob that lets an unauthenticated peer read a folder.
+
+        There is no `guest ok` switch in the UI and no way to reach `yes` in the
+        staged text: the value is a literal inside `share_text`, so a caller
+        cannot pass one in even by accident.
+        """
+        staged = smb_mod.share_text([
+            {"name": "photos", "path": "/srv/photos", "users": ["alice"],
+             "guest_ok": "yes"},
+        ])
+        assert "guest ok = no" in staged
+        assert "guest ok = yes" not in staged
 
 
 # --- the read-only contract, and the call-site gates ------------------------
@@ -1640,9 +1694,57 @@ class TestRendering:
 
 class TestReadOnlyContract:
     def test_the_page_never_escalates(self):
+        """RETARGETED 2026-10-17. `pkexec` and `subprocess` are now legitimately
+        present — the share writer goes through one helper — so they moved out
+        of the banned list, and **two stronger gates replaced them** rather than
+        being traded away:
+
+        * `sudo`, `os.system` and an inline `polkit` stay banned outright.
+        * `test_the_one_privileged_argv_is_one_helper_and_one_target` pins the
+          shape of the escalation: one program, one target, a digest in argv and
+          the content on stdin.
+
+        What is still forbidden here is escalation the page does not route
+        through the helper. A page that grew a second privileged path would
+        fail the new gate even though this one passes it.
+        """
         code = _code(smb_mod)
-        for banned in ("pkexec", "polkit", "sudo", "os.system", "subprocess"):
+        for banned in ("sudo", "os.system", "subprocess.Popen", "runuser"):
             assert banned not in code, f"{banned} must never appear here"
+
+    def test_the_one_privileged_argv_is_one_helper_and_one_target(self):
+        """The escalation, pinned to its exact shape.
+
+        Every argv that reaches a subprocess must be a **list literal**, so it
+        cannot be assembled from a variable that could carry any option — the
+        same structural argument the reader's argv gate makes. And the writer's
+        argv must be the helper, the `smb_share` target, and a digest.
+        """
+        argv_fn = smb_mod.smb_save_argv
+        argv = argv_fn("a" * 64)
+        assert argv[0] == "pkexec"
+        assert argv[1] == smb_mod.HELPER
+        assert argv[2:4] == ["--target", smb_mod.SMB_TARGET]
+        assert argv[4] == "--expect-sha256" and len(argv[5]) == 64
+
+        # The content is never in argv: argv is world-readable in /proc.
+        staged = smb_mod.share_text([{"name": "photos", "path": "/srv/photos",
+                                      "users": ["alice"]}])
+        assert "photos" not in " ".join(argv_fn(smb_mod.digest_of(staged)))
+
+        # And the writer's subprocess call takes its argv from that one builder,
+        # with the bytes on stdin. Anything else would be a second path.
+        tree = ast.parse(inspect.getsource(smb_mod))
+        runs = [n for n in ast.walk(tree)
+                if isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "run"]
+        assert len(runs) == 1, f"{len(runs)} subprocess.run call sites"
+        call = runs[0]
+        assert "smb_save_argv" in ast.unparse(call.args[0]), (
+            "the writer's argv is not the pinned builder")
+        assert any(k.arg == "input" for k in call.keywords), (
+            "the content is not passed on stdin")
 
     def test_the_page_cannot_change_samba_by_any_of_its_names(self):
         """Every way a page could change Samba, by name, in the code.
@@ -1700,6 +1802,11 @@ class TestReadOnlyContract:
         # below; what is checked here is the closed set of *flags*.
         assert _string_constants(smb_mod) == {
             "-s", "--version", "--no-pager", "-L", "-v", "-tulpn",
+            # The share writer's two flags, added 2026-10-17. The set stays
+            # CLOSED — naming the allowed flags is a stronger gate than
+            # searching for forbidden ones, and two new ones have to be
+            # accounted for here or the writer could grow a third unnoticed.
+            "--target", "--expect-sha256",
         }, _string_constants(smb_mod)
 
     def test_the_reader_hands_done_a_payload_and_an_error(self):
@@ -2252,7 +2359,12 @@ class TestThePagePaints:
             f"the page laid out to only {facts['page']}, which is a page that "
             f"did not lay out rather than a short one")
         assert int(facts["rows"]) >= 20, out
-        assert int(facts["groups"]) == 10, out
+        # 11, not 10: the "Add a share" group arrived with the share writer on
+        # 2026-10-17. A count is the weakest assertion there is; this one moved
+        # for a real reason rather than to make a run green, and the group's
+        # contents are asserted separately — `test_every_rendered_row_has_a_
+        # title` fails if any row in it is blank.
+        assert int(facts["groups"]) == 11, out
         assert facts["page"] == facts["blank"], (
             f"the control is {facts['blank']} and the page is {facts['page']}; "
             f"a ratio between two different pictures means nothing")

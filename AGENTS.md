@@ -72,6 +72,7 @@ for an "is not installed" status page when its app is missing.
 | Access | Edits `/etc/sudoers.d/50-shani-cassini` only, never `/etc/sudoers`. The save is `pkexec /usr/local/bin/shani-cassini-save --target sudoers --expect-sha256 <hex>` with the content on **stdin** — never `config_io.write_staged_privileged`, which runs `pkexec /usr/bin/install` on a file the caller owns in a user-writable directory (a TOCTOU) and has no polkit rule at all. `visudo` is the authority: the page proposes a line and the helper's validator disposes, so there is no second sudoers parser here to drift. The line shape is fixed and only the principal is editable; a principal the page does not recognise is refused rather than rewritten |
 | Remote Access | Edits `/etc/ssh/sshd_config.d/50-cassini.conf` only, never `/etc/ssh/sshd_config`. Same stdin helper, `--target sshd_config`. **Does not claim a directive is in effect just because it is in the drop-in**: sshd takes the *first* obtained value for most keywords, so whether the drop-in wins depends on where the `Include` sits in the main file. The page therefore says the drop-in records intent rather than promising precedence — a GUI asserting "in effect" here would be asserting something it cannot know |
 | Sharing | Edits `/etc/exports.d/shani-cassini.exports` only, never `/etc/exports`. Same stdin helper, `--target exports`. `ro`/`rw`, `sync`/`async` and the squash trio are mutually exclusive, because a line saying both `ro` and `rw` leaves the kernel to break the tie; a conflicting pair is refused at the write seam and such a line is preserved byte-for-byte under "Lines kept as they are" instead of being re-rendered. **Does not imply a share works**: a save proves only that `exportfs -ra` accepted the set. A path exported in both files is exported twice, not overridden |
+| **SMB** *(row added 2026-10-17; the page had none, which is itself the record)* | Reads `testparm -s`, `testparm --version`, `systemctl`, `pdbedit -L -v` and `ss -tulpn` — a reporter for everything it reads. **It now also creates and removes share definitions**, which is the `yast-samba-server` gap, in `/etc/samba/smb.conf.d/50-shani-cassini.conf` via `pkexec /usr/local/bin/shani-cassini-save --target smb_share --expect-sha256 <hex>` with the content on **stdin**. **`testparm -s` is the validator on both sides** — Samba's own parser — and the post-check reads the LIVE `/etc/samba/smb.conf`, so it proves the `include` is wired rather than that the fragment parsed alone. **Never `/etc/samba/smb.conf`**, which `shani-settings` ships and `pacman -u` replaces; and the drop-in is `50-shani-cassini.conf` while the shipped baseline is `00-shani-readme.conf`, so an image update cannot delete a user's shares. **Three capabilities are deliberately not offered**: `guest ok` (always `no`, a literal inside `share_text` so no caller can reach `yes`), `smbpasswd -a` (creating a credential; the helper installs a file and cannot run a command), and any start/stop/reload of `smbd` (a save changes a file and claims nothing about the daemon). See Known issues for the five gates this retargeted |
 
 | Btrfs | Five unprivileged reads: `btrfs subvolume list /` plus `btrfs fi show`, `fi usage`, `fi df` and `fi scrub status` on `/dev/disk/by-label/shani_root`. `btrfs filesystem du` is behind a button and is the only walk. **The subvolume read is given `/` and not the device on purpose**: `subvolume list` takes a path *inside* the filesystem and answers `ERROR: not a directory` for a block device, while `fi show` on that same device works. When the device is absent the read is not run at all and the page says it cannot answer — listing `/` there would be claiming another machine's subvolumes as the installer's. Starting a scrub is `btrfs-scrub.service`'s job and the page offers no way to begin one, or to add/remove a device |
 | Timers & Background Tasks | `systemctl` — the timer units and their next/last elapse, and the units they activate. **It reports systemd's own view**: a timer that exists is not a job that has ever succeeded, and a service being `active` is not a job that has ever succeeded |
@@ -83,7 +84,7 @@ for an "is not installed" status page when its app is missing.
 | Virtualization | `virsh`, `lxc list` (the LXD client), `lxc-ls -f` (the lxc package's own listing tool) and `machinectl list`. Four different tools for four different runtimes, kept under their own headings because they share nothing. **Read-only** |
 | Cron | The system crontabs, read straight from `/etc/cron.d` and `/etc/cron.{hourly,daily,weekly,monthly}` — **no tool can list these**, and `crontab -l` means only the calling user's table. `systemctl is-active cron` for whether the daemon is running at all: a crontab on disk does nothing until it is. **`crontab -l` exits 1 with empty stdout and says `no crontab for <user>`**, so "you have no jobs" is an answer and must not be reported as a failure — the shared `run_text` reader's default is wrong for this tool, and the reader overrides it. A file's leading `NAME=value` lines are environment, not a job: a correct `/etc/cron.d/anacron` is nine lines of `SHELL=`/`PATH=`/`START_` before any schedule exists |
 | AppArmor | `aa-status` through `pkexec`, which **needs root** — without it the tool prints the module line, then `You do not have enough privilege to read the profile set.`, and exits 4. So this is a button, never a page load, for the reason `--list-backups` is. AppArmor ships no JSON, so both the counts and the profile names are parsed from one run's prose. **The profile list ends at `Processes are in …`**: the lines under it look like profile lines and are running programs, and reading them as profiles named the user's browser and sshd as security profiles. A refusal, or wording this build does not recognise, is reported as a refusal — never as zero profiles |
-| Kernel Modules | `/proc/modules` and `/sys/module`, read directly — the kernel's own list, which is what `lsmod` prints, so no tool and no password. **It is space-separated, not tab-separated**: `<name> <size> <refcount> <deps> <state> <address>`, with a bare `-` for no dependencies. Parameters come from `/sys/module/<name>/parameters` because that is the *current* value; `modinfo -p` would show what a module accepts |
+| Kernel Modules | `/proc/modules` and `/sys/module`, read directly — the kernel's own list, which is what `lsmod` prints, so no tool and no password. **It is space-separated, not tab-separated**: `<name> <size> <refcount> <deps> <state> <address>`, with a bare `-` for no dependencies. Parameters come from `/sys/module/<name>/parameters` because that is the *current* value; `modinfo -p` would show what a module accepts. **Given a persistent blacklist (added 2026-10-17):** `/etc/modprobe.d/*.conf` read directly for `blacklist NAME` directives, and writes through `pkexec /usr/local/bin/shani-cassini-save --target modprobe_blacklist --expect-sha256 <hex>` with the content on **stdin**, landing in `/etc/modprobe.d/50-shani-blacklist.conf`. That target is **new** and its validator is **structural, not `modprobe -R`** — see below |
 | Firmware | `fwupdmgr get-devices --json` (unprivileged, verified on 2.0.20) on page load, and `get-updates --json` behind a button because it asks lvfs.lvfs.org. A device with no `updatable` flag is shown as carried-not-updatable rather than hidden: `Internal SPI Controller`, `KEK CA` and `Option ROM UEFI CA` all appear on a current machine. An empty update list is the **good** answer and is drawn differently from the read having failed. It installs nothing, and says why: **a firmware update changes TPM2 PCR 0 and invalidates a TPM2-sealed LUKS key** — the same consequence the Encryption page warns about |
 | Graphics | `lspci -k`, the same command the Drivers page already runs, plus `/dev/dri/render*` read directly. One tool, two questions, and no second opinion about how many cards the machine has. A GPU with **no driver bound is shown with an empty driver**, not omitted: that is what "my second monitor is black" looks like from underneath. The render nodes are the part only the kernel knows — a card with none is present and unusable, which is not the same as absent. Plus **hybrid graphics** from `switcheroo-control`, see below |
 | Audio | `wpctl status`. The `*` default marker sits **after** the tree characters, so the tree-stripper must not eat it, and every default is keyed on **section *and* heading together** because wpctl reuses `Sources:` under Video — keyed on the heading alone, the camera overwrote the microphone. Clients are listed apart from devices, because nothing in the line itself says which it is. Sets no volumes: GNOME and Plasma own that |
@@ -410,6 +411,80 @@ built image's package list, and absent from GNOME's 28 and Plasma's 62):
 > as the record of what was measured and what it turned into, which is the only
 > reason a corrected row is still in a table called *unrepresented*.
 
+### The same sweep run against YaST, not just the two desktops (2026-10-17)
+
+The table above asks one question: is a subsystem shipped but unrepresented in
+GNOME or Plasma? A **second** question was measured on the same day, and it is
+the one that produced the Kernel Modules writer: **what does YaST2 have that
+neither desktop has, and does Shanios have the interface at all?**
+
+All three sets were enumerated, not recalled: GNOME from the installed
+`gnome-control-center` 50.3 (`dpkg -L` → 28 `gnome-*-panel.desktop`, plus
+`strings` over the binary for every candidate subject); YaST from the `yast`
+GitHub org's **247 module repositories**; Plasma 6.7 from the `v6.7.0` source of
+the 13 repositories that actually ship KCMs, listing every `kcms/*` module
+directory (~50 user-facing modules, against the 62 this file records from
+Arch's package set — the difference is packages the sweep did not enumerate,
+and it moves no verdict below because each subject was checked by name against
+the full list). **Neither desktop has any module-blacklisting surface at all**:
+GNOME's binary contains **zero** occurrences of `blacklist` or `modprobe.d`,
+and Plasma 6.7 has no module-configuration KCM. That is the gap
+`yast-kernel-module` fills, so the Modules page gained a writer.
+
+**Four candidates were rejected, and three of them would have been wrong from
+memory** — which is the whole reason the sweep was measured rather than
+recalled:
+
+- **`yast-sysconfig` is the strongest textual match and was still rejected.**
+  Zero hits in GNOME, no KCM in Plasma, and it is YaST's most iconic module.
+  But `/etc/sysconfig` is a **SUSE convention**: it does not exist on this
+  host and no Shanios pkgbuild ships one, so a page for it would render a
+  directory structure that does not exist. Shanios is Arch-based; its equivalent
+  surface is the per-package drop-in directories this app already writes.
+- **`yast-proxy` looked like a gap and is not.** GNOME Control Center 50.3 ships
+  a full `CcNetProxyPage` — HTTP, HTTPS, FTP, SOCKS and an ignore list, over
+  `org.gnome.system.proxy`. Measured from the binary's own UI template; absent
+  from the 28 panel *names*, so a panel-name-only sweep would have missed it.
+- **`yast-quota`** is already a key on the Storage page, and **`yast-ntp-client`**
+  is covered by GNOME's datetime panel for the daemon Shanios actually ships
+  (neither `chrony` nor `ntp` is in any profile's package list).
+- **`yast-snapper`, `yast-autofs`, and the server roles** (squid, ftp/http/tftp/
+  dhcp/dns/nis servers, iSCSI, multipath, DRBD, cluster) name packages no
+  Shanios PKGBUILD ships, so a page for them would have no interface to read —
+  which is the same rejection as sysconfig, for the same reason.
+
+**The measured negatives, so the next person does not re-run them:** GNOME 50.3
+has **0** hits for `sysconfig`, `snapper`, `ntpd`, `timesyncd`, `autofs`,
+`syslog`, `ldap`, `gdm`, `display-manager`, `WaylandEnable`, `custom.conf`,
+`DefaultSession`, `/etc/group`, `groupadd`, `gshadow`, `blacklist`, `modprobe.d`,
+`kdump` and `multipath`. Its three apparent hits are all explainable: the only
+`kernel.org` hit is the literal `/proc/cmdline`, the two `syslog` hits are
+`G_MESSAGES_DEBUG` and `LC_MESSAGES=`, and the single `pacemaker` hit is not a
+panel. Two lookalikes worth not re-deriving: `libvirt` appears only inside the
+Containers panel as `LXC (libvirt)`, and `quota` on Storage is a `shani-health
+--storage-info` key rather than a quota tool.
+
+**Two candidates from that sweep remain open, and one is blocked.** Login and
+session — YaST's `yast-x11` module, covering the display manager and
+Wayland-vs-X11 per user, where GDM ships so the interface is real — and groups,
+where YaST's `yast-users` does what neither desktop does: both handle users
+only, neither does groups, and Cassini never reads `/etc/group`. Both are
+buildable and unblocked. The third, **Samba server shares**, from YaST's
+`yast-samba-server`, is blocked for a reason worth recording before anyone
+attempts it: **`shani-settings`'s
+`etc/samba/smb.conf` contains zero `include` lines**, so Samba has no drop-in
+directory at all, and that file is a package-owned overlay — `pacman -u
+shani-settings` overwrites it on every image update. Writing shares into it from
+the GUI would therefore be undone by the next update, and the only correct
+mechanism is to add `include = /etc/samba/smb.conf.d/*.conf` to the shipped
+default first. That is a fleet-wide default for every install, and creating a
+share is exactly the "widens what an unauthenticated network peer can do"
+decision `shani-settings/AGENTS.md` reserves for a deliberate, documented
+choice. `tabs/smb.py` is a reporter by design ("reads Samba and changes
+nothing"), and `smbpasswd -a` would additionally need a new privileged
+*capability* — `shani-cassini-save` installs one file from stdin and cannot run
+a command. Neither was done unilaterally.
+
 | btrfs compression | `compsize` (its own package, like `bees` and `duperemove` - **not** in `btrfs-progs`) | Btrfs page, not this |
 | SMART test schedule | `smartmontools`'s `smartd` | Disk Health reads only, cannot schedule |
 
@@ -420,6 +495,148 @@ not a resolver, so the DNS row above is real. `bind` shipping on a workstation
 image is itself worth a look.
 
 ## Known issues (current state, 2026-10-01)
+
+- **SMB stopped being a reporter, and five gates said so. 2026-10-17 — the
+  gates were retargeted, and none of them was deleted.**
+
+  `tabs/smb.py`'s own docstring said it "reads Samba and changes nothing", and
+  `test_smb_page.py` asserted **no button of any kind**, no `pkexec`, no
+  `subprocess`, a closed set of option strings, and one group painted. The
+  user asked for Samba server shares — the `yast-samba-server` half of the gap
+  this file's panel sweep found — so all five became false, and the choice was
+  between deleting them and rewriting each to the boundary that is now real.
+  That is the move this file already made for the fscrypt page's gate
+  (read-only → "exactly one named program with a fixed operation list" →
+  "only gocryptfs, never privileged"), for the reason recorded there: **a gate
+  left asserting the old boundary reads as protection that is not there.**
+
+  | gate | was | is now |
+  |---|---|---|
+  | no button of any kind | zero buttons | **exactly one labelled button**, and it must be "Create share". A button that sets a password, or starts/stops/reloads Samba, still fails it |
+  | the page never escalates | `pkexec`/`subprocess` banned outright | `sudo`, `os.system`, `subprocess.Popen` and `runuser` still banned; the escalation is pinned by a **new** gate — one helper, one `--target smb_share`, a digest in argv, content on stdin, and exactly one `subprocess.run` site, inside the nested `work` |
+  | the only flags passed are read-only | a closed set of 6 | a closed set of **8**; `--target` and `--expect-sha256` are named, and the set stays closed so a third could not appear unnoticed |
+  | exactly one place a row is built / one `set_subtitle` | 1 and 1 | still **1 and 1**. The new group's rows go through the module's `_row()`, and both writers share a new module-level `_set_subtitle()`. This gate shaped the code rather than the reverse: the first draft built its own `Adw.ActionRow` and its own `set_subtitle`, and the gate was right |
+  | the page paints 10 groups | 10 | **11**, with a comment saying why |
+
+  Two of those gates also caught **real defects** rather than only noise. The
+  "every rendered row has a subtitle" gate failed on the Save row and then on
+  the Last-change row, both of which I had built with empty subtitles; and the
+  button gate's first version counted `AdwEntryRow`'s three unlabelled internal
+  buttons, so it was describing the widget library rather than what a user can
+  invoke — it now counts labelled buttons **and asserts it found at least
+  one**, so it cannot pass while inspecting nothing.
+
+  **The writer's rules are refusals, and every refusal carries a reason.** A
+  greyed button with no explanation is the fleet page's defect. A share needs at
+  least one named user (with `guest ok` fixed at `no`, a share naming nobody is
+  unreachable — a dead share that looks configured), the path must be absolute,
+  and a name already in `smb.conf` is refused **because the drop-in is an
+  include**: re-declaring `[homes]` would override the shipped section, not add
+  to it. `share_text` emits no `[global]` section for the same reason — a global
+  there is overridden by `smb.conf`'s own values below the include, so it would
+  be a claim that does nothing.
+
+  **One of my own validators was wrong on the first run and its test caught it.**
+  `valid_unix_user` rejected digits after the first character, so `bob2` — an
+  ordinary account name — was refused. There is no such rule.
+
+  Suite **3082 passed, 0 failed**, with **9 negative controls run** on the share
+  logic (guest-configurable, digits-rejected, relative-paths-allowed,
+  taken-set-dropped, no-users-allowed, empty-list-writes-a-header,
+  save-moved-inline, content-into-argv, `[global]`-emitted) — each verified to
+  fail the suite, with the harness `cmp`-checking its own restore after every
+  mutation. `shani-deploy/tests/smb-share-target.sh` (7 assertions) pins the
+  helper target.
+
+  **Not verified, and the gap is the one this file already carries for SMART and
+  fprintd: no real save has been performed.** `testparm` cannot run on a
+  development host — Samba's private libraries live in `samba-libs`, which is
+  not in the workspace's package cache — so `testparm -s` is the validator
+  *wired*, not a validator *executed*. `shani-settings`' own
+  `tests/validate-configs.sh` SKIPs it with a warning rather than passing it
+  falsely. Closing this needs a booted slot with Samba installed, which is also
+  where `pacman -u shani-settings` replacing the shipped baseline would be
+  caught.
+
+- **Three defects in the new module-blacklist writer, and every one of them was
+  found by running something rather than by reading it. 2026-10-17.**
+
+  The writer itself is described in the interface table above; these are the
+  traps it hit, kept because each is the shape this file keeps re-learning.
+
+  1. **`(( lineno++ ))` made the validator reject every non-empty file, silently.**
+     The helper's `check_modprobe_blacklist_file` counted lines with
+     `(( lineno++ ))`. Under `shani-deploy`'s `set -e` a bare post-increment
+     evaluates to the **pre**-increment value and `0` is falsy — so the loop
+     aborted on the first line and exited with **no output at all**. The giveaway
+     is that an empty file passed, which is what made it look correct: the loop
+     never ran. This is the same defect this ecosystem already records twice in
+     that file (`((issues++))`, `((format_count++))`), both fixed the same way —
+     `lineno=$(( lineno + 1 ))`. Caught here the first time because the suite
+     was run before it was believed.
+
+  2. **Two parser bugs, both failing in the reassuring direction, found by the
+     parser's own case table.** `startswith("blacklist")` also matches
+     `blacklistfoo x` and reported a module named `foo x` as blacklisted — a
+     directive that does not exist, inventing an entry. And splitting on a
+     **space only** meant `blacklist<TAB>floppy` was not an entry at all, on a
+     machine that is correctly configured: the file is right and the page says
+     nothing is blacklisted. Both now match the directive as a whole token on any
+     whitespace, which is what kmod does.
+     A third case was added because the control for comment-stripping **did not
+     bite**: a *leading* `#blacklist x` is excluded by the whole-token check
+     anyway, so stripping comments is not what defends it — only a *trailing*
+     comment depends on it (`blacklist floppy  # legacy` would otherwise yield a
+     module named `floppy  # legacy`). The test now covers the case that
+     actually depends on the strip.
+
+  3. **`AdwPreferencesGroup.get_first_child()` is the group's internal
+     container, not a row, so removing rows by walking children removed a
+     non-child.** The rebuild-on-re-read loop walked
+     `get_first_child()`/`get_next_sibling()` and called `remove()` on what it
+     found. Every removal was refused with an `Adw-CRITICAL`
+     (`tried to remove non-child … of type 'GtkBox'`), the real rows survived,
+     and each re-read **stacked another copy**. It surfaced only in a full-suite
+     run — a test that passes alone and fails in the suite is this file's
+     documented ordering class, and the cause here was a late callback
+     overwriting a row the broken loop had left in place. Rows are now removed
+     from the list the page added them to. **The same "walk direct children"
+     assumption was wrong twice more in the tests** — a suffix button added by
+     `Adw.ActionRow.add_suffix` is five levels down, and a nested group hides its
+     rows behind a container — so the test helpers now descend.
+
+  Two test-side findings are worth the same space, because each produced a green
+  suite asserting nothing. Extracting a helper function with
+  `sed -n '/^target_path()/,/^}/p'` and running it as **`bash file arg`** only
+  *defines* the function and never calls it, so it printed nothing and exited 0 —
+  the `target_validators` assertion passed for a function never invoked. It has
+  to be sourced and called explicitly. And the negative-control harness itself
+  was wrong before the controls were: it backed files up by basename, so a
+  control against `tabs/modules.py` mutated the working tree and **restored
+  nothing**, and the next batch's backup captured the already-broken file. Two
+  mutations survived into a later run and presented as real test failures. The
+  harness now keeps relative paths, refuses to report a result for a mutation
+  that did not apply, and `cmp`s its restore.
+
+  Verified: suite **3043 passed, 0 failed**, with **10 negative controls run** —
+  prefix-match, space-only-split, comments-unstripped, ownership-filter-dropped,
+  error-rendered-as-empty, save-moved-inline, rows-not-removed,
+  header-written-for-an-empty-list, charset-loosened, and content-leaked-into-argv
+  — every one of which fails the suite. The helper's target has
+  `shani-deploy/tests/modprobe-blacklist-target.sh` (15 assertions, 3 controls),
+  deliberately **rootless**: the helper checks for root *before* it resolves a
+  target, so as an ordinary user every target — known or not — refuses with
+  "must run as root" and the allowlist cannot be observed at all. An earlier
+  version asserted on that refusal and so passed for a target the helper had
+  never heard of, which is the exact failure `modules-load-target.sh` exists to
+  prevent.
+
+  **Not verified:** no real save has been performed. Closing the write path needs
+  a booted slot and a wheel account — the same condition the SMART and fprintd
+  items below already carry. Do not read the passing tests as evidence that
+  `pkexec shani-cassini-save --target modprobe_blacklist` works end to end; the
+  privileged container route that proves it has deliberately not been copied
+  here.
 
 - **A whole committed page was overwritten by a session that believed it was
   new work, and only `git status` caught it. 2026-10-10.**

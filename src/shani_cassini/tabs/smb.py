@@ -3,8 +3,8 @@ r"""SMB: what Samba is serving, to whom, and which file says so.
 **This is not the Sharing page.** `tabs/sharing.py` is NFS: it edits
 `/etc/exports.d/shani-cassini.exports` and speaks only in export lines and
 client specs. It never mentions Samba, `smb.conf`, a passdb or port 445. This
-page reads Samba and changes nothing, so the two cannot be mistaken for each
-other: one is a writer for one protocol, the other a reporter for another.
+page talks only Samba, so the two cannot be mistaken for each other: one
+writes NFS export lines, the other reads and writes Samba share definitions.
 `tabs/avahi.py` is the third neighbour and is also unrelated - Avahi is the
 announcement layer, and a share announced over mDNS is still served by smbd.
 
@@ -138,9 +138,12 @@ markup, and a share named `A & B` or `C <D>` is the case that proves it.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
+import subprocess
+import threading
 from typing import Callable, Final, Optional
 
 from gi.repository import Adw, Gio, GLib, Gtk  # type: ignore
@@ -192,10 +195,11 @@ NETBIOS_NAME: Final = "NetBIOS name service"
 ICON: Final = "network-workgroup-symbolic"
 
 SUMMARY_NOTE = (
-    "Samba administration, read-only. This reports the shares the "
-    "configuration file defines, the accounts in the passdb, whether smbd is "
-    "running, and what is listening on its ports. It shares nothing and "
-    "changes nothing."
+    "This reports the shares the configuration file defines, the accounts in "
+    "the passdb, whether smbd is running, and what is listening on its ports. "
+    "It creates and removes SHARE definitions in one drop-in file, and does "
+    "nothing else: it never restarts Samba, never sets a password, and never "
+    "makes a share readable without one."
 )
 
 SERVICES_NOTE = (
@@ -310,6 +314,17 @@ def _row(title: object, subtitle: object = "") -> Adw.ActionRow:
     this module that a string can reach a label unescaped.
     """
     return Adw.ActionRow(title=_plain(title), subtitle=_plain(subtitle))
+
+
+def _set_subtitle(row: Adw.ActionRow, text: object) -> None:
+    """The only `set_subtitle()` call in this module, for the same reason.
+
+    The summary row and the authoring group's status row both need to change
+    their text after construction, and the Pango gate counts call sites — two
+    would mean a second way for a string to reach a label. They share this.
+    """
+    row.set_subtitle(_plain(text))
+    row.set_subtitle_selectable(True)
 
 
 # --- `systemctl list-unit-files 'smb*' 'nmb*' 'winbind*' --no-pager` --------
@@ -1045,9 +1060,227 @@ def _flag_sentence(flags: str, disabled: bool) -> str:
             f"them")
 
 
+# ── authoring a share ─────────────────────────────────────────────────────────
+# Everything here is a pure function of its arguments so the rules can be
+# tested without Samba, a filesystem, or a password prompt.
+#
+# The write goes to one drop-in, `/etc/samba/smb.conf.d/50-shani-cassini.conf`,
+# included by the `include =` line shani-settings ships at the end of its
+# [global] section. Two consequences shape the rules below:
+#
+#   * **A name already in smb.conf cannot be reused.** The drop-in is read at
+#     the include's position, so re-declaring `[homes]` would REPLACE the
+#     shipped one rather than add to it — silently taking over a share the
+#     image depends on. `taken` carries the sections the reader found.
+#   * **A `[global]` line written here would be overridden** by smb.conf's own
+#     values below the include, so it would be a claim that does nothing. The
+#     stanzas below therefore contain no [global] section at all.
+SMB_DROPIN = "/etc/samba/smb.conf.d/50-shani-cassini.conf"
+SMB_TARGET = "smb_share"
+PKEXEC = "pkexec"
+HELPER = "/usr/local/bin/shani-cassini-save"
+PRIV_TIMEOUT = 120
+CANCELLED = 126
+UNAUTHORISED = 127
+
+#: Samba section names: what a share may be called. Deliberately narrow — no
+#: spaces, no quotes, no `;`, nothing that could end the stanza early. A name
+#: with a newline in it would inject whatever followed it into the file.
+SHARE_NAME_MAX = 32
+
+
+def valid_share_name(name: str, taken: Optional[set] = None) -> bool:
+    """Whether `name` may be used for a new share.
+
+    Refuses a name Samba reserves for its own sections as well as one the
+    configuration already declares. Both refusals are the same reason: our
+    drop-in is an *include*, so a duplicate section is an override, not a
+    second definition.
+    """
+    if not name or len(name) > SHARE_NAME_MAX:
+        return False
+    if not all(ch.isalnum() or ch in "_-." for ch in name):
+        return False
+    if name.lower() in RESERVED_SECTIONS:
+        return False
+    if taken and name.lower() in {t.lower() for t in taken}:
+        return False
+    return True
+
+
+#: Sections Samba defines itself or the shipped smb.conf depends on. `homes`
+#: and `printers` are in the shipped file, so they arrive via `taken` at
+#: runtime; these are the ones that must be refused even when smb.conf is
+#: unreadable, because redefining them breaks the daemon rather than a share.
+RESERVED_SECTIONS = frozenset({
+    "global", "homes", "printers", "print$", "profiles", "netlogon",
+})
+
+
+def valid_share_path(path: str) -> bool:
+    """Whether `path` is usable as a share path.
+
+    **Absolute and without shell or Samba metacharacters.** Samba's own parser
+    accepts far more than this, but the value reaches a config file that a
+    root daemon reads, and every character set it excludes is one that could
+    change the stanza's meaning rather than its path. `/srv/myshare` passes; a
+    path with a quote, a newline or a `;` does not.
+    """
+    if not path or not path.startswith("/"):
+        return False
+    if path.endswith("/") and path != "/":
+        return False
+    return all(ch.isalnum() or ch in "/._-+@ " for ch in path)
+
+
+def normalise_users(users: str) -> list[str]:
+    """Space or comma separated Unix names into a clean list.
+
+    The separate value type: the stored form is a space-separated Samba list,
+    and rendering back what the user typed (with their commas and doubled
+    spaces) is not what Samba stores.
+    """
+    parts = [u for u in users.replace(",", " ").split() if u]
+    out: list[str] = []
+    for user in parts:
+        if user not in out:
+            out.append(user)
+    return out
+
+
+def valid_unix_user(name: str) -> bool:
+    """A portable Unix name: must begin with a lowercase letter, and may then
+    contain lowercase letters, **digits**, `_`, `-` and `.`.
+
+    Digits after the first character are allowed. An earlier version rejected
+    them, on the strength of a rule that does not exist — `bob2` is an ordinary
+    account name, and refusing it would have made this page reject real users.
+
+    `:` is excluded because Samba's `passwd` form is
+    `name:password:uid:gid:gecos:home:shell`, so a colon in a name would split
+    a field rather than name an account.
+    """
+    if not name or len(name) > 32:
+        return False
+    if not (name[0].isalpha() and name[0].islower()):
+        return False
+    return all(ch.isalnum() or ch in "_-." for ch in name)
+
+
+def share_text(shares: list[dict]) -> str:
+    """The whole content of the drop-in for `shares`, or "" to clear it.
+
+    **An empty list writes an empty file**, and that has to be expressible:
+    removing the last share Cassini created is an ordinary thing to do, and the
+    file that declares no shares is the empty one.
+
+    The guest line is written unconditionally and always as `no`. It is not
+    carried from a caller, so no code path — present or future — can stage a
+    share reachable without a password.
+    """
+    if not shares:
+        return ""
+    out = ["# Managed by Shani Cassini (SMB).",
+           "# Edit here, or from the SMB page - not both.",
+           "# Only share definitions belong in this file: a [global] line here is",
+           "# overridden by smb.conf's own values below the include.",
+           ""]
+    for share in sorted(shares, key=lambda s: s["name"].lower()):
+        out.append(f"[{share['name']}]")
+        out.append(f"   path = {share['path']}")
+        if share.get("comment"):
+            out.append(f"   comment = {share['comment']}")
+        out.append(f"   read only = {'yes' if share.get('read_only', True) else 'no'}")
+        out.append(f"   browseable = {'yes' if share.get('browseable', True) else 'no'}")
+        out.append("   guest ok = no")
+        users = share.get("users") or []
+        out.append(f"   valid users = {' '.join(users)}")
+        out.append("")
+    return "\n".join(out)
+
+
+AUTHOR_NOTE = (
+    "Shares are written to one file, " + SMB_DROPIN + ", which Samba's "
+    "configuration includes. Nothing else in smb.conf is touched, and the "
+    "shipped smb.conf is never edited — an image update replaces that file, "
+    "which would delete every share created here.\n\n"
+    "A share needs at least one named user. Guest access is always written as "
+    "no and is not offered: it is the one setting that decides whether "
+    "someone with no account can read a folder.\n\n"
+    "Saving changes a file. It does not start Samba, reload it, or promise the "
+    "running daemon has picked the share up."
+)
+AUTHOR_ACCOUNT_NOTE = (
+    "A named user still needs a Samba password, which is not their Unix "
+    "password and is not created for them. In a terminal:  sudo smbpasswd -a "
+    "USER. This page does not do it: setting one is creating a credential, and "
+    "the helper it writes with installs a file rather than running a command."
+)
+
+
+def digest_of(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def smb_save_argv(digest: str) -> list[str]:
+    """`pkexec shani-cassini-save --target smb_share --expect-sha256 HEX`.
+
+    The content is a digest here and bytes on the pipe, so a process listing
+    cannot read it and a password prompt sharing the tty cannot corrupt it.
+    """
+    return [PKEXEC, HELPER, "--target", SMB_TARGET, "--expect-sha256", digest]
+
+
+def smb_helper_message(stderr: str | bytes, stdout: str | bytes, code: int) -> str:
+    """The helper's own words, in the order it wrote them.
+
+    `testparm` names the line it objected to, so a refusal here is the most
+    useful thing the user will read — rewording it would send them to look in
+    the wrong file.
+    """
+    def text(stream: str | bytes) -> str:
+        return stream.decode("utf-8", errors="replace") if isinstance(stream, bytes) else stream
+    said = "\n".join(part for part in (text(stderr).strip(), text(stdout).strip())
+                     if part)
+    return said or f"{HELPER} exited {code} without saying why"
+
+
 class SmbTab(Gtk.Box):
-    """Read-only reporter. It renders what the reader hands it and shells out
-    to nothing of its own."""
+    """A reporter for everything it reads, and a writer for exactly one thing.
+
+    **It was a pure reporter until 2026-10-17** — "reads Samba and changes
+    nothing" was in this module's own docstring, and the Samba daemon being
+    socket-activated was the stated reason nothing here could act. That reason
+    is still true of *Samba* (nothing here restarts smbd, reloads a config, or
+    creates an account); what changed is that creating a **share** is a file
+    write, and the file is ours to write safely:
+
+    * one drop-in, `/etc/samba/smb.conf.d/50-shani-cassini.conf`, included by
+      the `include =` line shani-settings ships;
+    * never `/etc/samba/smb.conf` itself, which is a package-owned file that
+      `pacman -u shani-settings` replaces;
+    * `testparm` is the validator on both sides of the install — Samba's own
+      parser, before and after, with the post-check reading the LIVE file so
+      the include is proven wired;
+    * content on **stdin**, digest in argv, via `shani-cassini-save
+      --target smb_share`.
+
+    **Three capabilities are deliberately NOT offered**, each because it would
+    be a decision this page has no business taking, and each because the
+    alternative is a sentence naming the command that owns it:
+
+    * **`guest ok`** is always written as `no` and is not offered as a switch.
+      It is the single knob that decides whether an unauthenticated network
+      peer can read a directory, and `shani-settings`' own file says guest
+      access is "opt-in, not a global default". A checkbox here would put that
+      decision one click from a wheel user's password prompt.
+    * **`smbpasswd -a`** — setting a Samba password is creating a credential,
+      and `shani-cassini-save` installs one file from stdin; it cannot run a
+      command, so supporting it means changing that helper's security contract.
+      The page names the command instead.
+    * **Reloading or restarting `smbd`.** A save changes a file; it does not
+      claim the running daemon has picked it up.
+    """
 
     def __init__(self, state=None, auth_manager=None) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=24)
@@ -1055,6 +1288,9 @@ class SmbTab(Gtk.Box):
         self._auth_manager = auth_manager
         self._page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         self.append(self._page)
+        self._existing_sections: set[str] = set()
+        self._ours: list[str] = []
+        self._busy = False
         self._build()
         GLib.idle_add(self.load)
 
@@ -1074,6 +1310,50 @@ class SmbTab(Gtk.Box):
             title="Shares in the configuration file", description=_plain(SHARES_NOTE))
         self._share_rows: list[Adw.ActionRow] = []
         self._page.append(self._shares)
+
+        self._author = Adw.PreferencesGroup(
+            title="Add a share", description=_plain(AUTHOR_NOTE))
+        self._author_rows: list[Adw.ActionRow] = []
+        self._entry_name = Adw.EntryRow(title="Share name")
+        self._entry_path = Adw.EntryRow(title="Folder to share")
+        self._entry_users = Adw.EntryRow(title="Who may connect")
+        self._entry_name.set_tooltip_text(
+            "Letters, digits, dot, dash and underscore. It cannot be a name "
+            "Samba already uses.")
+        self._entry_path.set_tooltip_text(
+            "An absolute path to an existing directory, e.g. /srv/photos.")
+        self._entry_users.set_tooltip_text(
+            "Unix user names, separated by spaces or commas. A share needs at "
+            "least one: without one, nobody can connect.")
+        for row in (self._entry_name, self._entry_path, self._entry_users):
+            self._author.add(row)
+        self._switch_rw = Adw.SwitchRow(
+            title="Allow writing",
+            subtitle="Off means clients can read the folder but not change it")
+        self._switch_list = Adw.SwitchRow(
+            title="Show in a network browse list",
+            subtitle="Off hides the share from a browse; clients can still "
+                     "connect by name")
+        self._author.add(self._switch_rw)
+        self._author.add(self._switch_list)
+        self._create = Gtk.Button(label="Create share", valign=Gtk.Align.CENTER)
+        self._create.add_css_class("suggested-action")
+        self._create.set_sensitive(False)
+        self._create.connect("clicked", self._on_create)
+        # Built through `_row()` like every other row here: this module's Pango
+        # gate holds that there is exactly one place a row is constructed, and
+        # that is what makes "nothing reaches a label unescaped" true. A new
+        # Adw.ActionRow() call site would break the gate rather than extend it.
+        self._create_row = _row(
+            "Save",
+            "Asks for your password, then writes the drop-in. It does not "
+            "restart Samba.")
+        self._create_row.add_suffix(self._create)
+        self._author.add(self._create_row)
+        self._author.add(_row("Account passwords", AUTHOR_ACCOUNT_NOTE))
+        self._status = _row("Last change", "Nothing has been changed from here yet")
+        self._author.add(self._status)
+        self._page.append(self._author)
 
         self._global = Adw.PreferencesGroup(
             title="Global parameters", description=_plain(GLOBAL_NOTE))
@@ -1140,7 +1420,7 @@ class SmbTab(Gtk.Box):
                       if verdict.get("role") else ""))
 
         self._row_state.set_title(_plain(title))
-        self._row_state.set_subtitle(_plain(sub))
+        _set_subtitle(self._row_state, sub)
 
         self._render_services(payload)
         self._render_shares(payload)
@@ -1262,6 +1542,11 @@ class SmbTab(Gtk.Box):
     def _render_shares(self, payload: dict) -> None:
         self._clear(self._shares, self._share_rows)
         shares = payload.get("shares") or []
+        # Every section the configuration already declares is a name this page
+        # may not reuse: the drop-in is an *include*, so re-declaring one would
+        # override it rather than add to it. Taken from the reader rather than
+        # re-parsed — one opinion about what smb.conf contains.
+        self._existing_sections = {str(s["name"]) for s in shares if s.get("name")}
         if not shares:
             if payload.get("testparm_error"):
                 self._share_rows.append(_row(
@@ -1279,6 +1564,121 @@ class SmbTab(Gtk.Box):
             self._share_rows.append(
                 _row(share["name"], _share_row(share["params"])))
             self._shares.add(self._share_rows[-1])
+
+    # ── authoring shares ──────────────────────────────────────────────────────
+
+    def _set_status(self, text: str) -> None:
+        """Write the authoring group's status row, through the one escaping
+        path `_on_state` uses. Two call sites for `set_subtitle` would be a
+        second way for a string to reach a label, which is what the module's
+        Pango gate exists to prevent."""
+        _set_subtitle(self._status, text)
+
+    def _author_state(self) -> tuple[bool, str]:
+        """(is the form complete and acceptable, why not if it isn't).
+
+        Returned as a pair rather than acted on directly, so one decision drives
+        the button's sensitivity, its tooltip and the refusal — three places
+        that must never disagree about whether a save may happen.
+        """
+        name = self._entry_name.get_text().strip()
+        path = self._entry_path.get_text().strip()
+        users = normalise_users(self._entry_users.get_text())
+        if not name:
+            return False, "Give the share a name."
+        if not valid_share_name(name, self._existing_sections):
+            if name.lower() in RESERVED_SECTIONS:
+                return False, (f"“{name}” is a section Samba defines itself. "
+                               "Choose another name.")
+            return False, (f"“{name}” is already in the configuration, and "
+                           "this file is included by it — reusing the name "
+                           "would replace that section, not add one.")
+        if not path:
+            return False, "Give the folder to share."
+        if not valid_share_path(path):
+            return False, "That path is not usable — give an absolute path with no quotes."
+        if not users:
+            return False, ("Name at least one user. Without one nobody can "
+                           "connect, and guest access is never enabled.")
+        bad = [u for u in users if not valid_unix_user(u)]
+        if bad:
+            return False, f"Not a Unix user name: {', '.join(bad)}"
+        return True, ""
+
+    def _refresh_author_state(self) -> None:
+        ok, why = self._author_state()
+        self._create.set_sensitive(ok and not self._busy)
+        self._create.set_tooltip_text("" if ok else why)
+
+    def _on_create(self, _button) -> None:
+        ok, _why = self._author_state()
+        if not ok or self._busy:
+            return
+        share = {
+            "name": self._entry_name.get_text().strip(),
+            "path": self._entry_path.get_text().strip(),
+            "users": normalise_users(self._entry_users.get_text()),
+            "read_only": not self._switch_rw.get_active(),
+            "browseable": self._switch_list.get_active(),
+        }
+        self._save(
+            sorted(self._ours + [share], key=lambda s: s["name"].lower()),
+            f"Created {share['name']}. Samba reads this file when it starts; "
+            "it has not been told yet.")
+
+    def _save(self, shares: list[dict], note: str) -> None:
+        """Stage the whole drop-in and hand it to the helper, off this thread.
+
+        **Never on the GTK main thread**: `subprocess.run` here waits for
+        `pkexec`, which waits for a human to type a password. `device.py` and
+        `hardware_card()` are both a frozen window because a read ran inline.
+        """
+        if self._busy:
+            return
+        self._busy = True
+        self._refresh_author_state()
+        self._set_status(f"Saving {SMB_DROPIN}…")
+        text = share_text(shares)
+
+        def work() -> None:
+            error = ""
+            try:
+                result = subprocess.run(smb_save_argv(digest_of(text)),
+                                        input=text.encode("utf-8"),
+                                        capture_output=True, timeout=PRIV_TIMEOUT,
+                                        check=False)
+                code = result.returncode
+                if code == 0:
+                    error = ""
+                elif code == CANCELLED:
+                    error = "Cancelled at the password prompt, so no share was changed"
+                elif code == UNAUTHORISED:
+                    error = ("Not authorised, so no share was changed. This "
+                             "needs a wheel account.")
+                else:
+                    error = smb_helper_message(result.stderr, result.stdout, code)
+            except FileNotFoundError:
+                error = f"{HELPER} is not installed, so {SMB_DROPIN} was not written"
+            except subprocess.TimeoutExpired:
+                error = (f"{HELPER} did not answer in {PRIV_TIMEOUT} seconds — "
+                         f"check {SMB_DROPIN} before trying again")
+            except (OSError, subprocess.SubprocessError) as exc:
+                error = f"{HELPER} could not be run: {exc}"
+            GLib.idle_add(self._on_saved, error, note)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_saved(self, error: str, note: str) -> bool:
+        self._busy = False
+        # The error is the helper's and testparm's own words; the note would be
+        # a lie on a refusal, so the error wins.
+        self._set_status(error if error else note)
+        if not error:
+            self._entry_name.set_text("")
+            self._entry_path.set_text("")
+            self._entry_users.set_text("")
+        self._refresh_author_state()
+        return False
 
     def _render_global(self, payload: dict) -> None:
         self._clear(self._global, self._global_rows)
