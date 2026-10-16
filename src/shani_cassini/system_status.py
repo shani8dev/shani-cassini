@@ -3491,6 +3491,110 @@ def loaded_modules(done: Callable[[list[dict], str], None]) -> None:
     done(rows, "" if rows else "no modules are listed in /proc/modules")
 
 
+#: The directory kmod itself reads, and the one drop-in in it Cassini owns.
+#: Module constants for the same reason ``/proc`` and ``/sys`` paths are
+#: elsewhere in this module: a literal inside the function made the branch that
+#: matters most unreachable from a test.
+MODPROBE_D: Final = "/etc/modprobe.d"
+MODPROBE_DROPIN_NAME: Final = "50-shani-blacklist.conf"
+
+
+def parse_blacklist(text: str) -> list[str]:
+    """`blacklist <name>` directives, in order, duplicates removed.
+
+    A pure function of one file's text so the parser is testable without a
+    filesystem - and so a test can pin the cases the file on disk cannot
+    produce on demand.
+
+    **Comments are stripped, and that is what makes the result an absence the
+    caller can reason about.** A commented-out ``#blacklist floppy`` configures
+    nothing, so counting it would tell a user a module is protected when it is
+    not. ``kmod`` strips ``#`` to end of line for the same reason.
+
+    A line that is not a ``blacklist`` directive is **skipped, not refused**:
+    ``/etc/modprobe.d`` legitimately holds ``options`` and ``install`` lines
+    from packages, and a reader that raised on one would fail on every real
+    machine. Only the ``blacklist`` directive is this reader's subject.
+
+    **The directive is matched as a whole token, not as a prefix.** A
+    ``startswith("blacklist")`` check also accepts ``blacklistfoo x`` and
+    reports a module named ``foo x`` as blacklisted - a directive that does not
+    exist, inventing an entry. Caught by a case in this function's own table,
+    which is the only reason the table exists.
+    """
+    seen: list[str] = []
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        # split() with no separator splits on ANY whitespace, which is what
+        # kmod does. partition(" ") did not: `blacklist<TAB>foo` came back as a
+        # line whose first token was the whole thing, so a tab-separated
+        # directive silently counted as no entry at all - the reassuring
+        # direction, on a machine that is correctly configured.
+        parts = line.split(None, 1)
+        if not parts or parts[0] != "blacklist":
+            continue
+        name = parts[1].strip() if len(parts) > 1 else ""
+        # A bare `blacklist` with no name configures nothing, and kmod treats
+        # the missing argument as an error; it is not an entry.
+        if name and name not in seen:
+            seen.append(name)
+    return seen
+
+
+def module_blacklist(done: Callable[[list[dict], str], None]) -> None:
+    """Every `blacklist` directive under /etc/modprobe.d, and who wrote it.
+
+    Unprivileged and synchronous, like ``loaded_modules``: it is one directory
+    listing and one read per small file.
+
+    **Three answers are kept apart, because collapsing them is how this page
+    would lie.** The directory being absent (no package has created it), the
+    directory being present with no blacklist in it, and the read failing are
+    three different facts. ``/etc/modprobe.d`` missing is the *normal* state on
+    a machine where nothing has ever been configured, so it is reported as an
+    empty list with no error; an unreadable directory is an error and says so.
+
+    Each entry carries ``ours`` - whether it came from the drop-in this page
+    owns. That is what lets the page say which entries it can remove. An entry
+    from another file is reported, never offered for removal, because removing
+    it would mean editing a file Cassini does not write.
+    """
+    entries: list[dict] = []
+    try:
+        names = sorted(e.name for e in os.scandir(MODPROBE_D)
+                       if e.is_file() and e.name.endswith(".conf"))
+    except FileNotFoundError:
+        # Nothing has ever created it. Not an error, and not "no modules are
+        # blacklisted" either - it is the state before anyone configured one.
+        done([], "")
+        return
+    except OSError as exc:
+        done([], f"could not read {MODPROBE_D}: {exc.strerror or exc}")
+        return
+
+    loaded = {row["name"] for row in _module_rows()}
+    for name in names:
+        path = os.path.join(MODPROBE_D, name)
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                text = handle.read()
+        except OSError:
+            # One unreadable file must not blank the others, or a single
+            # root-only file reports the whole blacklist as gone.
+            continue
+        for module in parse_blacklist(text):
+            entries.append({
+                "module": module,
+                "file": path,
+                "ours": name == MODPROBE_DROPIN_NAME,
+                # A blacklist stops a module loading; it does not unload one
+                # already resident. This is the fact that tells the user
+                # whether anything changes before the next reboot.
+                "loaded": module in loaded,
+            })
+    done(entries, "")
+
+
 # --- journal: a boot log, which is not a settings panel ---------------------
 
 def journal_boots(done: Callable[[list[dict], str], None]) -> None:

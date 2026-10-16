@@ -37,7 +37,12 @@ whereas one loaded by hand does not.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
+import subprocess
+import threading
+from typing import Final
 
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
@@ -68,6 +73,112 @@ DOES_NOT_NOTE = (
     "path is in the /etc overlay, so it persists across a blue/green switch. A "
     "module loaded by hand does not."
 )
+
+# ── the persistent blacklist ──────────────────────────────────────────────────
+# The counterpart to `kvm.py`'s modules-load drop-in, writing the other half of
+# the same question: not "load this at boot" but "do not load this at boot".
+#
+# **The limits of `blacklist` are stated on the page rather than left to be
+# discovered**, because all three of them are ways a user can believe a module
+# is blocked when it is not:
+#   * it takes effect at the NEXT boot — nothing is unloaded now;
+#   * it stops a module being pulled in automatically (a USB device's modalias,
+#     a dependent module, udev's coldplug pass), which is the common case;
+#   * it does NOT stop an explicit `sudo modprobe NAME`, which is kmod's
+#     documented behaviour and not something this page could change.
+#
+# The save goes through `shani-cassini-save --target modprobe_blacklist` for the
+# same reasons every other writer here does: content on **stdin** and only a
+# digest in argv (a process listing cannot read it), one fixed target the caller
+# cannot redirect, and a validator on the far side. No polkit rule was added —
+# `99-shani.rules` already grants that program by path, wheel + AUTH_SELF.
+BLACKLIST_NOTE = (
+    "Written to " + ss.MODPROBE_DROPIN_NAME.split("/")[-1] + ", which is in the "
+    "/etc overlay and so survives a blue/green switch.\n"
+    "A blacklist stops a module being loaded automatically at the next boot. It "
+    "does not unload one that is loaded now, and it does not stop an explicit "
+    "  sudo modprobe NAME."
+)
+BLACKLIST_EMPTY = ("Nothing is blacklisted. No file in "
+                   + ss.MODPROBE_D + " asks for one.")
+BLACKLIST_OURS_NOTE = ("written by this page")
+BLACKLIST_OTHER_NOTE = ("written by another file — shown, not removable here")
+BLACKLIST_LOADED_NOTE = "currently loaded; the blacklist applies at the next boot"
+BLACKLIST_NOTLOADED_NOTE = "not loaded now"
+
+#: Module names are the only thing this page will store. This mirrors the
+#: helper's own validator rather than inventing a second, looser rule: a name
+#: refused on save, after a password prompt, is a worse experience than a name
+#: refused as it is typed.
+MODULE_NAME_MAX = 64
+PKEXEC: Final = "pkexec"
+HELPER: Final = "/usr/local/bin/shani-cassini-save"
+TARGET: Final = "modprobe_blacklist"
+DROPIN: Final = "/etc/modprobe.d/" + ss.MODPROBE_DROPIN_NAME
+PRIV_TIMEOUT = 120
+#: pkexec's own statuses: 126 is a dismissed dialog and 127 a refusal. Both are
+#: the *user* declining, neither is a fault in this page, and neither may be
+#: reported as a saved blacklist. (Same two values `kvm.py` documents.)
+CANCELLED: Final = 126
+UNAUTHORISED: Final = 127
+
+
+def valid_module_name(name: str) -> bool:
+    """Whether this page will offer to store `name`.
+
+    The charset is kmod's own: letters, digits, underscore and dash, and not
+    empty. A wildcard is deliberately **not** accepted even though modprobe.d
+    would honour one - a wildcard entry cannot be rendered back as a single
+    row, so storing it would leave the page unable to show what it wrote.
+    """
+    return bool(name) and len(name) <= MODULE_NAME_MAX and all(
+        ch.isalnum() or ch in "_-" for ch in name)
+
+
+def blacklist_text(modules: list[str]) -> str:
+    """The whole content of the drop-in for `modules`, or "" to clear it.
+
+    A header comment is written so the file says who owns it, which is what
+    makes it safe for a human to edit later.
+
+    **An empty list produces an empty file, and that is the point**: removing
+    the last blacklisted module has to be expressible, and the file that says
+    "blacklist nothing" is the empty one. The helper's validator accepts it for
+    the same reason - see `check_modprobe_blacklist_file`.
+    """
+    if not modules:
+        return ""
+    body = "\n".join(f"blacklist {name}" for name in sorted(modules))
+    return ("# Managed by Shani Cassini (Kernel Modules).\n"
+            "# Edit here, or from the Kernel Modules page - not both.\n"
+            f"{body}\n")
+
+
+def digest_of(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def save_argv(digest: str) -> list[str]:
+    """`pkexec shani-cassini-save --target modprobe_blacklist --expect-sha256 HEX`.
+
+    The Access / Remote Access / Sharing / kvm pattern exactly: the content is a
+    digest in argv and bytes on the pipe.
+    """
+    return [PKEXEC, HELPER, "--target", TARGET, "--expect-sha256", digest]
+
+
+def helper_message(stderr: str | bytes, stdout: str | bytes, code: int) -> str:
+    """The helper's own words, in the order it wrote them.
+
+    Reworded, a refusal sends the reader to the wrong place - which for this
+    target usually means editing /etc/modprobe.d by hand and wondering why the
+    page disagrees afterwards.
+    """
+    def text(stream: str | bytes) -> str:
+        return stream.decode("utf-8", errors="replace") if isinstance(stream, bytes) else stream
+    said = "\n".join(part for part in (text(stderr).strip(), text(stdout).strip())
+                     if part)
+    return said or f"{HELPER} exited {code} without saying why"
 
 
 def _esc(value: object) -> str:
@@ -102,6 +213,10 @@ class ModulesTab(Gtk.Box):
         self._state = state
         self._auth_manager = auth_manager
         self._groups: list[tuple[Adw.ActionRow, list, str]] = []
+        self._ours: list[str] = []
+        self._blacklist_added: list[Adw.ActionRow] = []
+        self._busy = False
+        self._status: str = ""
 
         top = Adw.PreferencesGroup(title="Loaded modules",
                                    description=MODULES_NOTE)
@@ -114,14 +229,185 @@ class ModulesTab(Gtk.Box):
         top.add(search)
         self._top = top
 
+        # The blacklist group is built here and filled by _render_blacklist,
+        # which is called from a reader's callback. Building it in the callback
+        # is what the `load()` docstring warns about in reverse: the widget must
+        # exist before any answer can land, or the first answer finds no row.
+        self._blacklist = Adw.PreferencesGroup(
+            title="Persistent blacklist", description=BLACKLIST_NOTE)
+        self._blacklist_rows = Adw.PreferencesGroup()
+        self._blacklist.add(self._blacklist_rows)
+
+        self._entry = entry = Adw.EntryRow(title="Blacklist a module")
+        entry.set_tooltip_text(
+            "A module name, as lsmod prints it. Letters, digits, _ and - only.")
+        self._add = Gtk.Button(label="Add", valign=Gtk.Align.CENTER)
+        self._add.add_css_class("suggested-action")
+        self._add.set_sensitive(False)
+        self._add.connect("clicked", self._on_add)
+        entry.add_suffix(self._add)
+        entry.connect("changed", self._on_entry_changed)
+        self._blacklist.add(entry)
+
+        self._status_row = Adw.ActionRow(title="Last change")
+        self._status_row.set_subtitle_selectable(True)
+        self._status_row.set_subtitle_selectable(True)
+        self._blacklist.add(self._status_row)
+
         guide = Adw.PreferencesGroup(title="What this page does not do")
         guide.add(_row("Loading or unloading", DOES_NOT_NOTE))
         guide.add(_row("Parameters", PARAMS_NOTE))
 
         self.append(top)
+        self.append(self._blacklist)
         self.append(guide)
 
         self.load()
+        self.load_blacklist()
+
+    # ── the blacklist ─────────────────────────────────────────────────────────
+
+    def load_blacklist(self) -> None:
+        """Re-read /etc/modprobe.d. Called on load and after every save.
+
+        A re-read rather than an optimistic local edit: the save's whole claim
+        is that the helper validated and installed the file, so the page's
+        honest answer afterwards is what the file now says. Keeping a local
+        list instead would render the user's click rather than the machine.
+        """
+        def done(entries: list[dict], error: str) -> None:
+            GLib.idle_add(self._render_blacklist, entries, error)
+
+        ss.module_blacklist(done)
+
+    def _render_blacklist(self, entries: list[dict], error: str) -> bool:
+        # Rows are removed from the list this page kept, NOT by walking the
+        # group's children: `AdwPreferencesGroup.get_first_child()` returns the
+        # internal container Box, which `remove()` refuses as a non-child, so
+        # the real rows survived and the next render stacked on top of them.
+        # That is how the error row came to be overwritten by a later read -
+        # and it logged an Adwaita-CRITICAL, which a strict page walk treats as
+        # a failure in its own right.
+        for row in self._blacklist_added:
+            self._blacklist_rows.remove(row)
+        self._blacklist_added = []
+
+        # `ours` is what this page may rewrite. Everything else is reported and
+        # left alone: removing it would mean editing a file Cassini does not own.
+        self._ours = sorted(e["module"] for e in entries if e.get("ours"))
+
+        if error:
+            self._status_row.set_subtitle(error)
+            return False
+        if not entries:
+            self._status_row.set_subtitle(BLACKLIST_EMPTY)
+            return False
+
+        for entry in sorted(entries, key=lambda e: (not e.get("ours"), e["module"])):
+            bits = [os.path.basename(str(entry.get("file") or "")) or "a file",
+                    BLACKLIST_OURS_NOTE if entry.get("ours") else BLACKLIST_OTHER_NOTE,
+                    BLACKLIST_LOADED_NOTE if entry.get("loaded")
+                    else BLACKLIST_NOTLOADED_NOTE]
+            row = Adw.ActionRow(title=_esc(entry["module"]),
+                                subtitle=_esc(" · ".join(bits)))
+            row.set_subtitle_selectable(True)
+            if entry.get("ours"):
+                remove = Gtk.Button(label="Remove", valign=Gtk.Align.CENTER)
+                remove.add_css_class("destructive-action")
+                remove.set_sensitive(not self._busy)
+                remove.connect("clicked", self._on_remove, entry["module"])
+                row.add_suffix(remove)
+            else:
+                # No button, not a disabled one: a control that cannot act and
+                # still looks live is the defect the fleet page had.
+                row.add_prefix(Gtk.Image.new_from_icon_name("document-read-symbolic"))
+            self._blacklist_rows.add(row)
+            self._blacklist_added.append(row)
+        return False
+
+    def _on_entry_changed(self, entry) -> None:
+        name = entry.get_text().strip()
+        ok = valid_module_name(name) and name not in self._ours
+        self._add.set_sensitive(ok and not self._busy)
+        if name and not valid_module_name(name):
+            entry.set_tooltip_text(
+                "Not a module name: letters, digits, underscore and dash only.")
+        elif name in self._ours:
+            entry.set_tooltip_text("That module is already blacklisted here.")
+        else:
+            entry.set_tooltip_text("A module name, as lsmod prints it.")
+
+    def _on_add(self, _button) -> None:
+        name = self._entry.get_text().strip()
+        if not valid_module_name(name) or name in self._ours:
+            # Belt and braces: the button is insensitive, so this can only be
+            # reached by a keyboard path that skipped the sensitivity check.
+            return
+        self._save(sorted(self._ours + [name]),
+                   f"Blacklisted {name}. It stays loaded until the next reboot.")
+
+    def _on_remove(self, _button, name: str) -> None:
+        remaining = [m for m in self._ours if m != name]
+        self._save(remaining,
+                   f"Removed {name} from the blacklist."
+                   if remaining else
+                   f"Removed {name}. The blacklist is now empty, so the drop-in "
+                   "was emptied rather than deleted.")
+
+    def _save(self, modules: list[str], note: str) -> None:
+        """Stage the whole drop-in and hand it to the helper, off this thread.
+
+        **Never on the GTK main thread**: `subprocess.run` here waits for
+        `pkexec`, which waits for a human to type a password. The `device.py`
+        and `hardware_card` entries in AGENTS.md are both a page freezing the
+        whole window because a read was run inline; a password prompt is the
+        longest possible such wait.
+        """
+        if self._busy:
+            return
+        self._busy = True
+        self._add.set_sensitive(False)
+        self._status_row.set_subtitle(f"Saving {DROPIN}…")
+        text = blacklist_text(modules)
+
+        def work() -> None:
+            error = ""
+            try:
+                result = subprocess.run(save_argv(digest_of(text)),
+                                        input=text.encode("utf-8"),
+                                        capture_output=True, timeout=PRIV_TIMEOUT,
+                                        check=False)
+                code = result.returncode
+                if code == 0:
+                    error = ""
+                elif code == CANCELLED:
+                    error = ("Cancelled at the password prompt, so the blacklist "
+                             "was not changed")
+                elif code == UNAUTHORISED:
+                    error = ("Not authorised, so the blacklist was not changed. "
+                             "This needs a wheel account.")
+                else:
+                    error = helper_message(result.stderr, result.stdout, code)
+            except FileNotFoundError:
+                error = (f"{HELPER} is not installed, so {DROPIN} was not written")
+            except subprocess.TimeoutExpired:
+                error = (f"{HELPER} did not answer in {PRIV_TIMEOUT} seconds - "
+                         f"check {DROPIN} before trying again")
+            except (OSError, subprocess.SubprocessError) as exc:
+                error = f"{HELPER} could not be run: {exc}"
+            GLib.idle_add(self._on_saved, error, note)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_saved(self, error: str, note: str) -> bool:
+        self._busy = False
+        self._add.set_sensitive(False)
+        self._entry.set_text("")
+        # The note is what happened; the error, if any, is the helper's own
+        # words. On a refusal the note would be a lie, so the error wins.
+        self._status_row.set_subtitle(error if error else note)
+        self.load_blacklist()
+        return False
 
     def load(self) -> None:
         """`loaded_modules` is synchronous — it reads two files and cannot be in
