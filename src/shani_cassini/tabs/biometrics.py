@@ -31,6 +31,7 @@ import shutil
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.widgets import reserve_leading_column
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +187,8 @@ class BiometricsTab(Gtk.Box):
             description="The PAM service that makes an enrolled finger usable ships with the "
                         "display manager, not with fprintd, so this differs per edition.")
         self._row_edition = _row("This edition", "Reading it…")
+        # Reserve the leading column - the rows beside it carry icons.
+        reserve_leading_column(self._row_edition)
         where.add(self._row_edition)
         head, detail = ss.SUDO_NEVER
         where.add(_row(head, detail, "dialog-information-symbolic"))
@@ -215,6 +218,14 @@ class BiometricsTab(Gtk.Box):
                 img = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
                 img.add_css_class("warning")
                 r.add_prefix(img)
+            else:
+                # **Reserve the leading column even when there is no verdict.**
+                # Found by rendering (2026-10-17): the icon was added only for a
+                # missing tool, so on a machine with all seven installed every row
+                # was flush and consistent - and on one missing three, those three
+                # sat in a column of their own with the other four ragged beside
+                # them. The list must not change shape with the machine.
+                reserve_leading_column(r)
             cli.add(r)
         self._page.append(cli)
 

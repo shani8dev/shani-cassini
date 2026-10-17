@@ -977,3 +977,159 @@ def test_the_reordering_kept_the_single_rendering_of_every_reason(tmp_path, monk
                 assert text.count(reason) <= 1, (
                     f"{reason[:40]!r} rendered {text.count(reason)} times for "
                     f"active={active} pkexec_rc={pkexec_rc}: {text}")
+
+
+class TestTheDaemonRowsSayWhichWayTheyWent:
+    """`not-found` and `inactive` are findings, and are marked as findings.
+
+    Found by rendering the page (2026-10-17). Both auditd rows were drawn as
+    plain dim text — "Enabled at boot: not-found", "Running now: inactive" — in
+    the same grey as any other value. On a page whose entire subject is whether
+    the kernel is recording an audit trail, **a daemon that is not installed and
+    one that is not running are the two findings**, and a reader scanning the
+    page saw two populated rows and no problem at all.
+
+    The mapping is deliberately "the one good word, or it is a finding", read off
+    systemd's own vocabulary, rather than an allow-list of every failure mode —
+    an allow-list silently treats a word nobody thought of as fine.
+
+    Three properties are held, because each was a way this could pass while
+    being wrong:
+
+    * **`not-found` and `inactive` are marked bad.** The whole point.
+    * **`enabled` and `active` are marked good.** A gate that only ever marks
+      bad passes on a page where every row is wrong.
+    * **A read that produced nothing is marked *neither*.** Marking it bad would
+      be inventing a finding out of a tool that said nothing.
+    """
+    def _marked(self, word: str) -> str | None:
+            """What severity the page's own row carries for `word`.
+
+            **Driven through `_read_daemon`, not through `_mark_daemon_severity`.**
+            The first version called the marking helper directly, and its negative
+            control — deleting the call from `_read_daemon`, which *is* the defect —
+            **passed**. The helper and the page's use of it are two things, and only
+            the second is the finding: a helper that works perfectly and is never
+            called is the untestable-defence shape this repo removes routinely.
+
+            So this stands in for the subprocess the page starts, hands it the word
+            `systemctl` would have printed, and lets the page's own callback mark
+            its own row.
+            """
+            import shani_cassini.tabs.audit as audit_mod
+
+            tab = self._make_tab()
+            captured: list = []
+
+            def fake_stream(argv, on_line, on_exit):
+                captured.append(on_exit)
+                on_line(word + "\n")
+                on_exit(1)
+
+            saved = audit_mod.ss.run_stream_tool
+            audit_mod.ss.run_stream_tool = fake_stream
+            try:
+                tab._read_daemon("enabled", "is-enabled")
+            finally:
+                audit_mod.ss.run_stream_tool = saved
+
+            assert captured, "the page started no read for the daemon row"
+
+            row = tab._daemon_rows["enabled"]
+            classes = row.get_css_classes()
+            if "health-ok" in classes:
+                return "ok"
+            if "health-warn" in classes:
+                return "bad"
+            return None
+
+    @staticmethod
+    def _make_tab():
+        from shani_cassini.state import AppState
+        from shani_cassini.auth import AuthManager
+        from shani_cassini.tabs.audit import AuditTab
+        return AuditTab(state=AppState(), auth_manager=AuthManager())
+    @pytest.mark.parametrize("word", ["not-found", "inactive", "failed",
+                                       "masked", "disabled"])
+    def test_a_daemon_that_is_not_recording_is_marked(self, word) -> None:
+        assert self._marked(word) == "bad", (
+            f"systemd answered {word!r} and the row is not marked - this page "
+            f"exists to report that, and an unmarked row reads as neutral")
+
+    @pytest.mark.parametrize("word", ["enabled", "active"])
+    def test_a_healthy_daemon_is_marked_good(self, word) -> None:
+        assert self._marked(word) == "ok", (
+            f"systemd answered {word!r} and the row is not marked good; a gate "
+            f"that only ever marks bad would pass on a page where everything is "
+            f"fine, which is the same false green in the other direction")
+
+    def test_a_tool_that_printed_nothing_is_still_a_finding(self) -> None:
+        """A silent tool is named by its exit status, and that *is* a finding.
+
+        This test exists because the first version of `_mark_daemon_severity`
+        carried an "empty word means say nothing" branch, which was
+        **unreachable**: `_read_daemon`'s own `on_exit` substitutes
+        `f"exit status {status}"` before the marking ever runs. The guard was
+        defence implying protection it did not provide, and the test for it had
+        to bypass the page to reach it.
+
+        So the branch is gone and the property it was pretending to hold is
+        asserted where it is actually decided: the page names the silence, and
+        a silence on a page asking "is auditd running?" is not a pass.
+        """
+        from shani_cassini.state import AppState
+        from shani_cassini.auth import AuthManager
+        import shani_cassini.tabs.audit as audit_mod
+        from shani_cassini.tabs.audit import AuditTab
+
+        tab = AuditTab(state=AppState(), auth_manager=AuthManager())
+
+        def silent_stream(argv, on_line, on_exit):
+            on_line("")            # the tool printed a blank line and nothing else
+            on_exit(3)
+
+        saved = audit_mod.ss.run_stream_tool
+        audit_mod.ss.run_stream_tool = silent_stream
+        try:
+            tab._read_daemon("enabled", "is-enabled")
+        finally:
+            audit_mod.ss.run_stream_tool = saved
+
+        row = tab._daemon_rows["enabled"]
+        assert row.get_subtitle() == "exit status 3", (
+            f"a silent tool was rendered as {row.get_subtitle()!r} - the page "
+            f"must name the silence rather than showing an empty row")
+        assert "health-warn" in row.get_css_classes(), (
+            "a daemon whose read printed nothing is not marked; silence on a "
+            "page asking 'is auditd running?' is not a pass")
+
+    def test_marking_twice_does_not_stack_two_icons(self) -> None:
+        """A refresh re-marks the same row; the second mark must replace the first.
+
+        `add_prefix` appends, so a naive implementation leaves two icons on a
+        row the second time it is marked — which is exactly the "each re-read
+        stacked another copy" defect this repo records for the module-blacklist
+        rebuild.
+        """
+        from gi.repository import Gtk
+        from shani_cassini.tabs.audit import _row, _mark_daemon_severity, \
+            _walk_row
+
+        row = _row("probe", "")
+        for word in ("not-found", "inactive", "enabled"):
+            _mark_daemon_severity(row, word)
+        icons = [n for n in _walk_row(row)
+                 if isinstance(n, Gtk.Image) and n.get_name() == "auditd-severity"]
+        assert len(icons) == 1, (
+            f"marking the row three times left {len(icons)} severity icons, so "
+            f"a page that refreshes grows a duplicate on every read")
+
+    def test_the_icon_is_not_inside_the_selectable_subtitle(self) -> None:
+        """Copying the value must yield the value."""
+        from shani_cassini.tabs.audit import _row, _mark_daemon_severity
+
+        row = _row("probe", "not-found")
+        _mark_daemon_severity(row, "not-found")
+        assert row.get_subtitle() == "not-found", (
+            f"the subtitle became {row.get_subtitle()!r}; the row is marked "
+            f"selectable, so a glyph inside it is a glyph a user copies")

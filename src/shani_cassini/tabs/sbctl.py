@@ -262,6 +262,25 @@ def _row(title: object, subtitle: object = "") -> Adw.ActionRow:
     return Adw.ActionRow(title=_plain(title), subtitle=_plain(subtitle))
 
 
+def _mark_in_force_mode(raw: str) -> str:
+    """Name the mode in force in words, beside the kernel's own line.
+
+    The raw line is kept — it is the file's own text and the bracket convention
+    is the kernel's — and a sentence is added saying which bracket is the
+    answer, because a reader who does not already know the convention reads
+    `[none]` as a stray character rather than as a selection.
+    """
+    match = re.search(r"\[([^\]]+)\]", raw)
+    if not match:
+        return raw
+    mode = match.group(1)
+    if mode == "none":
+        # `none` really is the answer here (lockdown off), and saying "in force:
+        # none" without the gloss would be the least useful sentence possible.
+        return f"{raw} — no mode is in force, lockdown is switched off"
+    return f"{raw} — {mode} is the mode in force"
+
+
 def parse_lockdown(text: Optional[str]) -> dict:
     """The kernel's lockdown file: the modes on offer, and the one in force.
 
@@ -597,7 +616,19 @@ class SbctlTab(Gtk.Box):
         else:
             rows.append((
                 "Modes the kernel offers",
-                lockdown.get("raw") or "the file is empty"))
+                # **The in-force token is marked, so the row says which is
+                # which.** Found by rendering the page (2026-10-17): the raw
+                # sysfs line was shown as `[none] integrity confidentiality`,
+                # and the leading `[none]` reads as a broken list rather than as
+                # "this is the mode in force" - which is the one fact on the row,
+                # and the one this module's own docstring says is what reading
+                # it is for.
+                #
+                # The kernel's own convention is preserved rather than replaced:
+                # square brackets still mean "in force", exactly as the file
+                # writes them, so the line still matches what `cat` shows and a
+                # reader can check it.
+                _mark_in_force_mode(lockdown.get("raw") or "the file is empty")))
             rows.append((
                 "Mode in force",
                 self._mode_row_subtitle(lockdown)))

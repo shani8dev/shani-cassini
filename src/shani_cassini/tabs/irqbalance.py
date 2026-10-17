@@ -200,8 +200,8 @@ EDIT_NOTE = (
     "irqbalance reads its settings from `/etc/default/irqbalance`, which this "
     "image does not ship - the package has no `/etc` directory at all, only "
     "`/usr/share/irqbalance/irqbalance.env`. Saving writes that file.\n"
-    "The daemon reads it once, at startup, so **restart irqbalance.service for "
-    "this to take effect.** A save on its own changes the file and not the "
+    "The daemon reads it once, at startup, so restart irqbalance.service for "
+    "this to take effect. A save on its own changes the file and not the "
     "machine; the page says so again after it succeeds rather than implying the "
     "interrupts have moved."
 )

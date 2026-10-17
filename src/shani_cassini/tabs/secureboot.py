@@ -478,38 +478,22 @@ class SecureBootTab(Gtk.Box):
         self._update_label("sb-uefi", "Yes" if status.uefi else "No (Legacy BIOS)")
 
         # Secure Boot state
-        if status.secure_boot is True:
-            sb_text = "● Enabled"
-        elif status.secure_boot is False:
-            sb_text = "○ Disabled"
-        else:
-            sb_text = "Unknown"
-        self._update_label("sb-state", sb_text)
+        self._set_state("sb-state", status.secure_boot,
+                        "Enabled", "Disabled")
 
         # Setup mode
-        if status.setup_mode is True:
-            setup_text = "● Setup Mode"
-        elif status.setup_mode is False:
-            setup_text = "○ User Mode"
-        else:
-            setup_text = "Unknown"
-        self._update_label("sb-setup-mode", setup_text)
+        self._set_state("sb-setup-mode", status.setup_mode,
+                        "Setup Mode", "User Mode")
 
         # sbctl availability
-        self._update_label(
-            "sb-sbctl-present",
-            "● Present" if status.sbctl_present else "○ Not installed",
-        )
-        self._update_label(
-            "sb-sbctl-installed",
-            "● Installed" if status.sbctl_installed else "○ Not enrolled",
-        )
+        self._set_state("sb-sbctl-present", status.sbctl_present,
+                        "Present", "Not installed")
+        self._set_state("sb-sbctl-installed", status.sbctl_installed,
+                        "Installed", "Not enrolled")
 
         # Microsoft keys
-        self._update_label(
-            "sb-ms-keys",
-            "● Present" if status.microsoft_keys else "○ Absent",
-        )
+        self._set_state("sb-ms-keys", status.microsoft_keys,
+                        "Present", "Absent")
 
         # Enrolled key count
         self._update_label("sb-key-count", str(key_count))
@@ -608,9 +592,29 @@ class SecureBootTab(Gtk.Box):
         value.set_xalign(0)
         value.set_selectable(True)
         value.set_halign(Gtk.Align.START)
+        value.set_hexpand(True)
         if widget_name:
             value.set_name(widget_name)
-        grid.attach(value, 1, row, 1, 1)
+
+        # **The value cell is a box, not a bare label.** It has to be, because a
+        # state marker has to sit beside the value and not inside it - and the
+        # earlier version of this page put literal `●`/`○` characters *inside*
+        # the label string, which is why a render showed hollow grey outlines
+        # with no colour: the glyphs were resolved from a fallback font rather
+        # than from the theme (see `_set_state`).
+        #
+        # Keeping the icon outside the label also keeps the text selectable and
+        # copyable: copying this value yields "Disabled", not "○ Disabled".
+        cell = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        cell.add_css_class("label-value")
+        icon = Gtk.Image()
+        icon.add_css_class("icon")
+        icon.set_visible(False)
+        icon.set_valign(Gtk.Align.CENTER)
+        icon.set_name(f"{widget_name}-icon" if widget_name else "")
+        cell.append(icon)
+        cell.append(value)
+        grid.attach(cell, 1, row, 1, 1)
 
     def _update_label(self, widget_name: str, text: str) -> None:
         """Update a label widget by its name.
@@ -624,3 +628,56 @@ class SecureBootTab(Gtk.Box):
             widget.set_label(text)
         else:
             logger.debug(f"Widget not found or not a label: {widget_name}")
+
+    #: **Themed icons, not `●` and `○`.** Found by rendering the page: the state
+    #: markers were literal Unicode black/white circles inside the value label,
+    #: and they came out as **hollow grey outlines with no severity colour at
+    #: all** — so `● Enabled` and `○ Disabled` were told apart by an empty
+    #: circle against a filled one, in the same grey, at 11px. It read as a
+    #: rendering artefact rather than as a verdict.
+    #:
+    #: The glyphs are also font-dependent: `fc-match` resolves U+25CF/U+25CB to
+    #: DejaVu Sans on this host while the app asks for Ubuntu Sans, so the
+    #: characters were rendered by a *fallback* face at whatever size and weight
+    #: that face chose. An icon name is drawn from the theme, inherits the
+    #: foreground colour, and is coloured by the page's own `.ok` / `.warning`
+    #: / `.error` classes — the convention `tabs/health.py` already uses.
+    _STATE_ICON_YES = "emblem-ok-symbolic"
+    _STATE_ICON_NO = "dialog-warning-symbolic"
+    _STATE_ICON_UNKNOWN = "dialog-question-symbolic"
+
+    def _set_state(self, widget_name: str, state: bool | None, yes: str, no: str,
+                   unknown: str | None = None) -> None:
+        """Render a yes/no/unknown state as **text plus a themed icon**.
+
+        *state* is tri-state on purpose. `True`/`False` are the tool's own
+        answers; ``None`` means the question could not be asked, which is not the
+        same as `False`` - the rule this repo keeps re-learning, and one this
+        page already respected in its `if/elif/else` ladder before the markers
+        were inlined into the strings.
+        """
+        if state is True:
+            icon_name, text, css = self._STATE_ICON_YES, yes, "health-ok"
+        elif state is False:
+            icon_name, text, css = self._STATE_ICON_NO, no, "health-warn"
+        else:
+            icon_name = self._STATE_ICON_UNKNOWN
+            text = unknown if unknown is not None else "Unknown"
+            css = "health-unknown"
+
+        value = find_named(self, widget_name)
+        if not (value and isinstance(value, Gtk.Label)):
+            logger.debug(f"Widget not found or not a label: {widget_name}")
+            return
+        for stale in ("health-ok", "health-warn", "health-bad", "health-unknown"):
+            value.remove_css_class(stale)
+        value.add_css_class(css)
+        value.set_label(text)
+
+        image = find_named(self, f"{widget_name}-icon")
+        if isinstance(image, Gtk.Image):
+            image.set_from_icon_name(icon_name)
+            for stale in ("health-ok", "health-warn", "health-bad", "health-unknown"):
+                image.remove_css_class(stale)
+            image.add_css_class(css)
+            image.set_visible(True)

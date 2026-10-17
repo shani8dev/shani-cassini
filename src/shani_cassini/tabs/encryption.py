@@ -15,6 +15,7 @@ import os
 from gi.repository import Adw, Gio, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.widgets import reserve_leading_column
 from shani_cassini.tabs.tpm2_boot import Tpm2BootTab
 
 logger = logging.getLogger(__name__)
@@ -115,6 +116,9 @@ class EncryptionTab(Gtk.Box):
             g.add(_row("Not encrypted", "Encryption is chosen when Shanios is installed; "
                        "it cannot be turned on afterwards", "dialog-warning-symbolic", "warning"))
         self._tpm_row = tpm_row = _row("TPM 2.0 security chip", "Checking…")
+        # Reserve the leading column: the row above it carries an icon and
+        # this one has nothing to draw until the probe answers.
+        reserve_leading_column(self._tpm_row)
         g.add(tpm_row)
         self._page.append(g)
 

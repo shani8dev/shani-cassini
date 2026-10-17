@@ -8,6 +8,7 @@ import socket
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.widgets import reserve_leading_column
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,13 @@ class OverviewTab(Gtk.Box):
                                     ("slot", "System slot", "updates"),
                                     ("health", "Health", "health")):
             row = Adw.ActionRow(title=title, subtitle="…")
+            # **Reserve the leading column on every row.** Found by rendering
+            # (2026-10-17): the three rows with a `section` carry a
+            # `go-next-symbolic` arrow and the two without do not, so "Device
+            # name" and "Running for" sat flush against the card while the rest
+            # sat one column in - a ragged left edge in a five-row list.
+            if not section:
+                reserve_leading_column(row)
             if section:
                 row.set_activatable(True)
                 row.add_suffix(Gtk.Image.new_from_icon_name("go-next-symbolic"))

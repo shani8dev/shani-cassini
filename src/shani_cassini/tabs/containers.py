@@ -78,6 +78,7 @@ from typing import Callable, Final, Sequence
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.widgets import reserve_leading_column
 
 logger = logging.getLogger(__name__)
 
@@ -357,6 +358,9 @@ class ContainersTab(Gtk.Box):
         # Refresh button is on it. Built with no icon, so nothing else ever
         # gives it one.
         self._row_reads = _row(READS_TITLE, READS_NOTE, name="containers-reads")
+        # Reserve the leading column: this row carries Refresh and nothing to
+        # draw, while the container rows below it carry status icons.
+        reserve_leading_column(self._row_reads)
         self._btn_refresh = Gtk.Button(label="Refresh", valign=Gtk.Align.CENTER)
         self._btn_refresh.connect("clicked", lambda *_: self.refresh())
         self._row_reads.add_suffix(self._btn_refresh)

@@ -43,7 +43,7 @@ SUMMARY_NOTE = (
 )
 
 RELAY_NOTE = (
-    "Shanios ships exim with **no relay configured**, so mail is sent straight "
+    "Shanios ships exim with no relay configured, so mail is sent straight "
     "to the recipient's mail server on port 25. Most providers block that, so "
     "messages queue and freeze instead of arriving — while the job that created "
     "them still reports success.\n"
@@ -53,7 +53,7 @@ RELAY_NOTE = (
 )
 
 QUEUE_NOTE = (
-    "Messages exim still holds. A **frozen** message has stopped retrying and "
+    "Messages exim still holds. A frozen message has stopped retrying and "
     "will be discarded by `timeout_frozen_after` (7 days as shipped); "
     "`exim -bp` shows what is waiting, `sudo exim -bpc` counts it."
 )

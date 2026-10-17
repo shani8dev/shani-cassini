@@ -75,7 +75,7 @@ from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
 from shani_cassini.tabs.compression import CompressionTab
-from shani_cassini.widgets import find_named
+from shani_cassini.widgets import find_named, reserve_leading_column
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +171,7 @@ SLOT_NOTE: Final = ("OS slot - a read-only snapshot of the installed system, "
 MAINTENANCE_NOTE = (
     "Every Shanios machine scrubs, balances, defrags and trims its btrfs "
     "filesystem monthly: `shani-settings` enables four timers from "
-    "**btrfsmaintenance**, all `OnCalendar=monthly` with `Persistent=true`. "
+    "btrfsmaintenance, all `OnCalendar=monthly` with `Persistent=true`. "
     "The Timers page cannot tell you whether those jobs ever succeeded, and a "
     "scrub that has failed for three months looks exactly like one that has "
     "been passing.\n"
@@ -528,6 +528,10 @@ class BtrfsTab(Gtk.Box):
         # it one.
         self._row_reads = _row(READS_TITLE, READING)
         self._row_reads.set_name(READS_ROW)
+        # Reserve the leading column: this row carries Refresh and nothing to
+        # draw, and the subvolume rows below it carry status icons. Without this
+        # the group has two left edges - see `widgets.reserve_leading_column`.
+        reserve_leading_column(self._row_reads)
         self._btn_refresh = Gtk.Button(label="Refresh", valign=Gtk.Align.CENTER)
         self._btn_refresh.connect("clicked", lambda *_: self.refresh())
         self._row_reads.add_suffix(self._btn_refresh)

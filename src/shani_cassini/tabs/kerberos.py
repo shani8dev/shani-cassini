@@ -28,6 +28,7 @@ import threading
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.widgets import reserve_leading_column
 
 logger = logging.getLogger(__name__)
 
@@ -294,8 +295,12 @@ class KerberosTab(Gtk.Box):
         _empty(self._readonly_group)
         rows: list[Adw.ActionRow] = []
         if not self._conf.get("other"):
-            rows.append(_row("Nothing else",
-                             "This file holds only the settings above"))
+            nothing = _row("Nothing else",
+                           "This file holds only the settings above")
+            # Reserve the leading column - "The file itself" below carries an
+            # icon, and without this the pair has two left edges.
+            reserve_leading_column(nothing)
+            rows.append(nothing)
         for section, key, value in self._conf.get("other", []):
             row = _row(f"[{_esc(section)}] {_esc(key)}", _esc(f"= {value}"),
                        "dialog-information-symbolic")

@@ -70,8 +70,40 @@ class HealthTab(Gtk.Box):
         page.append(run)
 
         if not ss.have(ss.HEALTH):
-            page.append(Adw.StatusPage(icon_name="dialog-warning-symbolic", title="shani-health is not installed",
-                                       description="It ships with every Shanios image."))
+            # **`Adw.Banner`, not `Adw.StatusPage` — found by rendering it.**
+            #
+            # A `StatusPage` is a *full-page* surface: it wants a ~120px icon
+            # and centres everything in whatever height it is given. Appended at
+            # the bottom of a scrolled page it is not the page, so it took the
+            # whole remaining viewport and pushed **its own title below the
+            # fold** — the capture showed a large empty warning triangle and
+            # nothing at all saying why, which is the only fact this branch
+            # exists to state. `compact` was tried first and is not enough:
+            # libadwaita still reserves the large icon, so the description still
+            # fell off the bottom.
+            #
+            # `Adw.Banner` is libadwaita's own inline-notice widget and this
+            # repo already uses it (`tabs/updates.py` for the pending-reboot
+            # notice), so this is the established shape rather than a new one.
+            # It carries no separate description, so both halves of the message
+            # are in the title.
+            # No `icon_name`: `Adw.Banner` does not have that property until a
+            # later libadwaita than the 1.9 this ships against, and passing one
+            # raises in the constructor rather than being ignored. The banner
+            # carries its own severity colouring instead.
+            # **`revealed=True` explicitly.** `AdwBanner`'s `revealed` property
+            # **defaults to False**, so a banner appended for information and
+            # never revealed is present in the tree, mapped, and occupies
+            # `0px` of height — the notice is invisible and nothing says why.
+            # Measured: `alloc=738x0`. `tabs/updates.py` sets it False on
+            # purpose because it reveals on a later state change; here the state
+            # is already known at build time, so it is revealed at once.
+            missing = Adw.Banner(
+                title="shani-health is not installed — it ships with every "
+                      "Shanios image, so the checks below cannot run.",
+                revealed=True,
+            )
+            page.append(missing)
             for _r, _s, b in self._run_rows.values():
                 b.set_sensitive(False)
             return

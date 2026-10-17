@@ -496,6 +496,318 @@ image is itself worth a look.
 
 ## Known issues (current state, 2026-10-01)
 
+- **A render of a page is its first screenful, and the sweep had been calling
+  that "the page" — so 97.6% of the Modules page had never been looked at.
+  2026-10-17. This is the largest gap in the sweep's own coverage, and it is
+  worth reading before trusting any past "every page was rendered and read".**
+
+  Every page is a `ScrolledWindow` 722px tall inside a 1024x768 window, and
+  broadway's screen on this host is a hard 1024x768 — so there is no taller
+  window to ask for. The renderer photographed the **window**, which is the top
+  of the page. Measured, as `visible / total`:
+
+  | page | rendered | **never seen** |
+  |---|---|---|
+  | `modules` | 722 of 29609px | **97.6%** |
+  | `irqbalance` | 722 of 4559px | 84% |
+  | `privileges` | 722 of 4358px | 83% |
+  | `persistence` | 722 of 3801px | 81% |
+  | `encryption` | 722 of 2968px | 76% |
+  | `btrfs` | 722 of 2543px | 72% |
+  | `firmware` | 722 of 2333px | 69% |
+  | `securitykeys` | 722 of 1559px | 54% |
+  | `lsm` | 722 of 1297px | 44% |
+  | `backup`, `chronoa`, `health`, … | 768 of 768px | none |
+
+  **The ten defects this file records for the first sweep were all found in the
+  84% that was visible**, which is the point: a defect below the fold is not
+  found by rendering harder, it is not rendered at all. Every group this page's
+  own history calls "below the fold of a scrolled page and reads as absent from
+  a capture" was already known to be unverifiable by screenshot — this is that
+  same fact measured across all 59 pages rather than noticed on one.
+
+  `render_ui.py` now **captures the page itself at its natural height** and
+  prints what did not fit (`BELOW-FOLD visible=…px hidden=…px`, or `FITS`), so a
+  sweep records its own blind spot instead of implying there was none. Three
+  things about that, each a wrong answer first:
+
+  - **It has to be the page's own scroller, found by walking *up* from the tab.**
+    Walking the window finds the sidebar's and the notebook's, and then every
+    page reported the *same* 2601px hidden. A number identical across 59
+    different pages is the tell that the wrong widget was measured.
+  - **It has to be the page's *own* width, never the window's.** Capturing the
+    page root into a window-width texture lays it out 276px wider than the user
+    gets (the sidebar is 276 of the 1024), and a `PreferencesPage` re-wraps its
+    subtitles at the new width — so the capture breaks lines the product never
+    breaks, and a `Refresh` button that is merely past the crop looks absent.
+    Caught by putting the window crop and the whole-page crop side by side: the
+    same row wrapped at two different columns.
+  - **The image cannot answer it at all.** GTK4 overlay scrollbars are not drawn
+    until the pointer is over them, so there is no bar in the PNG to measure.
+    The widget tree is the only source, and a first attempt at a scrollbar-
+    detection scan reported **0 clipped rows on all 59 pages** while LSM's
+    Security-audit group was plainly off-screen.
+
+- **Defect 11: the Modules page indents parameter rows with four literal spaces
+  inside the title string, so every parameter's *value* sat flush with the module
+  names. Found by the whole-page render above; nothing above the fold had ever
+  shown one.**
+
+  `child = _row(f"    {_esc(param['name'])}", _esc(param["value"]))` indents the
+  title and leaves the subtitle alone. Measured:
+
+  ```
+  y=362..375  left_ink=28   `fork_from_owner_default`
+  y=384..393  left_ink=14   `Y`
+  ```
+
+  so `Y` read as a property of the module above rather than of the parameter
+  named above it. After the fix (`set_margin_start(CHILD_INDENT_PX)`) the same
+  bands read `28, 28, 29, 28, 29, 28, 14` — both lines move together.
+
+  **It had a test, and the test asserted the defect.**
+  `test_filtering_the_module_list_folds_a_module_with_its_own_parameters` found
+  the parameter rows with `get_title().startswith("    ")`. That was not an
+  arbitrary choice — the spaces *were* the indent, so the test was keyed on the
+  artefact of the bug and could only ever agree with it. It now finds them by
+  their margin. `tests/test_child_rows_indent_both_lines.py` holds the property,
+  and **when no row carries the margin its message names the whitespace rows
+  instead of saying only "nothing to check"** — a control that reports "the
+  fixture built nothing" reads like a broken fixture, and would have been the
+  end of the investigation rather than the diagnosis. Control run: restoring the
+  four-space form fails it with `3 parameter row(s) indent themselves with
+  whitespace in the title`.
+
+  The generalisable rule: **an indent expressed in the text of a string moves
+  one line, and a test that recognises the row by that text is pinned to the
+  bug.**
+
+- **The ragged-left-edge defect (Firmware, 2026-10-17) was a class, and lifting
+  the check app-wide found it on ten more pages — thirteen rows.**
+
+  `add_prefix` on *some* rows of a list reserves horizontal space for all of
+  them, so "only the rows that deserve an icon get one" renders as a ragged left
+  edge. Across `overview`, `btrfs`, `containers`, `directory`, `lsm`, `kerberos`,
+  `encryption`, `biometrics`, `securitykeys` the minority row is always one
+  carrying a button — `Refresh`, `Read`, `Add a directive`, a terminal command —
+  in a group whose other rows carry a status icon. `widgets.reserve_leading_column`
+  adds an **empty image of the same pixel size**: the row has no verdict to draw,
+  and an invented glyph would be one.
+
+  Verified by measurement, not by looking: Containers' `Reads` title moved from
+  `left_ink=287` to `315`, matching the `315` of every row that has an icon.
+
+  **Three things the gate got wrong first, each found by running its control —
+  which is the fourth time in this repo that the thing lying was a green test:**
+
+  - **A plain `AdwActionRow` already contains one `GtkImage`** (libadwaita's own
+    expand arrow), so "does this row have an image" is true for every row in the
+    app. The gate reported every list as uniform and its control failed.
+    Calibrating each row against **its own type's** baseline is what turns "more
+    images than usual" into "this page added a prefix here" — and the first
+    calibration-less version reported **12 pages** ragged, every one a
+    `ComboRow` (4 internal images) beside an `ActionRow` (1).
+  - **A suffix `Gtk.DropDown` embeds three icons of its own.** Remote Access's
+    directive rows measured 3 page-added prefixes against 1 for the rows beside
+    them, and the measurement was backwards: the row with *fewer* images was the
+    one that had a real prefix. Uncorrected, the gate would have sent someone to
+    edit the row that was already right.
+  - **On a tie, `min(counts, key=len)` returns the first key, not the smaller
+    side.** On Encryption it reported `Not encrypted` when the row without the
+    column was the TPM row above it — the verdict right and the instruction
+    wrong, which is worse than no message. It now names both sides.
+
+  `tests/test_no_list_mixes_indented_and_flush_rows.py`, compared **within a row
+  type** (an `ActionRow`, a `SwitchRow` and a `ComboRow` are three different
+  widgets, and "one left edge" is a statement about rows of the same kind).
+
+  **Security Keys needed the other mechanism.** Its rows get their icon from
+  `_set_status` *after* construction, and `AdwActionRow` has `add_prefix` and
+  **no `remove_prefix`** — so the row's slot is created empty and *named*, and
+  `_set_status` re-points it rather than appending. Appending would leave two
+  leading columns and one more on every refresh. Same shape as `tabs/audit.py`
+  and `tabs/password_policy.py`, and a refresh is idempotent.
+
+- **The stack this sweep was verified on is libadwaita 1.9.1, not CI's 1.5.**
+  Measured on the host: GTK 4.22.4, libadwaita 1.9.1, PyGObject 3.56.2, Ubuntu
+  26.04.1 — so this is the **shipped** side of the 1.5/1.9 split this file keeps
+  warning about (Arch ships 1.9.4 / GTK 4.22.5), not CI's. Worth stating
+  because "rendered on this development host" alone does not say which half of
+  the split was exercised, and the whole 1.5-vs-1.9 discussion turns on it.
+
+  **Not verified, unchanged:** still no Arch container, so the marked-up branches
+  (Secure Boot `Enabled`, Audit `enabled`, Password Policy `installed`) have
+  never been rendered on either version.
+
+  Suite **3232 passed, 4 skipped, 2 failed** — both reproduced at HEAD with all
+  22 `tabs/` files stashed (`hide_tools` needs a `shani/gui/venv` parent that
+  does not exist here; `test_shanios_builds_its_initramfs_with_dracut`). Two
+  `tests/test_privileges_page.py` failures in one earlier run and not the next
+  are the documented ordering class, and that file is untouched here.
+
+- **Three more confident readings of small images were wrong, which makes six in
+  two sweeps, and every one was settled by measuring rather than by looking
+  harder.** Recorded as a rate, not as anecdotes, because the pattern is the
+  useful part: this repo keeps finding that the green signal is the thing lying.
+
+  | what I read | what was true | what settled it |
+  |---|---|---|
+  | Avahi's `is-enabled` rows had **no icon**, flush left | the icon was there; the rows were flush for a different reason | a 2x crop of the band |
+  | the Containers fix **had not worked** — the side-by-side still showed `Reads` flush | it had: `left_ink` went 287 → 315 | measuring the band, not the composite |
+  | every IRQ row on **irqbalance carries a warning triangle** | no row has one; I had read 164 tiny glyphs in a 250px-wide montage | cropping the real rows at full size |
+
+  The middle one is the dangerous shape: the composite *was* different, just not
+  in the way I read it, so "I compared before and after" is not the same as
+  "I measured before and after".
+
+- **Three more defects, found by reading the remaining pages of the same sweep
+  (2026-10-17). The screenshot harness is what made them findable.**
+
+  | # | page | what the render showed | fix |
+  |---|---|---|---|
+  | 8 | **Firmware** | A ragged left edge: the one **updatable** device sat ~30px right of every other name, because `add_prefix` was called only for it — and its wrapped `serial` line hung at a third indent again | Every row reserves the same leading column; a non-updatable device gets an **empty image of the same size**, which is what a placeholder column is for |
+  | 9 | **Remote Access** | `Save` rendered as **bare orange text with no button chrome** | It carried both `suggested-action` **and** `flat`, and `.flat` cancels the fill |
+  | 10 | **Kernel Lockdown** | `[none] integrity confidentiality` reading as a broken list | The kernel's line is kept verbatim; a gloss names the in-force token |
+
+  **#8 is a class, not a one-off, and it is worth stating why it looked
+  deliberate.** Giving the icon only to the rows that deserve it *is* a sensible
+  idea; the problem is that an `add_prefix` on **some** rows of a list reserves
+  horizontal space for **all** of them, so "only some rows have an icon" renders
+  as "all rows are indented, and one of them more than the others". The reader
+  sees a grouping the page never declared — and on this page the row that ends
+  up alone is the one a user can act on.
+
+  **#9 was the only `flat` button in the app** (measured: one hit across
+  `src/shani_cassini/`), so it was never a convention, it was one outlier. It
+  also **destroyed the disabled state**: a flat button has almost nothing to dim,
+  and this page disables Save until the chosen value differs from the recorded
+  one — so "greyed because nothing has changed" was not visibly different from
+  "this is a label". `tests/test_action_buttons_are_consistent.py` forbids the
+  combination app-wide and says in its own message that the second, stricter
+  assertion is the one to delete if a flat button is ever genuinely wanted,
+  rather than the one that carries the reason.
+
+  **A third defect was mine again, and it is the second time in this pass.** I
+  read Privileges' `is-active — Failed to retrieve unit state` with a circled
+  minus as a *verdict* of "not active" drawn for a failed read — the exact
+  false-negative this file warns about — and it was already correct: that glyph
+  is `dialog-error-symbolic` and the subtitle says the read failed. The icon and
+  the words agree. **Two confident readings of small images were wrong in this
+  session and both were caught by measuring rather than by looking harder.**
+
+  Gate for #8 asserts the column's **pixel size**, not `get_width()`: a widget
+  that has never been mapped reports `get_width() == 0` for everything, so a
+  width comparison on an unmapped page passes for any two rows — including a row
+  with no column at all. Three controls run for each of the three defects.
+
+- **Every page was rendered and read, and the sweep found seven real UI
+  defects. A page screenshot harness now exists (`render_ui.py` +
+  `tools/render_ui_batch.sh`), modelled on `shani-chronoa`'s.**
+
+  This repo had **no** renderer of its own, so "look at the page" was not
+  possible for anything built since the 2026-09-26 rebuild. Chronoa's scripts
+  were the reference and its four documented requirements were carried over
+  (`Adw.init()` before the application is constructed, `present()` in the
+  activate handler with the snapshot a later turn of the loop, `save_to_png` on
+  a realized-then-unrealized Cairo renderer, and a private display so no
+  keystroke can land in the render).
+
+  **The renderer had to be fixed twice before a single page was readable, and
+  both fixes are worth more than anything it found.**
+
+  1. **Every page rendered as light text on transparent black.**
+     `_deepest_node()` preferred `window.get_content()`, and
+     `AdwApplicationWindow` paints `@window_background_color` in the *window's*
+     snapshot vfunc — so the detached content subtree came back alpha 0 over the
+     whole content pane while the sidebar, whose background the split view paints
+     itself, looked correct. Measured on one window, one size, one frame:
+     `window -> content pane (44,44,44,255)`, `content -> (0,0,0,0)`. The window
+     is now snapshotted first. **The tell was the sidebar**: a page that is
+     half-dark and half-white reads as a theme bug, and it is the one thing in
+     the picture that says the *capture* is wrong rather than the product.
+  2. **The batch driver chose a picture by "most ink", and the wrong page won.**
+     It ran each target twice with a display recycle between, kept whichever had
+     the higher content percentage — and a recycled display photographs the
+     **default page (overview, 53%)** over the requested one (irqbalance, 43%).
+     Five pages came back as overview and reported PASS. The loop now stops at
+     the first attempt that clears the floor. **A "best of N" rule over a
+     quantity that a wrong answer can score highly is not a best-of-N rule.**
+
+  **The seven defects, each found by looking at a picture and confirmed by
+  measuring, none of which any existing gate could see.**
+
+  | # | page | what the render showed | fix |
+  |---|---|---|---|
+  | 1 | **Health** | A ~120px warning triangle filling the rest of the viewport, **with its own title below the fold** — the one fact that branch exists to state | `Adw.StatusPage` is a *full-page* surface; appended inside a scrolled page it took the whole viewport. Now an `Adw.Banner`, the inline notice `tabs/updates.py` already uses |
+  | 2 | **7 pages** | Literal `**asterisks**` on screen — btrfs, irqbalance, dns, outbound-mail, app-versions, ups | `description=` is a plain label, not markup. The Setup page had this gate; a gate on one page is a gate on one page, and the same habit was still live on six others. Lifted to every page |
+  | 3 | **Secure Boot** | `● Enabled` / `○ Disabled` as **hollow grey outlines with no severity colour** | Literal Unicode resolved from a fallback face (`fc-match` sends U+25CF/U+25CB to DejaVu while the app asks for Ubuntu Sans), and inside the label string so it was copied too. Now themed icons beside the text, with the page's `health-*` classes |
+  | 4 | **UPS** | Seven rows of bare `MINSUPPLIES` / `SHUTDOWNCMD` / … with the only explanation in a **tooltip** | The explanation is now the row's subtitle. `Adw.EntryRow` has no subtitle and **`Adw.Entry` does not exist** — two `AttributeError`s before `Gtk.Entry` |
+  | 5 | **Audit** | `not-found` / `inactive` as neutral text — the two findings of a security page, unmarked | Severity marked from systemd's own words, "the one good word or it is a finding" |
+  | 6 | **Password Policy** | `pam_pwquality.so — Not installed` unmarked, while Acceleration marked the same class of fact | **`_warning_row()` added a `warning` class and no `.warning` rule existed anywhere in the app** — a marker that styles nothing. The central row was also never built by `_warning_row` at all |
+  | 7 | **sbctl** | `[none] integrity confidentiality` reading as a broken list | The kernel's line is kept verbatim and a gloss names the in-force token |
+
+  **Two of the seven were defects in code that *claimed* to do something else**,
+  which is the shape this file keeps finding:
+
+  - `password_policy._warning_row`'s own docstring promised *"marked so it
+    cannot read as fine"*, and `widgets.py` declared `.health-ok`,
+    `.health-warn`, `.health-bad`, `.health-unknown` — **no `.warning`.** The
+    string `warning` occurred only inside `health-warn` and `@warning_color`.
+    Fixing the CSS alone left the page's central finding unmarked, because that
+    row is built by `_row()` and filled by `_module_phrase()`. Two independent
+    defects, so two gates.
+  - `health.py` already carried a `compact` marker for exactly this situation
+    and applied it to one `StatusPage` and not the other.
+
+  **Four defects were found in the fixes themselves, and each is a trap this
+  file already documents.**
+
+  - **`AdwBanner.revealed` defaults to `False`.** The first Banner was present,
+    mapped, `get_visible()` True, and occupied **`alloc=738x0`**. Every property
+    but the height read healthy. The gate therefore asserts the *measured
+    height*, not that the widget exists.
+  - **`AdwActionRow` has no `remove_prefix`** (measured) — so a severity icon
+    cannot be taken back off a row to re-mark it. Both Audit and Password Policy
+    name their icon and swap it, or a refresh stacks a duplicate.
+  - **`Adw.ActionRow` prefixes sit behind internal wrappers**, so a
+    direct-child walk finds a container and not the glyph. The same lesson as
+    `AdwPreferencesGroup.get_first_child()`.
+  - **An unreachable guard was written and removed.** `_mark_daemon_severity`
+    first had "an empty word means say nothing", and `_read_daemon`'s `on_exit`
+    already substitutes `f"exit status {status}"` before marking runs. Defence
+    implying protection it did not provide.
+
+  **Two gates that could not see their own defect, found by running the
+  control** — both are the "a control that cannot fail" trap pointed the other
+  way:
+
+  - The Audit severity gate called `_mark_daemon_severity()` directly, so
+    **deleting the call from `_read_daemon` — the actual defect — passed.** It
+    now drives `_read_daemon` and lets the page mark its own row.
+  - The Password Policy CSS gate parsed `AMOLED_CSS` looking for a line ending
+    in `{`. The sheet is an f-string and half its rules are one-liners, so it
+    found three selectors out of eighteen and reported classes that *were*
+    defined as missing.
+
+  **A seventh defect was mine, and it is recorded because the gate caught it
+  rather than the picture.** I read a Btrfs capture as showing the Refresh
+  button painted over its own row's subtitle, built a whole-app gate for it, and
+  the control failed — then the zoomed crop showed the text wrapping *before*
+  the button, and the measurement agreed (`alloc=619x46`, `nat@619=46`). The
+  change and the gate were reverted. **A confident reading of a small image is
+  a hypothesis; the measurement is the verdict.**
+
+  Suite: **3155 passed, 4 skipped, 2 failed** — both failures reproduced at HEAD
+  with everything stashed (`hide_tools` needs a `shani/gui/venv` parent that does
+  not exist here; two privileges tests are the documented ordering class).
+
+  **Not verified, and the same gap the SMART and fprintd entries carry:** every
+  page was rendered on this **development host**, so the rows that need a real
+  Shanios image (`shani-deploy`, `fwupdmgr`, `btrfs`, `podman`, cupsd) are the
+  absent-tool branch. The *marked-up* branches — Secure Boot's `Enabled`,
+  Audit's `enabled`, Password Policy's `installed` — have never been rendered,
+  and their gates cover them by driving the page with the other answer.
+
 - **`include = /etc/samba/smb.conf.d/*.conf` includes NOTHING, silently — and
   the whole SMB share feature rested on it. Found 2026-10-17, after the code
   was committed and pushed, by running real `testparm`.**

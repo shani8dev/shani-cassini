@@ -219,8 +219,19 @@ def test_filtering_the_module_list_folds_a_module_with_its_own_parameters(
     """
     _fake_modules(tmp_path, monkeypatch, params=REAL_SYS_MODULE_PARAMS)
     tab = modules_mod.ModulesTab()
-    param_rows = [r for r in walk(tab) if r.get_title().startswith("    ")]
+    # **Found by the row's margin, not by leading spaces in its title.** This
+    # test used `get_title().startswith("    ")` and that was not an arbitrary
+    # choice - the indent *was* four spaces in the title string, which is the
+    # defect `CHILD_INDENT_PX` replaced. So the test asserted the page's own
+    # misrendering was still present: a title with spaces in it is what the
+    # screen showed, so asking for spaces could only ever agree with it. A test
+    # keyed on the artefact of a bug cannot see the bug.
+    param_rows = [r for r in walk(tab)
+                  if r.get_margin_start() == modules_mod.CHILD_INDENT_PX]
     assert param_rows, "no parameter rows were built"
+    assert not any(r.get_title()[:1].isspace() for r in param_rows), (
+        "a parameter row's indent is back inside its title string, so its "
+        "subtitle will not line up with it")
     tab._search.set_text("iwlwifi")
     tab._filter(tab._search)
     assert row_named(tab, "iwlwifi").get_visible() is True

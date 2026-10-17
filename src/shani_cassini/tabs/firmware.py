@@ -218,9 +218,26 @@ class FirmwareTab(Gtk.Box):
                 bits.append(f"last update {device['update_state']}")
             subtitle = " · ".join(bits)
             row = _row(_esc(name), _esc(subtitle))
-            if device["updatable"]:
-                img = Gtk.Image.new_from_icon_name("emblem-system-synchronizing-symbolic")
-                row.add_prefix(img)
+            # **Every row gets a leading column, not only the updatable ones.**
+            #
+            # Found by rendering the page (2026-10-17). `add_prefix` was called
+            # only for a device fwupd can write to, so on a machine with one
+            # such device the list had **a ragged left edge**: "Integrated
+            # Camera" sat ~30px right of every other name, its wrapped second
+            # line ("serial 0001") hung at a third indent again, and the one row
+            # that mattered most to a user — the one they can act on — was the
+            # one that looked different.
+            #
+            # The icon is kept, and it is kept for the rows that need it: a
+            # device fwupd cannot write to gets an empty image of the same size,
+            # which is what a placeholder column is for. The verdict itself is
+            # already in the subtitle's `Updatable` / `Carried, not updatable`,
+            # so nothing is lost by aligning the column.
+            img = Gtk.Image.new_from_icon_name(
+                "emblem-system-synchronizing-symbolic"
+                if device["updatable"] else "")
+            img.set_pixel_size(16)
+            row.add_prefix(img)
             # The serial identifies the physical unit, which is the one thing no
             # other row answers: two identical SSDs in one machine are
             # indistinguishable by name and version, and only one of them is

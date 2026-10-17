@@ -721,7 +721,22 @@ class RemoteAccessTab(Gtk.Box):
             picker.set_selected(directive.values.index(setting.value))
         save = Gtk.Button(label="Save", valign=Gtk.Align.CENTER)
         save.add_css_class("suggested-action")
-        save.add_css_class("flat")
+        # **No `.flat`.** Found by rendering the page (2026-10-17): this was the
+        # **only** `flat` button in the app (measured: one hit across
+        # `src/shani_cassini/`), and `.flat` removes the fill a
+        # `suggested-action` is supposed to have - so Save rendered as bare
+        # orange text with no button chrome, while the same class everywhere
+        # else ("Add a rule...", "Open firewall-config", "Export a directory...",
+        # "Stage MOK Enrollment") renders as a filled pill. Two Save buttons on
+        # two neighbouring pages that look nothing alike is worse than either
+        # one alone.
+        #
+        # It also cost the *disabled* state its meaning. A flat button has almost
+        # nothing to dim, so "Save is greyed because you have not changed
+        # anything" was not visibly different from "Save is a label". This page
+        # disables Save until the chosen value differs from the recorded one, so
+        # the grey is the only thing telling a reader the button exists and is
+        # not available.
         save.set_sensitive(self._wanted(directive, picker.get_selected())
                            != (setting.value if setting else None))
         save.connect("clicked", lambda _b, k=directive.keyword, p=picker:

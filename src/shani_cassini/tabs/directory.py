@@ -56,6 +56,7 @@ from typing import Final
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.widgets import reserve_leading_column
 
 logger = logging.getLogger(__name__)
 
@@ -235,6 +236,8 @@ class DirectoryTab(Gtk.Box):
         # gives it one: a row that arrived with an icon would end up carrying a
         # second beside it.
         self._row_reports = _row(REPORTS_TITLE, REPORTS_PENDING)
+        # Reserve the leading column - the sssd row below carries an icon.
+        reserve_leading_column(self._row_reports)
         self._btn_refresh = Gtk.Button(label="Refresh", valign=Gtk.Align.CENTER)
         self._btn_refresh.connect("clicked", lambda *_: self.refresh())
         self._row_reports.add_suffix(self._btn_refresh)

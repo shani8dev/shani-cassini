@@ -729,9 +729,40 @@ class TestTheFourStatesOfTheKernel:
 
     def test_the_kernel_line_is_shown_verbatim_beside_the_reading(self):
         """The kernel's own words, so a mode this page has no name for is still
-        legible rather than only described."""
+        legible rather than only described.
+
+        **Asserted as a prefix, not an equality**, because a render showed the
+        bare line `[none] integrity confidentiality` and the leading `[none]`
+        reads as a broken list rather than as "this is the mode in force" - the
+        one fact on the row, and the one this module's docstring says the line is
+        read for. So the line is now followed by a gloss saying which bracket is
+        the answer.
+
+        The kernel's own convention is kept rather than replaced: the brackets
+        still mean what they mean in the file, so the row still matches what
+        `cat` prints and a reader can check it. An equality assertion here would
+        have failed on the improvement rather than on a defect.
+        """
         rows = dict(_render(_lockdown_state())[1])
-        assert rows["Modes the kernel offers"] == "[none] integrity confidentiality"
+        shown = rows["Modes the kernel offers"]
+        assert shown.startswith("[none] integrity confidentiality"), shown
+        assert "switched off" in shown, (
+            f"the line does not say what the bracket means: {shown!r}")
+
+    def test_an_unknown_in_force_mode_is_named_not_guessed_at(self):
+        """The gloss must work for a mode this page has no name for.
+
+        That is the reason the line is shown verbatim at all, and it is the case
+        the gloss must not break: `quantum` here is a mode the page has never
+        heard of, and the sentence has to come from the file rather than from a
+        table that does not contain it.
+        """
+        rows = dict(_render(_lockdown_state(
+            lockdown_text="[quantum] integrity confidentiality\n"))[1])
+        shown = rows["Modes the kernel offers"]
+        assert "[quantum] integrity confidentiality" in shown, shown
+        assert "quantum is the mode in force" in shown, (
+            f"the gloss did not name the mode from the file: {shown!r}")
 
     def test_the_off_verdict_names_the_reason_there_is_no_control(self):
         rows = dict(_render(_lockdown_state())[1])

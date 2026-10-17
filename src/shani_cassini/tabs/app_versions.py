@@ -128,21 +128,21 @@ SNAP_NOTE = (
     "snapd daemon, and snapd's daemon is the seeded `snapd` snap - so where "
     "that snap is not running, `snap list` does not answer quickly, or at all. "
     "What is below is read from snapd's own directory layout, so a name and a "
-    "revision appear with no daemon involved. A snap's upstream **version** and "
-    "**channel** are only in snapd's answer, which is why asking is a button "
+    "revision appear with no daemon involved. A snap's upstream version and "
+    "channel are only in snapd's answer, which is why asking is a button "
     "and why that button gives up after a few seconds."
 )
 
 OSTREE_NOTE = (
     "ostree manages whole operating-system deployments rather than "
-    "applications. Its unit of inventory is a *deployment*, and what identifies "
+    "applications. Its unit of inventory is a deployment, and what identifies "
     "one is a commit checksum - there is no separate version number to report. "
     "A machine with no /ostree/repo is not an ostree machine, and is reported "
     "that way rather than as zero deployments."
 )
 
 DEPLOY_NOTE = (
-    "Shanios upgrades the **OS image**, into a Btrfs slot, and nothing else. "
+    "Shanios upgrades the OS image, into a Btrfs slot, and nothing else. "
     "`shani-deploy` never mentions flatpak, snapd or ostree anywhere in its "
     "scripts, so an application that lags the OS image is expected and no "
     "button on the Updates page will change it. Only what is inside the image "

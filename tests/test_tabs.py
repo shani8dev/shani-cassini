@@ -720,3 +720,185 @@ class TestRetiredPageIds:
         finally:
             nb.ALIASES.clear()
             nb.ALIASES.update(saved)
+
+
+class TestTheHealthPageSaysWhyItsChecksCannotRun:
+    """The absent-tool notice must be **visible**, and that is an absence.
+
+    Found by rendering the page on a host without `shani-health` (2026-10-17).
+    The notice was an `Adw.StatusPage`, which is a *full-page* surface: it wants
+    a ~120px icon and centres itself in whatever height it is given. Appended at
+    the bottom of a scrolled page it took the whole remaining viewport and put
+    **its own title below the fold** — the capture showed a large empty warning
+    triangle and nothing saying why, which is the only fact that branch exists
+    to state. It is now an `Adw.Banner`, the inline-notice widget this repo
+    already uses in `tabs/updates.py`.
+
+    The gate below asserts the *rendered height*, because that is what "invisible"
+    is. Three separate defects could each pass a test that only checked the
+    banner exists:
+
+    * the original oversized `StatusPage` — present, and visible;
+    * the `Adw.Banner` **without** `revealed=True` — `AdwBanner.revealed`
+      **defaults to False**, so it is present, `get_visible()` is True, and it
+      occupies **0px** (measured: `alloc=738x0`). Every property but the height
+      reads healthy;
+    * a banner whose title lost the fact and kept the reassurance.
+
+    So the gate walks the built tree, finds the banner, and asserts it has
+    height and that its title still says what went wrong.
+    """
+
+    @staticmethod
+    def _walk(widget, out=None):
+        out = [] if out is None else out
+        out.append(widget)
+        child = widget.get_first_child()
+        while child is not None:
+            TestTheHealthPageSaysWhyItsChecksCannotRun._walk(child, out)
+            child = child.get_next_sibling()
+        return out
+
+    def test_the_notice_is_a_banner_that_occupies_space_and_names_the_cause(self):
+        gi = pytest.importorskip("gi")
+        gi.require_version("Adw", "1")
+        from gi.repository import Adw, Gtk
+        from shani_cassini import system_status as ss
+        from shani_cassini.tabs.health import HealthTab
+
+        Adw.init()
+        saved = ss.have
+        try:
+            # A host with no `shani-health` is the state this branch is for;
+            # drive it directly rather than hoping the machine lacks it.
+            ss.have = lambda tool: False if tool is ss.HEALTH else saved(tool)
+            tab = HealthTab()
+            banners = [w for w in self._walk(tab) if isinstance(w, Adw.Banner)]
+            assert banners, (
+                "no Adw.Banner on the page: the absent-tool notice has gone back "
+                "to being something else, and this gate must be re-pointed at "
+                "the new widget rather than deleted")
+            banner = banners[0]
+            assert banner.get_revealed(), (
+                "AdwBanner.revealed defaults to False, so an unrevealed banner "
+                "is present in the tree and occupies 0px of height - which is "
+                "exactly the invisible notice this test exists to catch")
+            assert (banner.get_title() or "").strip(), (
+                "the notice has no text, so it explains nothing even when shown")
+
+            # Height, asserted on the built widget rather than on the source:
+            # a grep for `revealed=True` would pass while the banner sat at
+            # 0px, and would also fire on this file's own comments.
+            # `Gtk.Widget.measure()` returns a 5-tuple (minimum, natural,
+            # minimum_baseline, natural_baseline, minimum_ascent, ...); only
+            # index 1 is the natural height. The first version unpacked two
+            # values and raised rather than asserting.
+            assert tab.measure(Gtk.Orientation.VERTICAL, -1)[1] > 0, (
+                "the page measures zero height")
+            assert banner.measure(Gtk.Orientation.VERTICAL, -1)[1] > 0, (
+                "the banner measures zero height, so it renders as nothing")
+        finally:
+            ss.have = saved
+
+
+class TestSecureBootStateMarkersAreThemedIcons:
+    """A yes/no answer is drawn with an icon from the theme, not a glyph.
+
+    Found by rendering the page (2026-10-17). Every state on it was spelled with
+    a literal Unicode circle inside the value label — `"● Enabled"`,
+    `"○ Disabled"` — and the capture showed **hollow grey outlines with no
+    severity colour at all**, so the two states were told apart by a filled
+    circle against an empty one, in the same grey, at 11px. It read as a
+    rendering artefact rather than as a verdict.
+
+    Two independent reasons that is wrong, and this gate holds both:
+
+    * **The glyphs were resolved from a fallback font.** The app asks for
+      Ubuntu Sans; `fc-match` resolves U+25CF and U+25CB to DejaVu Sans on this
+      host, so the characters came out in whatever face and weight the fallback
+      picked. An icon *name* is drawn from the theme and inherits the
+      foreground colour.
+    * **They were inside the label string**, so the text a user selects and
+      copies included a circle glyph.
+
+    The icon now lives beside the label in the value cell, and the label itself
+    carries the page's existing `health-*` class so the text is coloured to
+    match.
+    """
+
+    ROWS = ("sb-state", "sb-setup-mode", "sb-sbctl-present",
+            "sb-sbctl-installed", "sb-ms-keys")
+
+    def _tab(self):
+        from shani_cassini.tabs.secureboot import SecureBootTab
+        from shani_cassini.state import AppState
+        from shani_cassini.auth import AuthManager
+        return SecureBootTab(state=AppState(), auth_manager=AuthManager())
+
+    @staticmethod
+    def _walk(widget, out):
+        out.append(widget)
+        child = widget.get_first_child()
+        while child is not None:
+            TestSecureBootStateMarkersAreThemedIcons._walk(child, out)
+            child = child.get_next_sibling()
+        return out
+
+    def test_no_state_row_shows_a_literal_circle_glyph(self):
+        """The defect itself: a `●`/`○` reaching the screen."""
+        tab = self._tab()
+        tab._set_state("sb-state", False, "Enabled", "Disabled")
+        tab._set_state("sb-sbctl-present", True, "Present", "Not installed")
+
+        offenders = []
+        for node in self._walk(tab, []):
+            if not isinstance(node, Gtk.Label):
+                continue
+            text = node.get_text() or ""
+            if "●" in text or "○" in text:
+                offenders.append(text)
+        assert not offenders, (
+            "these labels still carry a literal circle glyph: "
+            + "; ".join(repr(t[:60]) for t in offenders[:4]))
+
+    def test_every_state_row_carries_an_icon_and_a_severity_class(self):
+        tab = self._tab()
+        for state, expected_class in ((True, "health-ok"),
+                                      (False, "health-warn"),
+                                      (None, "health-unknown")):
+            for name in self.ROWS:
+                tab._set_state(name, state, "yes", "no")
+            nodes = {n.get_name(): n for n in self._walk(tab, [])
+                     if isinstance(n, (Gtk.Label, Gtk.Image)) and n.get_name()}
+
+            for name in self.ROWS:
+                value, icon = nodes.get(name), nodes.get(f"{name}-icon")
+                assert isinstance(value, Gtk.Label), f"{name}: value label missing"
+                assert isinstance(icon, Gtk.Image), (
+                    f"{name}: no icon beside the value for state={state!r}")
+                assert icon.get_visible(), (
+                    f"{name}: icon exists but is not visible for state={state!r} "
+                    f"- an icon that is built and hidden is the same absence as "
+                    f"one never built")
+                assert icon.get_icon_name(), f"{name}: icon has no icon name"
+                assert expected_class in value.get_css_classes(), (
+                    f"{name}: value carries {value.get_css_classes()} for "
+                    f"state={state!r}, expected {expected_class!r}")
+
+    def test_unknown_is_not_drawn_as_a_no(self):
+        """``None`` means the question could not be asked, which is not ``False``."""
+        tab = self._tab()
+        tab._set_state("sb-state", None, "Enabled", "Disabled")
+        nodes = {n.get_name(): n for n in self._walk(tab, [])
+                 if isinstance(n, (Gtk.Label, Gtk.Image)) and n.get_name()}
+        value, icon = nodes.get("sb-state"), nodes.get("sb-state-icon")
+        assert value.get_text() == "Unknown", (
+            f"an unaskable question rendered as {value.get_text()!r}")
+        assert icon.get_icon_name() == tab._STATE_ICON_UNKNOWN, (
+            "the unknown icon is the 'no' icon, so a question that was never "
+            "asked reads as an answer of no")
+
+    def test_the_check_can_see_a_glyph(self):
+        """The control: a search that cannot see the glyph proves nothing."""
+        assert "●" in "● Enabled"
+        assert "○" in "○ Disabled"

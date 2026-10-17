@@ -59,6 +59,25 @@ AMOLED_CSS = f"""
 @define-color accent_fg_color {ON_ACCENT};
 @define-color accent_color {ACCENT};
 
+/* Severity classes for a whole row, not just its badge.
+ *
+ * `.warning` had no rule here at all until 2026-10-17, while
+ * `tabs/password_policy.py`'s `_warning_row()` existed to add exactly that
+ * class and its docstring promised a row "marked so it cannot read as fine".
+ * The row therefore rendered **identically to a fine one**, and a render of the
+ * Password Policy page showed "pam_pwquality.so - Not installed - no PAM stack
+ * could load it even if one named it" in the same neutral grey as every other
+ * value, while the Acceleration page marked the same class of finding with a
+ * warning glyph. Two pages, same fact, opposite presentation.
+ *
+ * Colour is not the only cue - the glyph carries it too, so this is not colour
+ * alone - but these rules are what make the class mean anything at all. They
+ * mirror `.health-*`, which is the vocabulary every other severity marker in
+ * this app already uses. */
+.warning {{ color: @warning_color; }}
+.error   {{ color: @error_color; }}
+.ok      {{ color: @success_color; }}
+
 #card, #health-panel {{
     padding: 16px;
 }}
@@ -135,6 +154,40 @@ def find_named(root, name):
             return hit
         child = child.get_next_sibling()
     return None
+
+
+#: Pixel size of the reserved leading column. This is the size libadwaita gives a
+#: `Gtk.Image` with no explicit pixel size in an `AdwActionRow`, which is what
+#: every status icon in these pages already is — so a reserved column and a real
+#: one allocate the same width. Verified against a real render by measuring the
+#: left edge of each row's title in the output image, not by reading this value.
+_LEADING_COLUMN_PX = 16
+
+
+def reserve_leading_column(row) -> None:
+    """Reserve the leading icon column on a row that has nothing to draw there.
+
+    **`add_prefix` on some rows of a list reserves horizontal space for all of
+    them**, so "only the rows with an icon have an icon" renders as a **ragged
+    left edge**: the rows without one sit flush against the card while the rest
+    sit one column in, and the reader sees a grouping the page never declared.
+
+    Found by rendering (2026-10-17) on two pages and then, by lifting the check
+    app-wide, on **ten** — the same shape thirteen times, and every one of them a
+    row carrying a button (Refresh, Add, a terminal command) sitting in a group
+    whose other rows carry a status icon. On the Firmware page the row left
+    alone was the one a user could act on.
+
+    The fix is an **empty image of the same pixel size**, not a real icon: the row
+    has no verdict to draw, and an invented glyph would be one. It is
+    indistinguishable from a prefix by design, which is why
+    `tests/test_no_list_mixes_indented_and_flush_rows.py` counts page-added
+    images rather than asking whether one has a name.
+    """
+    from gi.repository import Gtk as _Gtk
+    img = _Gtk.Image()
+    img.set_pixel_size(_LEADING_COLUMN_PX)
+    row.add_prefix(img)
 
 
 def _gtk4_children(widget):

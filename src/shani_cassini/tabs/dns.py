@@ -61,8 +61,8 @@ STUB_NOTE = (
 )
 
 PARALLEL_NOTE = (
-    "`DNS=` in resolved.conf does **not** replace your network's resolvers. "
-    "resolved queries the listed servers *in parallel with* the per-link ones "
+    "`DNS=` in resolved.conf does not replace your network's resolvers. "
+    "resolved queries the listed servers in parallel with the per-link ones "
     "NetworkManager supplies, so your ISP's or VPN's resolvers are still used.\n"
     "What it does mean is that every lookup also reaches the servers listed "
     "here, whatever your network settings say. `FallbackDNS=` is the setting "
@@ -96,12 +96,12 @@ PRIVACY_NOTE = (
     "An IPv6 address is not a number your provider hands out for this "
     "connection - the machine picks one, and by default that one is built from "
     "the network card's hardware address. If so, the address identifies this "
-    "device on **every network it has ever joined**, which is why an IPv4 "
+    "device on every network it has ever joined, which is why an IPv4 "
     "address that changes with your connection and an IPv6 one that does not "
     "are not the same privacy story.\n"
     "Shanios asks for the rotating form (RFC 4941 privacy extensions, "
     "`use_tempaddr = 2`) on every machine. The rows below read what the kernel "
-    "**actually assigned**, not what the configuration requests: a later "
+    "actually assigned, not what the configuration requests: a later "
     "sysctl file, a NetworkManager connection that sets `ipv6.ip6-privacy` "
     "itself, or anything re-running sysctl after boot would all leave the "
     "configuration looking correct and the address unchanged. So a row is only "

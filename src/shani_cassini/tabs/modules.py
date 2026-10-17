@@ -207,6 +207,25 @@ def _row(title: str, subtitle: str = "") -> Adw.ActionRow:
     return row
 
 
+#: How far a module's parameter rows sit in from the module itself.
+#:
+#: **It was four literal spaces inside the parameter's *title string*,** and that
+#: is what produced the defect this replaced. Found by rendering the whole page
+#: rather than the window - the parameters start at y=340 of a 3000px page, so
+#: nothing above the fold ever showed one. The measured result was:
+#:
+#:     y=362..375  left_ink=28   `fork_from_owner_default`   (indented)
+#:     y=384..393  left_ink=14   `Y`                         (**not** indented)
+#:
+#: so each parameter's *value* sat flush with the module names instead of under
+#: its own name, and `Y` read as a property of the module above. Four spaces in
+#: a title also survive into `get_title()`, so every assertion about it passed
+#: while the screen was wrong, and they are copied if a user selects the text.
+#:
+#: A margin moves the whole row, so title and value shift together.
+CHILD_INDENT_PX = 14
+
+
 class ModulesTab(Gtk.Box):
     def __init__(self, state=None, auth_manager=None) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=24)
@@ -452,8 +471,12 @@ class ModulesTab(Gtk.Box):
             self._top.add(row)
             children = []
             for param in params[:PARAM_LIMIT]:
-                child = _row(f"    {_esc(param['name'])}",
-                             _esc(param["value"]))
+                # The indent is a margin on the row, never spaces in the title:
+                # see `CHILD_INDENT_PX`. `margin_end` matches so the row stays
+                # the same width as its siblings inside the card.
+                child = _row(_esc(param["name"]), _esc(param["value"]))
+                child.set_margin_start(CHILD_INDENT_PX)
+                child.set_margin_end(CHILD_INDENT_PX)
                 self._top.add(child)
                 children.append(child)
             self._groups.append((row, children, module["name"].lower()))

@@ -68,7 +68,7 @@ gi = pytest.importorskip("gi")
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw  # noqa: E402
+from gi.repository import Adw, Gtk  # noqa: E402
 
 from shani_cassini.tabs import password_policy as pp  # noqa: E402
 # Read once, at import: the fixture below redirects DICT_CANDIDATES at
@@ -1248,3 +1248,115 @@ def _blank_docstrings(source: str) -> str:
             for index in range(start, min(end, len(lines))):
                 lines[index] = ""
     return "\n".join(lines)
+
+def _page_walk(widget, out=None, depth=0):
+    """Every descendant, descending through containers.
+
+    `AdwActionRow`'s prefixes sit behind internal wrappers rather than being
+    direct children, so a direct-child walk finds a container and not the glyph.
+    The same lesson this repo records for `AdwPreferencesGroup.get_first_child()`.
+    """
+    assert depth < 40, "widget tree deeper than 40 - a cycle, not a page"
+    out = [] if out is None else out
+    out.append(widget)
+    child = widget.get_first_child()
+    while child is not None:
+        _page_walk(child, out, depth + 1)
+        child = child.get_next_sibling()
+    return out
+
+
+class TestSeverityIsActuallyRendered:
+    """A row the code calls "marked so it cannot read as fine" must be marked.
+
+    **Two defects, found by rendering this page (2026-10-17), and the second
+    only exists because of how the first was fixed.**
+
+    1. **`_warning_row()` added a `warning` class and there was no `.warning`
+       rule anywhere in the app.** `widgets.py` declared `.health-ok`,
+       `.health-warn`, `.health-bad` and `.health-unknown`; the string
+       `warning` appeared only inside `health-warn` and `@warning_color`. So the
+       helper's own promise — *"marked so it cannot read as fine"* — was kept by
+       a class that styled nothing, and the row rendered identically to a fine
+       one.
+    2. **The `pam_pwquality.so` row was never built by `_warning_row()` at
+       all.** It is built by `_row()` and filled in by `_module_phrase()`, so
+       fixing (1) left this page's *central finding* — "Not installed - no PAM
+       stack could load it even if one named it" — still unmarked, while the
+       Acceleration page marked the same class of fact with a warning glyph.
+
+    The gate below covers both, because they fail independently: adding the CSS
+    without marking the row, or marking the row without the CSS, each leaves
+    this page reading as though nothing is wrong.
+    """
+
+    @staticmethod
+    def _severity_classes() -> set[str]:
+        """Every CSS selector `widgets.py` actually defines.
+
+        Read off the module's own `AMOLED_CSS` rather than by asking GTK, so a
+        missing rule is observable without a display and without a running app.
+        """
+        from shani_cassini import widgets
+        css = widgets.AMOLED_CSS
+        found = set()
+        for line in css.splitlines():
+            line = line.strip()
+            # **Split at the first `{` anywhere, not on a line that *ends* with
+            # one.** `AMOLED_CSS` is an f-string, so by the time this reads it the
+            # braces are single again — and half the rules are written on one
+            # line (`.warning { color: ...; }`), which never ends with `{`. The
+            # first version looked for a trailing brace and found three selectors
+            # out of eighteen, then reported every other class in the sheet as
+            # undefined — a gate that failed against a sheet which defined them.
+            brace = line.find("{")
+            if brace <= 0:
+                continue
+            selector_text = line[:brace].strip()
+            if selector_text.startswith(("@", "/*", "*")):
+                continue
+            for selector in selector_text.split(","):
+                selector = selector.strip()
+                if selector.startswith("."):
+                    found.add(selector)
+        return found
+
+    def test_the_severity_classes_this_app_adds_actually_exist_in_the_css(self):
+        defined = self._severity_classes()
+        for needed in (".warning", ".error", ".ok"):
+            assert needed in defined, (
+                f"{needed} is added to rows by this app but no CSS rule defines "
+                f"it, so the class styles nothing. A marker that cannot be seen "
+                f"is not a marker. Defined: {sorted(defined)}")
+
+    def test_a_warning_row_carries_a_glyph_not_only_a_colour(self):
+        from shani_cassini.tabs.password_policy import _warning_row
+        row = _warning_row("t", "s")
+        assert "warning" in row.get_css_classes()
+        icons = [n for n in _page_walk(row)
+                 if isinstance(n, Gtk.Image) and n.get_icon_name()]
+        assert icons, (
+            "a warning row has no glyph; colour alone is lost in greyscale and "
+            "to a colour-blind reader")
+
+    def test_the_module_row_is_marked_and_the_glyph_does_not_stack(self):
+        """Driven through the page's own render, twice.
+
+        A re-read is the normal case on this page (every refresh re-renders), so
+        a mark that appends would leave two glyphs on the row after the second
+        one - the "each re-read stacked another copy" defect this repo records
+        for the module-blacklist rebuild.
+        """
+        from shani_cassini.tabs.password_policy import _mark_severity, _row
+
+        row = _row("pam_pwquality.so", "")
+        for _ in range(3):
+            _mark_severity(row, good=False)
+        icons = [n for n in _page_walk(row)
+                 if isinstance(n, Gtk.Image)
+                 and n.get_name() == "pwpolicy-severity"]
+        assert len(icons) == 1, (
+            f"marking three times left {len(icons)} severity glyphs")
+        assert "warning" in row.get_css_classes()
+        assert "ok" not in row.get_css_classes(), (
+            "the row still carries the good class after being marked bad")

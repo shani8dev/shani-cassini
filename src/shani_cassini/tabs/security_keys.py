@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.widgets import find_named
 
 logger = logging.getLogger(__name__)
 
@@ -189,14 +190,50 @@ def _yubico_target() -> _Target:
                    owner=ss.CONFIG_OWNER)
 
 
+#: Name of the row's leading icon slot. Every row on this page takes its column
+#: from the start (`_row` below), and `_set_status` finds the slot by this name to
+#: fill it in — `AdwActionRow` cannot remove a prefix, so re-pointing is the only
+#: way to keep a row one column wide across refreshes.
+_STATUS_ICON = "security-keys-status-icon"
+
+#: Pixel size of that slot, chosen to match the icons the page already draws.
+STATUS_ICON_PX = 16
+
+
+def _status_slot(row: Adw.ActionRow) -> Gtk.Image | None:
+    """The row's named leading icon, or None if it has none."""
+    return find_named(row, _STATUS_ICON)
+
+
 def _row(title: str, subtitle: str = "", icon: str | None = None,
          cls: str | None = None) -> Adw.ActionRow:
+    """A row in one of this page's groups, always with its leading column taken.
+
+    Found by rendering the page (2026-10-17): a group held three rows carrying a
+    status icon and seven carrying none, so the three sat in a column of their
+    own and the other seven were ragged beside them. Every group on this page
+    uses icons for meaning, so the column is taken here — once — rather than at
+    each of a dozen call sites.
+
+    **The icon is created empty and named, never omitted.** Two reasons, and the
+    second is the one that cost a rewrite:
+
+    * an empty image of the same pixel size is how a row reserves a column it has
+      no verdict to draw yet (`widgets.reserve_leading_column` does the same for
+      rows built elsewhere), and
+    * `AdwActionRow` has `add_prefix` and **no `remove_prefix`**. So a row whose
+      icon arrives later must *re-point* the slot rather than append a second
+      one — which is what `_set_status` does, and why the slot carries a stable
+      name to be found by. Appending would leave two leading columns, and one more
+      on every refresh.
+    """
     r = Adw.ActionRow(title=title, subtitle=subtitle)
-    if icon:
-        img = Gtk.Image.new_from_icon_name(icon)
-        if cls:
-            img.add_css_class(cls)
-        r.add_prefix(img)
+    img = Gtk.Image.new_from_icon_name(icon or "")
+    img.set_name(_STATUS_ICON)
+    img.add_css_class("icon")
+    if cls:
+        img.add_css_class(cls)
+    r.add_prefix(img)
     return r
 
 
@@ -455,14 +492,27 @@ class SecurityKeysTab(Gtk.Box):
         self._set_unknown(self._row_y_unknown, conf, self._yubico)
 
     def _set_status(self, row: Adw.ActionRow, entry: dict) -> None:
-        """A hardware-auth row, in the data layer's own title and detail."""
+        """A hardware-auth row, in the data layer's own title and detail.
+
+        **Re-points the row's existing icon slot; it does not add one.** See
+        `_row`: the slot is already there and libadwaita offers no way to take a
+        prefix away, so this is the only way to fill in a row's verdict without
+        growing it. It is the same shape `tabs/audit.py` and
+        `tabs/password_policy.py` use, and it means a refresh is idempotent.
+        """
         state = entry.get("state", "")
         icon, css = AUTH_ICONS.get(state, AUTH_ICONS["unavailable"])
         row.set_title(entry.get("title", "Sign-in method"))
         row.set_subtitle(entry.get("detail", "Not known"))
-        img = Gtk.Image.new_from_icon_name(icon)
+        img = _status_slot(row)
+        if img is None:                      # a row built without _row()
+            img = Gtk.Image()
+            img.set_name(_STATUS_ICON)
+            img.add_css_class("icon")
+            row.add_prefix(img)
+        img.set_from_icon_name(icon)
         img.add_css_class(css)
-        row.add_prefix(img)
+        img.set_pixel_size(STATUS_ICON_PX)
 
     @staticmethod
     def _set_readonly(row: Adw.ActionRow, key: str, values: dict) -> None:

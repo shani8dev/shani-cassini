@@ -49,14 +49,14 @@ SUMMARY_NOTE = (
 SETUP_NOTE = (
     "Out of the box nothing is configured, so there is nothing to report and "
     "nothing is wrong.\n"
-    "**Find your UPS first** - NUT ships a scanner that needs no guessing from "
+    "Find your UPS first - NUT ships a scanner that needs no guessing from "
     "you:\n"
     "  sudo nut-scanner -U\n"
     "It prints a ready-to-paste section for `/etc/nut/ups.conf`, naming the "
     "driver and port your hardware actually needs. That is why this page does "
     "not offer those two as fields: which protocol a UPS speaks is a fact about "
     "the device, and a wrong value fails as a driver that exits silently.\n"
-    "**A restart is required.** NUT reads these files once, at startup. Saving "
+    "A restart is required. NUT reads these files once, at startup. Saving "
     "changes the file and not the machine until you run "
     "`sudo systemctl restart nut-server.service nut-monitor.service`."
 )
@@ -171,17 +171,45 @@ class UpsTab(Gtk.Box):
                 "the UPS's own low-battery signal. What is set here is the "
                 "shape of the response - how long to wait, what to run, and "
                 "when an unreachable UPS counts as gone.")
-        self._entries: dict[str, Adw.EntryRow] = {}
+        self._entries: dict[str, Gtk.Entry] = {}
+        self._rows: dict[str, Adw.ActionRow] = {}
         self._saves: dict[str, Gtk.Button] = {}
         for key, subtitle, _default in POLICY:
-            row = Adw.EntryRow(title=key, text="")
+            # **The explanation is on the row, not only in a tooltip. Found by
+            # rendering (2026-10-17): seven rows of bare uppercase keys -
+            # `MINSUPPLIES`, `SHUTDOWNCMD`, `POWERDOWNFLAG` - each with an empty
+            # entry, and the one sentence explaining what any of them means
+            # living in a tooltip. Nothing in the capture said what a reader is
+            # being asked to type, and a tooltip is invisible on a touch screen
+            # and to anyone who does not know to hover.
+            #
+            # **An `Adw.ActionRow` with a `Gtk.Entry` suffix, not an
+            # `Adw.EntryRow`.** `Adw.EntryRow` has no subtitle at all -
+            # `set_subtitle` does not exist on it (measured: `dir()` returns
+            # only `get_title`/`set_title` and their `_selectable` twins) - so
+            # the first attempt raised `AttributeError` and the page rendered as
+            # "UPS could not be loaded".
+            #
+            # And **`Gtk.Entry`, not `Adw.Entry`** — there is no `Adw.Entry`
+            # class; the second attempt raised on that too, which is two
+            # AttributeErrors for one change and is why it is written down here.
+            # `Gtk.Entry` carries the same `get_text` / `set_text` /
+            # `set_sensitive` this page already calls on the row, so every call
+            # site below is unchanged.
+            row = Adw.ActionRow(title=key, subtitle=subtitle)
             row.set_tooltip_text(subtitle)
+            entry = Gtk.Entry()
+            entry.set_valign(Gtk.Align.CENTER)
+            entry.set_hexpand(True)
+            entry.set_width_chars(18)
             save = Gtk.Button(label="Save", valign=Gtk.Align.CENTER,
                               css_classes=["suggested-action"])
             save.connect("clicked", self._on_save_clicked, key)
+            row.add_suffix(entry)
             row.add_suffix(save)
             self._edit.add(row)
-            self._entries[key] = row
+            self._entries[key] = entry
+            self._rows[key] = row
             self._saves[key] = save
         self._page.append(self._edit)
 

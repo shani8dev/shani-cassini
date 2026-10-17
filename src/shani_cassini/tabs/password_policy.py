@@ -284,10 +284,79 @@ def _row(title: str, subtitle: str = "") -> Adw.ActionRow:
 
 
 def _warning_row(title: str, subtitle: str = "") -> Adw.ActionRow:
-    """A row about something that is wrong, marked so it cannot read as fine."""
+    """A row about something that is wrong, marked so it cannot read as fine.
+
+    **Two cues, and the glyph came second.** This added the `warning` class and
+    nothing else, and a render showed the row identical to a fine one - because
+    **there was no `.warning` rule anywhere in the app's CSS**. `widgets.py`
+    now defines `.warning` / `.error` / `.ok` (2026-10-17), so the colour
+    finally lands.
+
+    The glyph is here rather than only relying on colour so the severity
+    survives a colour-blind reader, a greyscale screenshot, and every future
+    theme. It is a prefix widget rather than a character in the title, because
+    the title is what a user copies out of a row.
+    """
     row = _row(title, subtitle)
     row.add_css_class("warning")
+    icon = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
+    icon.add_css_class("icon")
+    icon.add_css_class("warning")
+    row.add_prefix(icon)
     return row
+
+
+#: Name on this module's severity glyph, so a re-mark can find and replace it.
+#: `AdwActionRow` has `add_prefix` and **no `remove_prefix`** (measured), so the
+#: icon cannot be taken back off the obvious way - it carries a stable name and
+#: is looked up through the prefix box each time.
+_SEVERITY_ICON_NAME: Final = "pwpolicy-severity"
+
+_OK_ICON: Final = "emblem-ok-symbolic"
+_BAD_ICON: Final = "dialog-warning-symbolic"
+
+
+def _mark_severity(row: Adw.ActionRow, good: bool) -> None:
+    """Mark a row good or bad with a glyph beside it, plus the colour class.
+
+    Colour alone is not the marker: `.ok` / `.warning` are `color:` rules, which
+    a greyscale screenshot and a colour-blind reader both lose. The glyph is
+    what carries the meaning, and the class is what tints it.
+    """
+    for stale in ("ok", "warning", "error"):
+        row.remove_css_class(stale)
+    _remove_severity_icon(row)
+    row.add_css_class("ok" if good else "warning")
+    icon = Gtk.Image.new_from_icon_name(_OK_ICON if good else _BAD_ICON)
+    icon.set_name(_SEVERITY_ICON_NAME)
+    icon.add_css_class("icon")
+    icon.add_css_class("ok" if good else "warning")
+    row.add_prefix(icon)
+
+
+def _remove_severity_icon(row: Adw.ActionRow) -> None:
+    """Take this module's own glyph off a row, if it has one.
+
+    Only the *named* glyph is removed: a page may legitimately add its own
+    prefix icon, and clearing the row's prefixes wholesale would take that too.
+    The lookup descends, because `AdwActionRow`'s prefixes sit behind internal
+    wrappers rather than being direct children.
+    """
+    stack = [row.get_first_child()]
+    while stack:
+        node = stack.pop()
+        while node is not None:
+            if (isinstance(node, Gtk.Image)
+                    and node.get_name() == _SEVERITY_ICON_NAME):
+                parent = node.get_parent()
+                if isinstance(parent, Gtk.Box):
+                    parent.remove(node)
+                return
+            child = node.get_first_child()
+            while child is not None:
+                stack.append(child)
+                child = child.get_next_sibling()
+            node = node.get_next_sibling()
 
 
 def _plain(text: str) -> str:
@@ -695,6 +764,13 @@ class PasswordPolicyTab(Gtk.Box):
 
         self._row_state.set_subtitle(_plain(_state_phrase(payload)))
         self._row_enforced.set_subtitle(_plain(_enforcement_phrase(stacks, scanned)))
+        # **Marked, because this row is the page's finding and read as neutral.**
+        # Found by rendering (2026-10-17): "pam_pwquality.so - Not installed -
+        # no PAM stack could load it even if one named it" came out in the same
+        # grey as every other value, while the Acceleration page marked the
+        # same class of fact with a warning glyph.
+        module = payload.get("module") or {}
+        _mark_severity(self._row_module, good=bool(module.get("present")))
         self._row_module.set_subtitle(_plain(_module_phrase(payload)))
         self._row_settings.set_subtitle(_plain(_settings_row_phrase(conf)))
         self._row_dict.set_subtitle(_plain(_dict_summary_phrase(payload)))

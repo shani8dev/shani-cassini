@@ -153,6 +153,91 @@ def _row(title: str, subtitle: str = "", icon: str | None = None) -> Adw.ActionR
     return r
 
 
+#: `systemctl is-enabled` / `is-active`: the one word on each that is a good
+#: answer. Everything else this page can be handed is a finding, which is why
+#: the mapping is "the good word or nothing" rather than an allow-list that
+#: would have to enumerate every failure mode.
+_DAEMON_OK_WORD: Final = {"enabled": "enabled", "active": "active"}
+
+#: icon name per severity, and the `widgets.py` class that carries the colour.
+_DAEMON_MARKS: Final = {
+    "ok": ("emblem-ok-symbolic", "health-ok"),
+    "bad": ("dialog-warning-symbolic", "health-warn"),
+}
+
+#: Stable name on the severity icon, so a re-mark can find and replace it.
+_SEVERITY_ICON_NAME: Final = "auditd-severity"
+
+
+def _mark_daemon_severity(row: Adw.ActionRow, word: str) -> None:
+    """Mark an auditd row good or bad, from systemd's own word for it.
+
+    **The marking is an icon beside the row plus the page's existing
+    `health-*` class, not a coloured string.** The icon is a prefix widget
+    rather than a character inside the subtitle, because the subtitle is
+    `set_subtitle_selectable(True)` and a user copying `not-found` should get
+    `not-found`.
+    """
+    # **Re-marking replaces rather than appends.** `Adw.ActionRow` has
+    # `add_prefix` but **no `remove_prefix`** (measured: the attribute does not
+    # exist), so a second call cannot take the first icon back off the row the
+    # obvious way. The icon therefore carries a **stable name** and is looked up
+    # through the prefix box each time, so a refresh swaps the one icon instead
+    # of stacking a duplicate — the "each re-read stacked another copy" defect
+    # this repo records for the module-blacklist rebuild.
+    _clear_severity_icon(row)
+    for stale in ("health-ok", "health-warn"):
+        row.remove_css_class(stale)
+
+    # **No empty-word branch, and there was one.** The first version returned
+    # early "a read that produced nothing has not said anything either way" —
+    # and the guard is **unreachable from the only caller**: `_read_daemon`'s
+    # `on_exit` already substitutes `f"exit status {status}"` when the tool
+    # printed nothing, so `word` is never blank here. A test for it had to
+    # bypass the page to reach it, which is the shape this repo removes: defence
+    # implying protection it did not provide. The property it was protecting is
+    # already held upstream, on the one line that decides it.
+    icon_name, css = _DAEMON_MARKS[
+        "ok" if word.strip().lower() in _DAEMON_OK_WORD.values() else "bad"]
+    row.add_css_class(css)
+    image = Gtk.Image.new_from_icon_name(icon_name)
+    image.set_name(_SEVERITY_ICON_NAME)
+    image.add_css_class("icon")
+    row.add_prefix(image)
+
+
+def _clear_severity_icon(row: Adw.ActionRow) -> None:
+    """Take this module's own severity icon off a row, if it has one.
+
+    Only the named icon is touched: a page may legitimately add its own prefix
+    icon (this module's `_row(icon=...)` does), and clearing the row's prefixes
+    wholesale would take that with it.
+    """
+    for node in _walk_row(row):
+        if isinstance(node, Gtk.Image) and node.get_name() == _SEVERITY_ICON_NAME:
+            parent = node.get_parent()
+            if parent is not None and isinstance(parent, Gtk.Box):
+                parent.remove(node)
+            return
+
+
+def _walk_row(widget, out=None):
+    """Walk a row's own children, descending through containers.
+
+    `Adw.ActionRow`'s prefixes sit behind internal wrappers, so a direct
+    `get_first_child()` walk finds a container rather than the icon. This is
+    the same lesson the repo records for `AdwPreferencesGroup.get_first_child()`
+    returning the group's internal box rather than a row.
+    """
+    out = [] if out is None else out
+    child = widget.get_first_child()
+    while child is not None:
+        out.append(child)
+        _walk_row(child, out)
+        child = child.get_next_sibling()
+    return out
+
+
 def _summary(record: dict) -> str:
     """The fields of one record, in the order ausearch wrote them.
 
@@ -264,7 +349,22 @@ class AuditTab(Gtk.Box):
             # The word itself, not the exit status; a tool that said nothing at
             # all still gets a row rather than an empty one.
             word = " ".join(lines).strip() or f"exit status {status}"
-            self._daemon_rows[name].set_subtitle(_esc(word))
+            row = self._daemon_rows[name]
+            row.set_subtitle(_esc(word))
+            # **Severity, found by rendering the page (2026-10-17).** Both rows
+            # read as neutral text: "Enabled at boot: not-found", "Running now:
+            # inactive", in the same dim grey as any other value. On a page whose
+            # whole subject is whether the kernel is recording an audit trail,
+            # **a daemon that is not installed and one that is not running are
+            # the two findings**, and neither was marked as one - a reader
+            # scanning the page sees two populated rows and no problem.
+            #
+            # `systemctl`'s own words, mapped rather than re-guessed, so this
+            # cannot drift from the tool: `enabled` is the only good answer for
+            # `is-enabled`, `active` for `is-active`, and every other word
+            # (`not-found`, `inactive`, `failed`, `masked`) is a finding on a
+            # page that exists to report one.
+            _mark_daemon_severity(row, word)
             self._daemon_state[name] = word
             # An answer arriving after a search already resolved its empty case
             # would leave that verdict standing on evidence that did not exist
