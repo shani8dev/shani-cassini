@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Journal: what the system has logged, across boots.
 
 The Health page shows *this* boot's errors and recent crashes. This page is the

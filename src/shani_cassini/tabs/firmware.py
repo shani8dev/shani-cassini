@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Firmware: what fwupd knows about this machine's hardware, and what LVFS is
 offering it.
 

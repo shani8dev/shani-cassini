@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Persistence: what survives a slot switch on this machine, and what only looks
 like it does.
 

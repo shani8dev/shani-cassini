@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Smartcard (PIV) login: pam_pkcs11's own configuration, read, and the one
 narrow edit that is safe to offer.
 

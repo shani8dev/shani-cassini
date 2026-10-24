@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Virtualization: what libvirt, LXC, LXD and systemd-nspawn are holding.
 
 Shanios ships three different virtualization runtimes and they do not share a

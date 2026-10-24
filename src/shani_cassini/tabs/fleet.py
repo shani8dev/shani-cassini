@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Fleet: this device's enrollment, from the fleet agent itself.
 
 `shani-fleet-agent status` prints "key: value" lines and is shown as they are.

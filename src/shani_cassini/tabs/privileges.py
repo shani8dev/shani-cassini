@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 r"""Privileges: the polkit rules this machine asks a password for.
 
 **This page reports the SYSTEM's authorization rules, and it is not Cassini's

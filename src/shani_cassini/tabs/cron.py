@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Cron: the schedules systemd timers do not cover.
 
 `cron` and systemd timers are two schedulers on this machine, and the Timers

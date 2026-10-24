@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Outbound Mail: whether anything you send will actually leave the machine.
 
 `exim` is in `Packages-Base` of **every** image profile, so every Shanios

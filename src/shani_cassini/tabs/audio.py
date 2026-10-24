@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Audio: the PipeWire graph, which is more than a volume slider.
 
 GNOME Control Center's Sound panel is a volume slider, an output picker and an

@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 r"""IRQ balancing: whether the daemon is running, and where each IRQ is pinned.
 
 **Neither desktop's settings has a panel for this.** GNOME Control Center 46.7

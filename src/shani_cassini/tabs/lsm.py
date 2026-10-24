@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """LSM: which security modules this kernel is actually running, and what the
 audit tools last said about the machine.
 

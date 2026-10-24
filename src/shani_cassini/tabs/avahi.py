@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 r"""Avahi: what this machine announces on the network, and what it can hear.
 
 **Neither desktop has a panel for this.** GNOME Control Center's 28 panels and

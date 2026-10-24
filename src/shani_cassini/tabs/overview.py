@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Overview: this machine at a glance, from `shani-deploy --status`."""
 
 from __future__ import annotations

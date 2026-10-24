@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Fingerprint: fprintd's own answer about this machine's reader and fingers.
 
 Everything here comes from fprintd over D-Bus

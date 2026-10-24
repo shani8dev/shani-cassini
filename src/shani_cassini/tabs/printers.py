@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 r"""Printers: what CUPS can see, and who it is that administers it.
 
 **This page exists because the two desktops disagree.** GNOME Control Center

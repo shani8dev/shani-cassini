@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 r"""Compression: how much of each btrfs filesystem is compressed, and with what.
 
 **`compsize` is its own package, and that is measured rather than assumed.**

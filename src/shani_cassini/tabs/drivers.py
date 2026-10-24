@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Drivers tab for the Shani Cassini.
 
 Ports the detection pattern from enigmars-utils' ``drivers.py``:

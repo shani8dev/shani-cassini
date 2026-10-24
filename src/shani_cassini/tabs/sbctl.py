@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Kernel lockdown, and what sbctl does and does not tell you about it.
 
 **The premise this page had to be corrected against, and the correction is the

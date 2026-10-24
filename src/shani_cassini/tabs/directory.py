@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Directory and identity provider: what SSSD, slapd and nsswitch.conf are.
 
 The three components below answer one question between them - *who is this

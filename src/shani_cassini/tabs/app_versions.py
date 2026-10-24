@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """App Versions: what version of each application is actually installed.
 
 Three package managers ship in every Shanios image - `flatpak`, `snapd` and

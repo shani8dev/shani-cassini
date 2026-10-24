@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """How this machine answers an SSH connection: the handful of sign-in directives
 that live in one drop-in, and what it does and does not promise about them.
 

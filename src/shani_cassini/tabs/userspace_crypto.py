@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Userspace encryption: fscrypt, gocryptfs and ecryptfs.
 
 Three filesystem-encryption systems ship in every Shanios image as hard

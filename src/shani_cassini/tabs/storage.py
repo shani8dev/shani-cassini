@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 # Enrichment 2026-10-24 (matrix binaries: lvm2 — lvs, lvdisplay, pvdisplay,
 # badblocks — read-only, never badblocks -w; thin-provisioning-tools —
 # cache_check/cache_dump. Source-level audit; no privileged load without click.

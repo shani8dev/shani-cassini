@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Memory / State surface — read-only stable facts (matrix surface: memory).
 Honest empty state; no invented data.  No privileged call on load."""
 from gi.repository import Gtk, Adw  # type: ignore

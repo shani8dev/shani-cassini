@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """KVM: whether virtual machines on this machine can use the CPU.
 
 **This page exists because two different faults look identical from

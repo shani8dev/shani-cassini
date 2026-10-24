@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Two-factor tokens: what `oath-toolkit` holds, and whether anything asks for it.
 
 `oath-toolkit` ships in every Shanios image - verified in the built image's

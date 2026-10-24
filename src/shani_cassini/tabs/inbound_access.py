@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Inbound Access: what could let traffic *reach* this machine.
 
 Most home and mobile connections have a dynamic address behind carrier-grade

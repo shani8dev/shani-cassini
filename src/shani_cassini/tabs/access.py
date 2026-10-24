@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Passwordless sudo: the accounts that may use this machine as root without a
 password, edited in the one drop-in ``sudo`` actually reads for them.
 

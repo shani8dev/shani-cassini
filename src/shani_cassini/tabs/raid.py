@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Software RAID: the arrays mdadm is holding, and whether any of them is failing.
 
 `mdadm` ships in every Shanios image, and **neither desktop has a panel for

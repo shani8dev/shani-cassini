@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """The UPS page, now against NUT.
 
 What changed and why: apcupsd had had no upstream release since 3.14.14

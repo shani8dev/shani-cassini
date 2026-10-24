@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Camera: which devices the kernel found, and whether one is a camera.
 
 **Neither desktop's settings has a panel for this.** GNOME Control Center's 28

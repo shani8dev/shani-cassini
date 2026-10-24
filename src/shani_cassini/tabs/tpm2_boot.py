@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """TPM2 boot unlock: the second factor `dracut-tpm2-totp` would show at boot.
 
 **This is the boot-time factor, and Cassini already has a different page for the

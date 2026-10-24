@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Timers and background tasks: what runs on this machine, and when, and who runs it.
 
 A Shanios machine is full of things that happen while nobody is looking: a boot

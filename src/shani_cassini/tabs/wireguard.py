@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """WireGuard: the interfaces on this machine, and whether each one is on.
 
 Reads `/etc/wireguard/*.conf` for what exists, and asks systemd for

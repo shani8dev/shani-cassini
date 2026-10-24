@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Network monitoring reporter — read-only event-source / trigger.
 Surface: trigger (curl / iperf3 / arpsnmp / network-state)."""
 from gi.repository import Gtk, Adw

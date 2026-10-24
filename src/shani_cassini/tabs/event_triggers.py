@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Event / trigger reporter — surface: trigger (matrix).
 Reports D-Bus signals, USB plug events, journal arrival events.
 Read-only, no privileged load."""

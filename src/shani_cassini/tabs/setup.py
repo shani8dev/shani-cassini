@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Setup: whether this machine can be logged into, and what is installed.
 
 **Why this page exists.** Shanios installs no user account at all.

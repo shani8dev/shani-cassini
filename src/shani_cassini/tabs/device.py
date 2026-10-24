@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Device group for System Info - systemd's own answers (hostnamectl
 --json, timedatectl show, systemd-analyze time), no parsing of /proc."""
 

@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Firmware boot entries: what the UEFI itself will boot, and in what order.
 
 `efibootmgr` ships in every Shanios image (`shani-pkgbuilds/shani-core/PKGBUILD`

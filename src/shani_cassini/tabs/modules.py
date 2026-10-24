@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Kernel modules: what the kernel has loaded, with its parameters and
 dependencies.
 

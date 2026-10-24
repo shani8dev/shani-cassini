@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Password Policy: the library that checks a password's strength, and whether
 anything ever asks it to.
 

@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Sharing a directory over NFS: one drop-in of export lines, edited one client at
 a time, with an honest account of what the page cannot tell you.
 

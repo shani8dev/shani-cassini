@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Services: the system services a person can switch on and off.
 
 Straight from systemd: ``systemctl list-unit-files -o json`` (enabled /

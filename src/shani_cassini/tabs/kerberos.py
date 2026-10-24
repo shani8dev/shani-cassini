@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Kerberos: the realm and credential cache this machine's own file holds.
 
 pam-krb5 ships with every Shanios image, and that fact says nothing about

@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Containers: what podman and distrobox say is on this machine, and nothing else.
 
 Shanios images carry podman, and ``distrobox`` is how a Fedora or Arch toolbox is

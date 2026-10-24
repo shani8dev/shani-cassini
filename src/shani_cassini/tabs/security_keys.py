@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Security keys: the two ways a key can sign you in, and what each one can set.
 
 * **FIDO2 / U2F** (``pam_u2f``) is what a current key is built for. Its config is

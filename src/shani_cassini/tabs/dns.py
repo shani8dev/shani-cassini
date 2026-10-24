@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """DNS: which resolver actually answers on this machine.
 
 Four resolver implementations ship in every image - `systemd-resolved`,

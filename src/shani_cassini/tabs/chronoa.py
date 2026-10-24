@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Chronoa: the assistant's state and its main switches.
 
 Read straight from Chronoa's own GSettings schema (org.shani.chronoa) -

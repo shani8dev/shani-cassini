@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Boot & Recovery: which slot you are running from, and what is waiting to be
 rolled back to.
 

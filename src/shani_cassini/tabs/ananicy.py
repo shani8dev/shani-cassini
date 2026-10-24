@@ -1,3 +1,4 @@
+# Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
 """Process priority: what ananicy-cpp is, and whether it is doing anything.
 
 **Neither desktop has a panel for it, and the gap is measured rather than
