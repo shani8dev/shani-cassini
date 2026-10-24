@@ -91,6 +91,7 @@ class InboundAccessTab(Gtk.Box):
         self._page.append(self._why)
 
         self._on = Adw.PreferencesGroup(title="Active", description=ON_NOTE)
+        self._on.set_visible(False)
         self._page.append(self._on)
 
         self._group = Adw.PreferencesGroup(
@@ -99,6 +100,7 @@ class InboundAccessTab(Gtk.Box):
                         "running. Use the switch to enable or disable the "
                         "service: that asks systemd, which authorises it "
                         "through polkit and shows your own password dialog.")
+        self._group.set_visible(False)
         self._page.append(self._group)
         self._rows: list[Adw.ActionRow] = []
         self._unit_for_row: dict[int, str] = {}
@@ -122,11 +124,26 @@ class InboundAccessTab(Gtk.Box):
             names = ", ".join(r["label"] for r in active)
             self._row_state.set_subtitle(f"Active: {names}")
             self._on.set_visible(True)
-        else:
+        elif rows:
             self._row_state.set_subtitle(
                 "No inbound path is active - nothing can reach this machine "
                 "until you turn one on")
             self._on.set_visible(False)
+        else:
+            # Nothing installed is a different answer from "installed and
+            # off": there is nothing here to switch on, and the summary
+            # above must not promise a turn-on that does not exist. Measured
+            # on a development host where none of the shipped mechanisms is
+            # present - the render showed the mechanisms heading over an
+            # empty group beside a subtitle telling the user to turn one on.
+            self._row_state.set_subtitle(
+                "No inbound path is active, and none of the mechanisms this "
+                "page manages is installed, so there is nothing to switch on")
+            self._on.set_visible(False)
+        # The mechanisms group has no other content, so with no rows it is a
+        # dangling heading over an empty group - the same hide-when-empty
+        # rule the pages fixed in this pass follow.
+        self._group.set_visible(bool(rows))
 
         self._clear()
         for r in rows:

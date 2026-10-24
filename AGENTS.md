@@ -496,6 +496,33 @@ image is itself worth a look.
 
 ## Known issues (current state, 2026-10-01)
 
+- **Commit `3166fb7`'s message asserts a verification the code does not perform,
+  and a test count that does not match HEAD. Recorded 2026-10-17 rather than
+  rewritten, because amending a shared commit is not this file's call — but it is
+  the next thing that will mislead someone.**
+
+  Three claims in that message, checked against the tree it introduced:
+
+  | claimed | actual |
+  |---|---|
+  | "the renderer … compares it against a **blank control of the same dimensions**, so a page that lays out to nothing fails" | **no such code exists.** `render_ui.py` has no blank control and compares nothing; `grep -n 'blank' render_ui.py` returns nothing. What catches a blank page is `tools/render_ui_batch.sh`'s `_content_percent` floor, which compares against an absolute `MIN_CONTENT_PCT`, not against a control |
+  | "**3233 passed, 1 failed**" | **3232 passed, 4 skipped, 2 failed** at HEAD, measured with the five subsequent files stashed |
+  | "that one failure, `test_shanios_builds_its_initramfs_with_dracut`, is pre-existing" | true, but it is **not the only one**: `test_app_versions_page.py::test_no_manager_on_path_at_all_still_renders_every_group` also fails at HEAD and also reproduces with every `tabs/` file stashed (it needs a `shani/gui/venv` parent directory that does not exist on this host) |
+
+  The third is the one that matters most: a commit message that names a
+  pre-existing failure and stops there reads as "everything else was clean",
+  and the next session inherits that as settled. This repo's own note says a
+  green signal is the thing lying more often than the code is — and a commit
+  message is a *prose* claim about a run, which is the shape this file has
+  corrected several times before, most recently for the SMB include that
+  validated a file and did nothing.
+
+  The numbers at the time of writing, for comparison with later runs: **HEAD is
+  3232 passed / 4 skipped / 2 failed**; with the ragged-edge work (defects 11 and
+  12, the corrected gate, and the Overview revert) it is **3292 passed / 4
+  skipped / the same 2 failed** — 60 new tests, and nothing that was passing
+  stopped.
+
 - **A render of a page is its first screenful, and the sweep had been calling
   that "the page" — so 97.6% of the Modules page had never been looked at.
   2026-10-17. This is the largest gap in the sweep's own coverage, and it is
@@ -598,7 +625,9 @@ image is itself worth a look.
   `left_ink=287` to `315`, matching the `315` of every row that has an icon.
 
   **Three things the gate got wrong first, each found by running its control —
-  which is the fourth time in this repo that the thing lying was a green test:**
+  which is the fourth time in this repo that the thing lying was a green test.
+  The fourth version replaced all three; the list is kept because the failure
+  mode is the reusable part:**
 
   - **A plain `AdwActionRow` already contains one `GtkImage`** (libadwaita's own
     expand arrow), so "does this row have an image" is true for every row in the
@@ -628,6 +657,62 @@ image is itself worth a look.
   leading columns and one more on every refresh. Same shape as `tabs/audit.py`
   and `tabs/password_policy.py`, and a refresh is idempotent.
 
+- **Defect 12, and the false positive that came with it: the gate was counting
+  the wrong part of the row, so it invented a defect on Overview and missed a
+  real one on Security Keys. Both were settled by measuring a render.**
+
+  Two defects, opposite in direction, from the same mistake:
+
+  | page | what the gate said | what the render said | outcome |
+  |---|---|---|---|
+  | **Overview** | `Device name` / `Running for` are flush, three rows are indented | **all five titles started at x=286-287** — no ragged edge | the "fix" indented two rows to 315 and **created** the defect. Reverted |
+  | **Security Keys** | *(passed)* | `EntryRow`/`SwitchRow`/`ComboRow` flush at **x=14**, `ActionRow`s at **x=42** — in both groups | missed entirely, because the escape from the false positives excluded it |
+
+  The cause is one line of the first gate: it counted **every `GtkImage`
+  anywhere in the row**. On Overview the three rows with a `section` carry a
+  `go-next-symbolic` arrow — a **suffix**, at the right edge, which reserves
+  nothing in front of the title. Counting it as a leading prefix invented a
+  defect. The same count called Remote Access's prefixed rows *more* decorated
+  than the unprefixed ones, because a suffix `Gtk.DropDown` embeds three glyphs
+  of its own.
+
+  **The narrowing that papered over it hid a real defect.** With per-type
+  baselines the false positives fell, but Security Keys still failed, and the
+  escape was "compare only rows of the same type, because an `ActionRow`, a
+  `SwitchRow` and a `ComboRow` are three different widgets". Security Keys mixes
+  all three in one card, which is exactly the case the narrowing removed.
+  Removing it makes **39 pages** fail, so it cannot simply be dropped: a
+  configured `ComboRow` or `EntryRow` does not carry the same internals as a
+  freshly constructed one, so the baselines are unreliable.
+
+  **The fix is positional and needs no baseline at all.** The row's first child
+  is a `Box` whose first child is the **prefix area**, and what is in it is
+  exactly what `add_prefix` put there:
+
+  | row | prefix box |
+  |---|---|
+  | `ActionRow`, nothing added | 0 |
+  | `ActionRow`, one icon / one **empty placeholder** | 1 |
+  | `EntryRow`, nothing added / one icon | 0 / 1 |
+  | **`ComboRow` with a model, nothing added** | **0** — its glyphs are in the suffix |
+  | `SwitchRow`, nothing added | 0 |
+
+  So the gate now compares **across row types**, needs no per-type table, and
+  cannot be fooled by a suffix. Overview passes untouched; Security Keys fails
+  and is fixed — `reserve_leading_column` on `_entries`, `_switch` and the
+  `Mode` `ComboRow`, all three of which accept `add_prefix` (measured, because
+  the natural assumption is that an `EntryRow` cannot take a prefix).
+
+  **The generalisable lesson, and it is about fixes rather than tests: a green
+  gate is not evidence that a defect exists.** Overview's "defect" was reported
+  by a gate, acted on, made the page worse, and stayed green throughout. What
+  caught it was rendering the page before and after and comparing the two
+  crops — and the crop was different, so the change *was* doing something; it
+  was doing the wrong thing. **Every one of the other twelve fixes was then
+  re-checked the same way**: strip that page's `reserve_leading_column` calls and
+  ask the corrected gate. All eight remaining are needed; Overview was the only
+  one the gate had invented.
+
 - **The stack this sweep was verified on is libadwaita 1.9.1, not CI's 1.5.**
   Measured on the host: GTK 4.22.4, libadwaita 1.9.1, PyGObject 3.56.2, Ubuntu
   26.04.1 — so this is the **shipped** side of the 1.5/1.9 split this file keeps
@@ -639,7 +724,7 @@ image is itself worth a look.
   (Secure Boot `Enabled`, Audit `enabled`, Password Policy `installed`) have
   never been rendered on either version.
 
-  Suite **3232 passed, 4 skipped, 2 failed** — both reproduced at HEAD with all
+  Suite **3292 passed, 4 skipped, 2 failed** — both reproduced at HEAD with all
   22 `tabs/` files stashed (`hide_tools` needs a `shani/gui/venv` parent that
   does not exist here; `test_shanios_builds_its_initramfs_with_dracut`). Two
   `tests/test_privileges_page.py` failures in one earlier run and not the next

@@ -209,6 +209,21 @@ class HealthTab(Gtk.Box):
             summary = (f"{bad} problem{'s' * (bad != 1)}" if bad else "No problems") + \
                       (f", {warn} warning{'s' * (warn != 1)}" if warn else "") + f" · {len(checks)} checks in {secs:.0f} s"
         group = Adw.PreferencesGroup(title=title, description=summary)
+
+        # --- a small chart of the result, the way shani-chronoa draws one
+        try:
+            from shani_cassini import charts
+            card, body = charts.card("Pass rate", "object-select-symbolic")
+            total = len(checks)
+            ok = sum(1 for c in checks
+                     if STATUS.get(c.get("status"), ("", ""))[1] == "success")
+            ring = charts.Ring(size=90, width=7)
+            ring.set((ok / total) if total else 0.0, f"{ok}/{total}", "passed")
+            body.append(ring)
+            group.add(card)
+        except Exception as exc:  # pragma: no cover - never break the page
+            logger.debug("charts unavailable: %s", exc)
+
         # The deploy log is the one mode whose order IS the information. Every
         # other mode is a set of findings and wants the worst first; a log wants
         # "what happened most recently", and the tool writes it oldest-first.

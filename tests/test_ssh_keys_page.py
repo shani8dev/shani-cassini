@@ -215,9 +215,10 @@ def test_the_content_lives_under_a_toast_overlay(keys):
     assert overlays[0].get_child() is not None
 
 
-def test_the_page_has_the_three_groups_it_promises(keys):
+def test_the_page_has_the_four_groups_it_promises(keys):
     tab = sk.SshKeysTab()
-    assert [g.get_title() for g in groups(tab)] == ["Status", "Keys", "From a Terminal"], \
+    assert [g.get_title() for g in groups(tab)] == ["Status", "Keys", "From a Terminal",
+                                                    "Authorized keys (chart)"], \
         f"the page's groups are {[g.get_title() for g in groups(tab)]}"
 
 

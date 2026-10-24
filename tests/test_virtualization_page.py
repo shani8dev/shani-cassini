@@ -481,7 +481,7 @@ def test_each_runtime_is_under_its_own_heading(tmp_path, monkeypatch):
     titles = group_titles(tab)
     assert titles == ["Reads", "libvirt / QEMU (virsh)", "LXC containers (lxc-ls)",
                       "LXD instances (lxc list)", "systemd machines (machinectl list)",
-                      "Backing store", "Read-only"], \
+                      "Backing store", "Read-only", "Guests (chart)"], \
         f"the page's groups are {titles}"
 
 

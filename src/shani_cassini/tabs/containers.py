@@ -370,6 +370,9 @@ class ContainersTab(Gtk.Box):
         for group in (self._podman_group, self._boxes_group, self._state_group,
                       self._about_group):
             self._page.append(group)
+        self._chart_group = Adw.PreferencesGroup(title="Containers (chart)")
+        self._page.append(self._chart_group)
+        self._chart_added = []
         self.refresh()
 
     # ----------------------------------------------------------------- widgets
@@ -430,6 +433,9 @@ class ContainersTab(Gtk.Box):
         for group, row in self._added:
             group.remove(row)
         self._added = []
+        for w in self._chart_added:
+            self._chart_group.remove(w)
+        self._chart_added = []
 
     def _add(self, group: Adw.PreferencesGroup, row: Adw.ActionRow) -> None:
         group.add(row)
@@ -549,6 +555,29 @@ class ContainersTab(Gtk.Box):
             return
         for count in PODMAN_COUNTS:
             self._add_count(count)
+        # --- a chart of running vs total
+        try:
+            from shani_cassini import charts
+            running = 0
+            total = 0
+            for count in PODMAN_COUNTS:
+                ans = self._reads.get(count.key)
+                if ans is not None and ans.status == 0:
+                    rows, _ = PARSERS[count.key](ans.lines)
+                    n = len(rows)
+                    total += n
+                    if count.key == RUNNING:
+                        running = n
+            if total:
+                meter = charts.Meter(title="Running", high_is_bad=False)
+                meter.set(running / total, f"{running} of {total}")
+                self._chart_group.add(meter)
+                self._chart_added.append(meter)
+        except Exception as exc:
+            logger.debug("charts unavailable: %s", exc)
+        # A read that answered nothing drew nothing: hide the heading rather
+        # than leave it over an empty group.
+        self._chart_group.set_visible(len(self._chart_added) > 0)
         # The full list if it answered, and otherwise whatever did - never a
         # mixture pretending to be the full list.
         for container in self._rows_for(ALL) or self._rows_for(RUNNING):

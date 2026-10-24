@@ -36,7 +36,7 @@ import logging
 
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
-from shani_cassini import system_status as ss
+from shani_cassini import charts, system_status as ss
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +180,8 @@ class FirmwareTab(Gtk.Box):
         self._added = [(owner, row) for owner, row in self._added
                        if owner is not group]
 
-    def _add(self, group, row: Adw.ActionRow) -> None:
+    def _add(self, group, row: Gtk.Widget) -> None:
+        """Any widget the page owns: rows mostly, the device-count tile too."""
         group.add(row)
         self._added.append((group, row))
 
@@ -192,6 +193,10 @@ class FirmwareTab(Gtk.Box):
         devices = payload["devices"]
         self._row_devices.set_subtitle(
             f"{len(devices)} device{'' if len(devices) == 1 else 's'} known")
+        # --- a chart of the same count, kept as a tracked widget so a refresh
+        # takes it back out again.
+        tile = charts.stat("Devices known", str(len(devices)), "known to fwupd")
+        self._add(self._devices, tile)
         if not devices:
             self._devices.set_description(
                 DEVICES_NOTE + "\nfwupd knows about no devices on this machine.")

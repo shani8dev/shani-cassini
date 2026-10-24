@@ -236,6 +236,13 @@ class JournalTab(Gtk.Box):
         for group in (self._summary, self._boots_group, self._search,
                       self._messages, guide):
             page.append(group)
+        # Hidden until a search has entries to count: before one, the group
+        # would be a heading over nothing, and "no chart" is not a finding the
+        # page has made.
+        self._chart_group = Adw.PreferencesGroup(title="Entries by unit (chart)",
+                                                 visible=False)
+        page.append(self._chart_group)
+        self._chart_added = []
 
         self._on_query_changed(self._entry)
         self._load_usage()
@@ -386,3 +393,26 @@ class JournalTab(Gtk.Box):
         for entry in entries:
             title, subtitle = entry_line(entry)
             self._add(self._messages, _row(title, subtitle))
+
+        # --- a chart of the same entries
+        try:
+            from collections import Counter
+            from shani_cassini import charts
+            for w in self._chart_added:
+                self._chart_group.remove(w)
+            self._chart_added = []
+            counts = Counter()
+            for entry in entries:
+                title, _ = entry_line(entry)
+                counts[title.split()[0] if title else "?"] += 1
+            rows = counts.most_common(8)
+            if rows:
+                hb = charts.HBars()
+                hb.set(rows)
+                self._chart_group.add(hb)
+                self._chart_added.append(hb)
+                self._chart_group.set_visible(True)
+            else:
+                self._chart_group.set_visible(False)
+        except Exception as exc:
+            logger.debug("charts unavailable: %s", exc)

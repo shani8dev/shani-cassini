@@ -134,11 +134,16 @@ class WireGuardTab(Gtk.Box):
 
         ifaces = valid_ifaces()
         if not ifaces:
+            # The subtitle is Pango markup, so the literal <name> a CLI help
+            # text would carry has to be escaped: unescaped, `<name>` parses
+            # as an unknown element and the row's label is where the markup
+            # error lands - measured as a blank subtitle in the slot render.
             row = Adw.ActionRow(
                 title="No interfaces configured",
-                subtitle=f"wg-quick reads {CONF_DIR}/<name>.conf; there are "
-                         "none yet. This page will not create one - `wg-quick "
-                         "genkey` and a config file are the tools' own domain.")
+                subtitle=GLib.markup_escape_text(
+                    f"wg-quick reads {CONF_DIR}/<name>.conf; there are "
+                    "none yet. This page will not create one - `wg-quick "
+                    "genkey` and a config file are the tools' own domain.", -1))
             self._group.add(row)
             self._rows.append(row)
             return False

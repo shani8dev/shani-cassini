@@ -152,15 +152,17 @@ def _fake_sys(tmp_path, monkeypatch, *, cpuinfo=None, meminfo=None, thermal=None
         if body is not None:
             path.write_text(body)
         monkeypatch.setattr(ss, const, str(path))
-    base = root / "BAT0"
+    root_base = root / "BAT0"
     if battery is not None:
-        base.mkdir()
-        (base / "capacity").write_text(battery["capacity"])
-        (base / "status").write_text(battery["status"])
-    # Always repointed, even when there is no battery to write: this host has a
-    # real one, and a fake that falls through to /sys answers with this
-    # machine's 98% rather than the fixture's, which is worse than no fake.
-    monkeypatch.setattr(ss, "POWER_SUPPLY", str(base))
+        root_base.mkdir()
+    # The reader scans the power-supply class instead of assuming BAT0, so the
+    # fixture repoints the class root: this host HAS a BAT0, and a fake that
+    # falls through to /sys answers with this machine's real charge rather
+    # than the fixture's, which is worse than no fake.
+    monkeypatch.setattr(ss, "POWER_SUPPLY_CLASS", str(root))
+    if battery is not None:
+        (root_base / "capacity").write_text(battery["capacity"])
+        (root_base / "status").write_text(battery["status"])
     # Repointed for the same reason as the battery above: this host has 7 real
     # hwmon chips, so a fall-through answers with this machine's temperatures.
     monkeypatch.setattr(ss, "HWMON_ROOT", str(root / "hwmon"))
@@ -226,6 +228,73 @@ def test_a_hardware_source_that_is_absent_falls_back_on_its_own_row_only(
     assert out["hw-ram"] == "1024 MB (512 MB used)"
     assert out["hw-gpu"] == "Unknown"
     assert out["hw-bluetooth"] == "○ Inactive"
+
+
+def test_a_battery_numbered_other_than_bat0_is_read_not_reported_missing(
+        tmp_path, monkeypatch):
+    """Firmware numbering makes BAT1 the only battery on some machines.
+
+    The reader used to answer ''/sys/class/power_supply/BAT0'' literally, so
+    those machines read N/A - a false "cannot be taken" for a battery the
+    kernel publishes, and one upower (what the desktop battery indicator and
+    the chronoa sense both use) does read. The scan is what fixes it: the
+    same fixture as above, with the pack renumbered.
+    """
+    from shani_cassini import system_status as ss
+    _fake_sys(
+        tmp_path, monkeypatch,
+        cpuinfo="model name\t: Fake CPU\nprocessor\t: 0\n",
+        meminfo="MemTotal: 1048576 kB\n",
+        thermal="40000\n",
+        battery={"capacity": "61\n", "status": "Charging\n"},
+        lspci="",
+        bluetooth="",
+    )
+    # Rebuild the fixture's pack as BAT1: the data above was written at BAT0.
+    bat0 = tmp_path / "sys" / "BAT0"
+    bat1 = bat0.with_name("BAT1")
+    bat1.mkdir()
+    (bat1 / "capacity").write_text("61\n")
+    (bat1 / "status").write_text("Charging\n")
+    shutil.rmtree(bat0)
+    out = {}
+    ss.hardware_card(lambda r: out.update(r))
+    assert spin(lambda: len(out) == 8), out
+    assert out["hw-battery"] == "61% (Charging)"
+
+
+def test_a_bat_entry_without_a_capacity_is_stepped_over(tmp_path, monkeypatch):
+    """A class entry that is not a real pack must not become a battery row.
+
+    /sys/class/power_supply can list names that start with BAT but publish no
+    capacity (firmware quirks); reading such an entry answers "" with
+    _read_text, and the row must not render as "N/A" or "% ()" while a
+    readable pack sits beside it.
+    """
+    from shani_cassini import system_status as ss
+    _fake_sys(
+        tmp_path, monkeypatch,
+        cpuinfo="model name\t: Fake CPU\nprocessor\t: 0\n",
+        meminfo="MemTotal: 1048576 kB\n",
+        thermal="40000\n",
+        battery={"capacity": "42\n", "status": "Discharging\n"},
+        lspci="",
+        bluetooth="",
+    )
+    sysroot = tmp_path / "sys"
+    # sorted() puts BAT0 ahead of BAT1, so the unreadable entry is genuinely
+    # stepped over rather than merely never reached.
+    decoy = sysroot / "BAT0"
+    real = sysroot / "BAT1"
+    real.mkdir()
+    (decoy / "capacity").unlink()
+    (decoy / "status").unlink()
+    (real / "capacity").write_text("42\n")
+    (real / "status").write_text("Discharging\n")
+    out = {}
+    ss.hardware_card(lambda r: out.update(r))
+    assert spin(lambda: len(out) == 8), out
+    assert out["hw-battery"] == "42% (Discharging)"
 
 
 def test_one_unreadable_source_does_not_blank_the_whole_hardware_card(

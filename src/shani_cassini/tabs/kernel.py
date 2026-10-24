@@ -92,6 +92,12 @@ class KernelTab(Gtk.Box):
         card.append(grid)
         self._add_info_row(grid, 0, "Module Count:", "", "k-module-count")
         self._add_info_row(grid, 1, "Sample Modules:", "", "k-module-sample")
+        try:
+            from shani_cassini import charts
+            self._mod_stat = charts.stat("Loaded modules", "…", "from /proc/modules")
+            card.append(self._mod_stat)
+        except Exception:
+            self._mod_stat = None
         return card
 
     def _update_data(self) -> None:
@@ -127,6 +133,11 @@ class KernelTab(Gtk.Box):
         count, sample = _modules_info()
         self._update_label("k-module-count", str(count))
         self._update_label("k-module-sample", sample or "n/a")
+        if getattr(self, "_mod_stat", None) is not None:
+            try:
+                self._mod_stat.value_label.set_text(str(count))
+            except Exception:
+                pass
 
     def _add_info_row(
         self,

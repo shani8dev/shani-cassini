@@ -68,6 +68,7 @@ that starts a timer of its own.
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Final
 
@@ -75,6 +76,8 @@ from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
 from shani_cassini.widgets import find_named
+
+logger = logging.getLogger(__name__)
 
 SYSTEMCTL: Final = "systemctl"
 CRONTAB: Final = "crontab"
@@ -305,6 +308,7 @@ class TimersTab(Gtk.Box):
         # The rows this page added to each group, so a refill can take exactly
         # those back out - see _clear.
         self._added: list[tuple[Adw.PreferencesGroup, Adw.ActionRow]] = []
+        self._chart_added: list = []
         # The rows that are built once and never refilled, because nothing in
         # them is read: the one carrying the Refresh button.
         self._permanent: list[Adw.ActionRow] = []
@@ -363,6 +367,9 @@ class TimersTab(Gtk.Box):
         for group, row in self._added:
             group.remove(row)
         self._added = []
+        for w in self._chart_added:
+            self._timers_group.remove(w)
+        self._chart_added = []
 
     def _add(self, group: Adw.PreferencesGroup, row: Adw.ActionRow) -> None:
         group.add(row)
@@ -501,6 +508,14 @@ class TimersTab(Gtk.Box):
         now = self._now()
         for timer in self._ordered():
             self._add(self._timers_group, self._timer_row(timer, now))
+        # --- a chart of the same inventory
+        try:
+            from shani_cassini import charts
+            tile = charts.stat("Timers", str(len(self._timers)), "systemd timers on this machine")
+            self._timers_group.add(tile)
+            self._chart_added.append(tile)
+        except Exception as exc:
+            logger.debug("charts unavailable: %s", exc)
 
     def _ordered(self) -> list[dict]:
         """Soonest first, the order systemd itself lists timers in, so the row at

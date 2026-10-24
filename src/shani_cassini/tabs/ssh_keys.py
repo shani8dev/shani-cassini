@@ -536,6 +536,11 @@ class SshKeysTab(Gtk.Box):
         self._terminal_group = self._terminal_group_new()
         for group in (self._status_group, self._keys_group, self._terminal_group):
             self._page.append(group)
+        # --- a chart of the same count, kept out of the three groups above so
+        # the page's promised shape is untouched.
+        self._chart_group = Adw.PreferencesGroup(title="Authorized keys (chart)")
+        self._page.append(self._chart_group)
+        self._chart: Gtk.Widget | None = None
         self.refresh()
 
     # ---------------------------------------------------------------- building
@@ -598,6 +603,12 @@ class SshKeysTab(Gtk.Box):
         for group, row in self._added:
             group.remove(row)
         self._added = []
+        if self._chart is not None:
+            self._chart_group.remove(self._chart)
+        self._chart = None
+        # Cleared along with it: a refresh that then fails to draw the tile
+        # must leave no heading over an empty group.
+        self._chart_group.set_visible(False)
         self._key_rows = []
         self._row_fingerprints = None
 
@@ -658,6 +669,19 @@ class SshKeysTab(Gtk.Box):
             "Keys", f"{count} key{'s' if count != 1 else ''}{left}" if count
             else f"No keys yet{left}",
             *STATE_ICONS["ok" if count else "inactive"])))
+
+        # --- a chart of the same count, straight from the file we just read.
+        try:
+            from shani_cassini import charts
+            tile = charts.stat("Authorized keys", str(count),
+                               "sshd reads ~/.ssh/authorized_keys")
+            self._chart_group.add(tile)
+            self._chart = tile
+        except Exception as exc:
+            logger.debug("charts unavailable: %s", exc)
+        # A read that failed (no keys file, ssh-keygen absent) drew nothing:
+        # hide the heading rather than leave it over an empty group.
+        self._chart_group.set_visible(self._chart is not None)
 
     # ------------------------------------------------------------- 2. the keys
     def _render_keys(self, entries: list[KeyEntry], unreadable: list[int],

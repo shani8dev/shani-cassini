@@ -843,6 +843,19 @@ class BtrfsTab(Gtk.Box):
             self._add(self._df_group, _selectable(_row(
                 f"{space['kind']}, {space['profile']}",
                 _esc(f"total {space['total']}, used {space['used']}"), *_ICON_OK)))
+        # --- a chart of the same allocation
+        try:
+            from shani_cassini import charts
+            for space in spaces:
+                total = charts.size_bytes(space.get("total", ""))
+                used = charts.size_bytes(space.get("used", ""))
+                if total > 0:
+                    meter = charts.Meter(title=f"{space['kind']} used", high_is_bad=True)
+                    meter.set(used / total, f"{space['used']} of {space['total']}")
+                    self._df_group.add(meter)
+                    self._chart_added.append((self._df_group, meter))
+        except Exception as exc:
+            logger.debug("charts unavailable: %s", exc)
 
     def _render_scrub(self) -> None:
         if not self._answered("scrub", SCRUB_ROW, self._scrub_group):

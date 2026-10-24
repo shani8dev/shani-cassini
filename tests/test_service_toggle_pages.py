@@ -545,3 +545,82 @@ def test_the_unit_name_a_switch_would_enable_is_a_constant(name, unit):
 
 import tempfile  # noqa: E402
 from pathlib import Path  # noqa: E402
+
+
+# --- the empty-mechanisms branch (found by the whole-page render) --------------
+
+def _inbound_groups(tab) -> dict[str, bool]:
+    """Every Adw.PreferencesGroup on the built page, read off the tree with its
+    visibility - the screen, not the attribute."""
+    import gi
+
+    gi.require_version("Adw", "1")
+    from gi.repository import Adw  # noqa: F401
+
+    found: dict[str, bool] = {}
+    stack = [tab._page]
+    while stack:
+        w = stack.pop()
+        if isinstance(w, Adw.PreferencesGroup):
+            found[w.get_property("title")] = w.get_visible()
+        child = w.get_first_child()
+        while child is not None:
+            stack.append(child)
+            child = child.get_next_sibling()
+    return found
+
+
+def _mechanism_row(label: str, installed: bool, service: str | None) -> dict:
+    return {"label": label, "installed": installed,
+            "unit": "sshd.service", "config": "", "config_present": False,
+            "effect": "ssh sign-ins", "service": service}
+
+
+def test_no_mechanism_installed_hides_the_group_and_says_what_it_knows():
+    """A machine with none of the six installed is not the 'installed and off'
+    state the old else-branch described: there is nothing to switch on, and the
+    'Installed mechanisms' heading rendered over an empty group beside prose
+    telling the user to turn one on. Measured on a development host - the
+    whole-page capture showed the dangling heading, and the group must not
+    outlive its own rows."""
+    tab = _tab("inbound_access").InboundAccessTab()
+    tab._on_state({"rows": [_mechanism_row("OpenSSH server", False, "inactive")],
+                   "inbound": 0, "errors": []}, "")
+
+    groups = _inbound_groups(tab)
+    assert "Installed mechanisms" in groups, groups
+    assert groups["Installed mechanisms"] is False, groups
+    assert "turn one on" not in tab._row_state.get_subtitle(), \
+        tab._row_state.get_subtitle()
+    assert "installed" in tab._row_state.get_subtitle(), \
+        tab._row_state.get_subtitle()
+
+
+def test_installed_mechanisms_still_show_their_group_and_rows():
+    """The control: a machine with an installed mechanism renders the group,
+    its row, and the original off-state wording - so the hiding above cannot
+    simply mean 'never show anything'."""
+    tab = _tab("inbound_access").InboundAccessTab()
+    tab._on_state({"rows": [_mechanism_row("OpenSSH server", True, "inactive")],
+                   "inbound": 0, "errors": []}, "")
+
+    groups = _inbound_groups(tab)
+    assert groups["Installed mechanisms"] is True, groups
+    assert groups["Active"] is False, groups
+    assert tab._row_state.get_subtitle() == (
+        "No inbound path is active - nothing can reach this machine "
+        "until you turn one on"), tab._row_state.get_subtitle()
+    assert len(tab._rows) == 1, tab._rows
+
+
+def test_an_active_mechanism_shows_the_active_group():
+    """The second control: 'Active' gets its own group, named from the state
+    the reader gathered."""
+    tab = _tab("inbound_access").InboundAccessTab()
+    tab._on_state({"rows": [_mechanism_row("OpenSSH server", True, "active")],
+                   "inbound": 1, "errors": []}, "")
+
+    groups = _inbound_groups(tab)
+    assert groups["Active"] is True, groups
+    assert "OpenSSH server" in tab._row_state.get_subtitle(), \
+        tab._row_state.get_subtitle()

@@ -48,6 +48,9 @@ class ServicesTab(Gtk.Box):
         page.append(self._spinner)
         page.append(self._running)
         page.append(self._stopped)
+        self._chart_group = Adw.PreferencesGroup(title="Running vs stopped (chart)")
+        page.append(self._chart_group)
+        self._chart_added = []
         self.refresh()
 
     # ----------------------------------------------------------------- data
@@ -75,6 +78,9 @@ class ServicesTab(Gtk.Box):
         for row, _ in self._rows:
             row.get_parent() and row.get_ancestor(Adw.PreferencesGroup).remove(row)
         self._rows.clear()
+        for w in self._chart_added:
+            self._chart_group.remove(w)
+        self._chart_added = []
         n_run = n_stop = 0
         for name, f in sorted(self._files.items()):
             if f.get("state") not in TOGGLEABLE or "@" in name:
@@ -100,6 +106,19 @@ class ServicesTab(Gtk.Box):
             n_stop += not active
         self._running.set_title(f"Running ({n_run})")
         self._stopped.set_title(f"Not Running ({n_stop})")
+        try:
+            from shani_cassini import charts
+            total = n_run + n_stop
+            if total:
+                meter = charts.Meter(title="Running", high_is_bad=False)
+                meter.set(n_run / total, f"{n_run} of {total}")
+                self._chart_group.add(meter)
+                self._chart_added.append(meter)
+        except Exception as exc:
+            logger.debug("charts unavailable: %s", exc)
+        # No units read, no chart: hide the heading rather than leave it over
+        # an empty group.
+        self._chart_group.set_visible(len(self._chart_added) > 0)
         self._filter()
 
     def _filter(self) -> None:

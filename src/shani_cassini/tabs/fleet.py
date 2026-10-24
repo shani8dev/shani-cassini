@@ -204,6 +204,9 @@ class FleetTab(Gtk.Box):
         self._status = Adw.PreferencesGroup(title="Status", visible=False)
         page.append(self._status)
         self._build_diagnostics()
+        self._chart_group = Adw.PreferencesGroup(title="Health (chart)", visible=False)
+        page.append(self._chart_group)
+        self._chart_added = []
         self._render_membership()
 
     # ------------------------------------------------------- health and drift
@@ -297,6 +300,10 @@ class FleetTab(Gtk.Box):
             self._findings.remove(row)
         self._finding_rows = []
         self._findings.set_visible(False)
+        for w in self._chart_added:
+            self._chart_group.remove(w)
+        self._chart_added = []
+        self._chart_group.set_visible(False)
         self._findings_from = None
 
     def _render_diagnostics(self) -> None:
@@ -312,6 +319,20 @@ class FleetTab(Gtk.Box):
         self._row_health.set_subtitle(self._health_note())
         self._row_drift.set_subtitle(self._drift_note())
         self._render_findings()
+        # --- a chart of the last health answer
+        try:
+            from shani_cassini import charts
+            result = self._health
+            if isinstance(result, dict) and result.get("ok"):
+                status = str(result.get("status") or "").lower()
+                frac = 1.0 if status in ("ok", "healthy", "pass") else (0.5 if status in ("warning", "warn") else 0.0)
+                ring = charts.Ring(size=80, width=7)
+                ring.set(frac, status or "ok", "health")
+                self._chart_group.add(ring)
+                self._chart_added.append(ring)
+                self._chart_group.set_visible(True)
+        except Exception as exc:
+            logger.debug("charts unavailable: %s", exc)
 
     def _health_note(self) -> str:
         result = self._health

@@ -2,8 +2,10 @@
 
 * ``shani-deploy --status [--check] --json`` - slots, version, channel,
   remote stable/latest, update_available. Read-only, no root.
-* ``shani-health --verify --json`` - {"timestamp", "checks": [{section,
-  key, status, message}]}. Needs root: run through pkexec, on request.
+* ``shani-health --verify --json`` - {"ok", "errors", "checks": [{name,
+  status: pass|warn|fail, message}]}. Needs root: run through pkexec, on
+  request. (The {timestamp, checks: [{section, key, ...}]} document is the
+  REPORT modes' shape - see ``health_report`` below - not verify's.)
 * ``shani-deploy`` / ``--rollback`` / ``--set-channel X`` - through pkexec,
   output streamed line by line.
 * ``net.reactivated.fprint`` on the system bus - the fingerprint reader, the
@@ -25,6 +27,7 @@ import os
 import pwd
 import re
 import shutil
+from pathlib import Path
 from typing import Callable, Final, Optional
 
 from gi.repository import Gio, GLib  # type: ignore
@@ -950,7 +953,7 @@ def hostnamectl(done) -> None:
 PROC_CPUINFO = "/proc/cpuinfo"
 PROC_MEMINFO = "/proc/meminfo"
 THERMAL_ZONE = "/sys/class/thermal/thermal_zone0/temp"
-POWER_SUPPLY = "/sys/class/power_supply/BAT0"
+POWER_SUPPLY_CLASS = "/sys/class/power_supply"
 HWMON_ROOT = "/sys/class/hwmon"
 
 
@@ -985,14 +988,23 @@ def _ram() -> str:
 
 
 def _battery() -> str:
-    # _read_text answers "" for a file it could not open, so an absent BAT0
-    # would otherwise render as "% ()" - a battery row that looks answered.
+    # A battery shows up here as BAT0 on this host, but firmware numbering
+    # makes BAT1 (or higher) the only battery on other machines, and a rig
+    # with two packs already made a BAT0-fallback row read N/A while upower
+    # (which asks the class directory rather than one name) answered. So the
+    # reader scans the class, like upower does, and takes the first pack
+    # with a readable capacity instead of assuming one name.
+    # _read_text answers "" for a file it could not open, so an unreadable
+    # BAT* entry is stepped over rather than rendered as "% ()" - a battery
+    # row that looks answered.
     # Raising is what lets the caller's fallback say N/A instead.
-    capacity = _read_text(POWER_SUPPLY + "/capacity").strip()
-    status = _read_text(POWER_SUPPLY + "/status").strip()
-    if not capacity:
-        raise OSError(f"no battery at {POWER_SUPPLY}")
-    return f"{capacity}% ({status})" if status else f"{capacity}%"
+    for supply in sorted(Path(POWER_SUPPLY_CLASS).glob("BAT*")):
+        capacity = _read_text(str(supply / "capacity")).strip()
+        if not capacity:
+            continue
+        status = _read_text(str(supply / "status")).strip()
+        return f"{capacity}% ({status})" if status else f"{capacity}%"
+    raise OSError(f"no readable battery under {POWER_SUPPLY_CLASS}")
 
 
 def _parse_bluetooth(out: str) -> str:

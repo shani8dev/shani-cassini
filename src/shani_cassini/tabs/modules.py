@@ -281,6 +281,11 @@ class ModulesTab(Gtk.Box):
         self.append(self._blacklist)
         self.append(guide)
 
+        self._chart_group = Adw.PreferencesGroup(title="Loaded modules (chart)",
+                                                description="The heaviest modules on this machine.")
+        self.append(self._chart_group)
+        self._chart_added = []
+
         self.load()
         self.load_blacklist()
 
@@ -480,6 +485,24 @@ class ModulesTab(Gtk.Box):
                 self._top.add(child)
                 children.append(child)
             self._groups.append((row, children, module["name"].lower()))
+
+        # --- a chart of the heaviest modules
+        try:
+            from shani_cassini import charts
+            for w in self._chart_added:
+                self._chart_group.remove(w)
+            self._chart_added = []
+            rows = sorted(((m["name"], float(m.get("size") or 0)) for m in (modules or [])),
+                          key=lambda r: -r[1])[:8]
+            if rows:
+                hb = charts.HBars(number=charts.format_bytes)
+                hb.set(rows)
+                self._chart_group.add(hb)
+                self._chart_added.append(hb)
+        except Exception as exc:
+            logger.debug("charts unavailable: %s", exc)
+        # No module sizes read, no chart: hide the heading.
+        self._chart_group.set_visible(len(self._chart_added) > 0)
 
     def _filter(self, entry) -> None:
         """Fold to the modules whose name contains what was typed.

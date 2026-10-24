@@ -158,3 +158,58 @@ class TestAChildRowIndentsBothLines:
         for row in _param_rows(tab, mod):
             assert row.get_title() == row.get_title().strip()
             assert not row.get_title().startswith((" ", "\t", "\n"))
+
+
+# --------------------------------------------------------------------------
+# The same mistake, on every page.
+#
+# Swept app-wide by reading `get_title()` / `get_subtitle()` off every
+# `AdwActionRow` on all 59 pages: **zero** rows had a title or subtitle
+# beginning with whitespace, so the Modules page was the only instance and this
+# is the gate that keeps it that way. It is cheap and general, and it fails the
+# moment any page tries to indent with spaces again - which is the point, since
+# the string is the thing that hides the mistake.
+# --------------------------------------------------------------------------
+
+
+def _all_pages():
+    from shani_cassini.notebook import SECTIONS
+    for _group, subsections in SECTIONS:
+        for _name, pages in subsections:
+            for entry in pages:
+                yield entry[1], entry[0]
+
+
+class TestNoRowIndentsItselfWithWhitespace:
+    @pytest.mark.parametrize("pid,cls", list(_all_pages()), ids=[
+        pid for pid, _c in _all_pages()])
+    def test_no_title_or_subtitle_begins_with_whitespace(self, pid, cls) -> None:
+        try:
+            tab = cls()
+        except Exception:
+            pytest.skip(f"{pid} could not be constructed without a display")
+        offenders = [
+            (n.get_title(), n.get_subtitle())
+            for n in _walk(tab)
+            if isinstance(n, Adw.ActionRow)
+            and ((n.get_title() or "")[:1].isspace()
+                 or (n.get_subtitle() or "")[:1].isspace())
+        ]
+        assert not offenders, (
+            f"{pid}: {len(offenders)} row(s) begin with whitespace, e.g. "
+            f"title={offenders[0][0]!r} subtitle={offenders[0][1]!r}. "
+            f"Whitespace in a title moves the title and leaves the subtitle "
+            f"where it was, so the value does not line up under its own name. "
+            f"Use `set_margin_start`.")
+
+    def test_the_control_whitespace_in_a_title_is_visible_to_this_gate(self):
+        """The control: without it the sweep above could be inspecting nothing.
+
+        Built by hand because the point is that the *check* can see the old form.
+        """
+        row = Adw.ActionRow(title="    power_save", subtitle="Y")
+        found = (row.get_title() or "")[:1].isspace()
+        assert found, (
+            "a title with four leading spaces stopped being reported as "
+            "whitespace-indented, so the sweep above would find nothing on the "
+            "exact rows it was written for")

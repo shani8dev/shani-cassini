@@ -398,6 +398,9 @@ class VirtualizationTab(Gtk.Box):
                       self._lxd_group, self._nspawn_group, self._store_group,
                       self._ro_group):
             self._page.append(group)
+        self._chart_group = Adw.PreferencesGroup(title="Guests (chart)")
+        self._page.append(self._chart_group)
+        self._chart_added = []
         self.refresh()
 
     # ----------------------------------------------------------------- widgets
@@ -452,6 +455,9 @@ class VirtualizationTab(Gtk.Box):
         for group, row in self._added:
             group.remove(row)
         self._added = []
+        for w in self._chart_added:
+            self._chart_group.remove(w)
+        self._chart_added = []
 
     def _add(self, group: Adw.PreferencesGroup, row: Adw.ActionRow) -> None:
         group.add(row)
@@ -502,6 +508,27 @@ class VirtualizationTab(Gtk.Box):
                             (self._lxd_group, (INSTANCES,)),
                             (self._nspawn_group, (MACHINES,))):
             self._render_group(group, keys)
+        # --- a chart of guest counts
+        try:
+            from shani_cassini import charts
+            total = 0
+            for key in (DOMAINS, CONTAINERS, INSTANCES, MACHINES):
+                ans = self._reads.get(key)
+                if ans is not None and ans.get("status") == 0:
+                    rows, _ = PARSERS[key](ans["lines"])
+                    total += len(rows)
+            if total:
+                meter = charts.Meter(title="Guests found", high_is_bad=False)
+                meter.set(min(total / 20.0, 1.0), f"{total}")
+                self._chart_group.add(meter)
+                self._chart_added.append(meter)
+        except Exception as exc:
+            logger.debug("charts unavailable: %s", exc)
+        # A titled group with nothing under it is dangling chrome: with every
+        # guest tool absent the count is zero-UNKNOWN, not zero-guests, and
+        # the page above the chart already says each absence honestly - so the
+        # heading only shows when it has a meter to head.
+        self._chart_group.set_visible(len(self._chart_added) > 0)
         self._btn_refresh.set_sensitive(self._pending == 0)
 
     def _render_group(self, group: Adw.PreferencesGroup,

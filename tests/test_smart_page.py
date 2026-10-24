@@ -646,3 +646,67 @@ def test_a_disk_name_from_the_tool_is_escaped_not_markup(tmp_path, monkeypatch) 
     assert any("<b>bold</b>" in text for text in shown), shown
     assert any("&lt;b&gt;" in markup for _text, markup in labels(tab)), \
         "the brackets reached the label as markup, not as text"
+
+
+# --- the verdict chart --------------------------------------------------------
+
+def _meter_texts(tab) -> list[tuple[str, str]]:
+    """(title, value) of every chart Meter on the page, off the built tree."""
+    import shani_cassini.charts as ch
+
+    found: list[tuple[str, str]] = []
+    stack = [tab]
+    while stack:
+        w = stack.pop()
+        if isinstance(w, ch.Meter):
+            found.append((w.title.get_text(), w.value.get_text()))
+        c = w.get_first_child()
+        while c is not None:
+            stack.append(c)
+            c = c.get_next_sibling()
+    return found
+
+
+def test_the_verdict_chart_counts_only_disks_that_answered(tmp_path, monkeypatch) -> None:
+    """Two disks were scanned; one's pkexec read was refused. The refused disk
+    is not a disk failing SMART, so the fraction is over the disks whose
+    verdict actually arrived. `X of 2` there would read as the disk having
+    failed, which the verdict rows above plainly do not claim."""
+    two_scan = HDD_SCAN + "\n/dev/sdx -d sat # /dev/sdx [SAT], ATA device"
+    refused_pkexec = ('case "$*" in */dev/sdx*) '
+                      'echo "Error executing command as another user" >&2; '
+                      'exit 127 ;; *) exec "$@" ;; esac\n')
+    fake_bin(tmp_path, monkeypatch, scan=two_scan, health=HDD, detail=HDD,
+             pkexec=refused_pkexec)
+    tab = sp.SmartTab()
+    # Wait for BOTH reads to settle: the chart is drawn by the last `_render`
+    # a `done` callback triggers, so a meter read before that is a page half
+    # through answering, not an absence.
+    assert spin(lambda: _meter_texts(tab)), rows(tab)
+    assert spin(lambda: any("/dev/sdx" in t for t, _s in labels(tab))), rows(tab)
+    meters = _meter_texts(tab)
+    assert any(title == "Disks passing SMART" for title, _v in meters), meters
+    value = next(v for title, v in meters if title == "Disks passing SMART")
+    assert value == "1 of 1 with a verdict", value
+
+
+def test_a_refused_verdict_draws_no_chart_at_all(tmp_path, monkeypatch) -> None:
+    """A single disk whose -H read was refused answers nothing about SMART, and
+    the chart must say nothing rather than read "0 of 1 passing" for it."""
+    fake_bin(tmp_path, monkeypatch, scan=HDD_SCAN, health=HDD, detail=HDD,
+             pkexec='echo "Error executing command as another user" >&2\nexit 127\n')
+    tab = sp.SmartTab()
+    assert spin(lambda: "Authorization was cancelled" in all_text(tab)), rows(tab)
+    assert spin(lambda: "Disks passing SMART" not in all_text(tab)), all_text(tab)
+
+
+def test_a_failing_disk_sits_in_the_fraction_it_earned(tmp_path, monkeypatch) -> None:
+    """The denominator is the disks that answered - so the one real failure the
+    suite's FAILED capture carries must read `0 of 1`, not be swallowed."""
+    fake_bin(tmp_path, monkeypatch, scan=HDD_SCAN, health=FAILED, detail=HDD,
+             health_rc=4)
+    tab = sp.SmartTab()
+    assert spin(lambda: find(tab, "FAILED") is not None), rows(tab)
+    meters = _meter_texts(tab)
+    assert any(title == "Disks passing SMART" and v == "0 of 1 with a verdict"
+               for title, v in meters), meters

@@ -282,6 +282,7 @@ class AuditTab(Gtk.Box):
         # removing that is refused by GTK and does nothing, so a refill walking
         # children would accumulate rows instead - 45 became 181 over five.
         self._added: list[Adw.ActionRow] = []
+        self._chart_added: list = []
         # Bumped by every search, so an answer arriving after a newer search
         # began is dropped rather than written onto rows it never described, and
         # without disturbing that newer search's own state.
@@ -479,6 +480,9 @@ class AuditTab(Gtk.Box):
         for row in self._added:
             self._events_group.remove(row)
         self._added = []
+        for w in self._chart_added:
+            self._events_group.remove(w)
+        self._chart_added = []
         self._btn_search.set_sensitive(not self._searching)
 
         # The empty case is resolved on EVERY render, and kept in its own
@@ -557,6 +561,21 @@ class AuditTab(Gtk.Box):
                        _esc(f"{node} · {summary}" if node else summary), PLAIN_ICON)
             row.set_subtitle_lines(2)
             self._add(row)
+        # --- a chart of the same events
+        try:
+            from collections import Counter
+            from shani_cassini import charts
+            counts = Counter()
+            for record in shown:
+                counts[str(record.get("type") or "record")] += 1
+            rows = counts.most_common(8)
+            if rows:
+                hb = charts.HBars()
+                hb.set(rows)
+                self._events_group.add(hb)
+                self._chart_added.append(hb)
+        except Exception as exc:
+            logger.debug("charts unavailable: %s", exc)
         if len(self._records) > len(shown):
             self._add(_row(TRUNCATED_TITLE, TRUNCATED.format(
                 shown=len(shown), total=len(self._records),

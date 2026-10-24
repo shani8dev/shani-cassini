@@ -237,6 +237,7 @@ class SmartTab(Gtk.Box):
         # The rows this page added to each group, so a refill can take exactly
         # those back out.
         self._added: list[tuple[Adw.PreferencesGroup, Adw.ActionRow]] = []
+        self._chart_added: list = []
 
         # --- test schedule (smartd), which nothing else on this page covers
         self._sched = Adw.PreferencesGroup(
@@ -277,8 +278,10 @@ class SmartTab(Gtk.Box):
                                                 description=ATTRIBUTES_HELP)
         self._log_group = Adw.PreferencesGroup(title="Self-test log",
                                                description=LOGS_HELP)
+        self._chart_group = Adw.PreferencesGroup(title="Disk health (chart)")
         self._groups = (self._notice_group, self._disks_group,
-                        self._health_group, self._attr_group, self._log_group)
+                        self._health_group, self._attr_group, self._log_group,
+                        self._chart_group)
         for group in self._groups:
             self._page.append(group)
         self.refresh()
@@ -441,6 +444,9 @@ class SmartTab(Gtk.Box):
 
     # --------------------------------------------------------------- rendering
     def _render(self) -> None:
+        for w in self._chart_added:
+            self._chart_group.remove(w)
+        self._chart_added = []
         self._clear()
         self._render_disks()
         self._health_group.set_visible(bool(self._devices))
@@ -448,6 +454,33 @@ class SmartTab(Gtk.Box):
         self._attr_group.set_visible(bool(self._devices))
         self._render_attributes()
         self._render_logs()
+        # --- a chart of the SMART verdicts
+        try:
+            from shani_cassini import charts
+            verdicts = []
+            for d in self._devices:
+                st = (d.get("health") or {}).get("smart_status", {})
+                v = st.get("passed", st.get("pass"))
+                if isinstance(v, bool):
+                    verdicts.append(v)
+            if verdicts:
+                # The fraction is over the disks that **answered**, not the
+                # disks the scan saw: a read that was refused is not a disk
+                # failing SMART, and counting it below the line said "0 of 1
+                # passing" on a machine whose only disk never gave a verdict.
+                # The verdict rows above carry the refusals; this chart only
+                # averages what came back.
+                passed = sum(verdicts)
+                meter = charts.Meter(title="Disks passing SMART", high_is_bad=False)
+                meter.set(passed / len(verdicts),
+                          f"{passed} of {len(verdicts)} with a verdict")
+                self._chart_group.add(meter)
+                self._chart_added.append(meter)
+                self._chart_group.set_visible(True)
+            else:
+                self._chart_group.set_visible(False)
+        except Exception as exc:
+            logger.debug("charts unavailable: %s", exc)
 
     def _render_disks(self) -> None:
         if self._missing_tool:

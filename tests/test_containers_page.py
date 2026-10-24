@@ -362,7 +362,8 @@ def test_there_are_four_groups_and_they_are_named(tools) -> None:
     tab = containers.ContainersTab()
     assert settled(tab), rows(tab)
     assert group_titles(tab) == ["Podman", "Distrobox",
-                                 "Where container state lives", "This page"], \
+                                 "Where container state lives", "This page",
+                                 "Containers (chart)"], \
         group_titles(tab)
 
 

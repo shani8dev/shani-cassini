@@ -41,8 +41,8 @@ from dataclasses import dataclass
 
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
-from shani_cassini import system_status as ss
-from shani_cassini.widgets import find_named
+from shani_cassini import charts, system_status as ss
+from shani_cassini.widgets import find_named, reserve_leading_column
 
 logger = logging.getLogger(__name__)
 
@@ -347,6 +347,11 @@ class SecurityKeysTab(Gtk.Box):
 
         self._row_keys = _selectable(_row("Registered keys", "Reading the key file…"))
         group.add(self._row_keys)
+        # --- a chart of the same count, straight from the file the row reports
+        # on: a big-number tile, the same figure in figures.
+        self._chart_u2f_keys = charts.stat(
+            "Registered keys", "…", f"reading {U2F_AUTHFILE_DEFAULT}")
+        group.add(self._chart_u2f_keys)
         group.add(_row("Adding a key",
                        "pamu2fcfg registers a credential, and so does the site you are "
                        "signing in to: pamu2fcfg -u yourname -n prints a line per key, and "
@@ -370,6 +375,7 @@ class SecurityKeysTab(Gtk.Box):
                                   subtitle="client checks the one-time password the key types; "
                                            "challenge-response asks the key to sign a "
                                            "challenge instead.")
+        reserve_leading_column(self._mode)   # as `_entries` explains
         self._mode.connect("notify::selected", lambda s, _p: self._on_mode(s))
         group.add(self._mode)
 
@@ -405,6 +411,19 @@ class SecurityKeysTab(Gtk.Box):
                 icon = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
                 icon.add_css_class("warning")
                 entry.add_prefix(icon)
+            else:
+                # **Every row on this page takes the leading column, whatever
+                # its widget type.** Found by measuring a whole-page render
+                # (2026-10-17), not by looking: in both groups the `EntryRow`
+                # and `SwitchRow` sat flush at x=14 while the `ActionRow`s beside
+                # them sat at x=42, so `Key file (authfile)` and
+                # `Accept any key (alwaysok)` were the two rows out of line and
+                # nobody could say which list they belonged to.
+                #
+                # `add_prefix` works on `EntryRow`, `ComboRow` and `SwitchRow` as
+                # well as `ActionRow` - measured, because the alternative reading
+                # is that this page cannot be made uniform.
+                reserve_leading_column(entry)
             entry.connect("apply", lambda w, k=field.key, t=target:
                           self._save(t, k, w.get_text().strip()))
             group.add(entry)
@@ -414,6 +433,7 @@ class SecurityKeysTab(Gtk.Box):
     def _switch(self, group: Adw.PreferencesGroup, flag: _Flag, target: _Target,
                 title: str, subtitle: str) -> Adw.SwitchRow:
         switch = Adw.SwitchRow(title=title, subtitle=subtitle)
+        reserve_leading_column(switch)      # as `_entries` explains
         switch.connect("notify::active", lambda s, _p: self._on_flag(s, target, flag))
         group.add(switch)
         return switch
@@ -464,6 +484,7 @@ class SecurityKeysTab(Gtk.Box):
         self._row_keys.set_subtitle(
             f"{count} key{'s' * (count != 1)} registered in {path}" if count else
             f"{path} - not created yet, so nothing is registered with it")
+        self._chart_u2f_keys.value_label.set_text(str(count))
 
     def _render_yubico(self, conf: dict, auth: list) -> None:
         """The Yubico OTP group. yubico-pam is not a Shanios package, so "not

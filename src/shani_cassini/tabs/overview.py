@@ -8,7 +8,6 @@ import socket
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
-from shani_cassini.widgets import reserve_leading_column
 
 logger = logging.getLogger(__name__)
 
@@ -68,13 +67,18 @@ class OverviewTab(Gtk.Box):
                                     ("slot", "System slot", "updates"),
                                     ("health", "Health", "health")):
             row = Adw.ActionRow(title=title, subtitle="…")
-            # **Reserve the leading column on every row.** Found by rendering
-            # (2026-10-17): the three rows with a `section` carry a
-            # `go-next-symbolic` arrow and the two without do not, so "Device
-            # name" and "Running for" sat flush against the card while the rest
-            # sat one column in - a ragged left edge in a five-row list.
-            if not section:
-                reserve_leading_column(row)
+            # **No leading column on this page, deliberately.** An earlier pass
+            # reserved one on the rows without a `section`, on the strength of a
+            # gate that reported this group as ragged. Both were wrong. The gate
+            # counted every `GtkImage` in the row, and the three `section` rows
+            # carry a `go-next-symbolic` arrow - a **suffix**, which sits at the
+            # right and reserves nothing in front of the title. Measured on the
+            # render from before that change, all five titles started at
+            # x=286-287; after it, two of them sat at 315 and three at 287.
+            #
+            # So a ragged edge was invented on a page that had none, and then
+            # "fixed" into a real one. The gate now counts the row's **prefix
+            # box** rather than the whole row, which is what makes this visible.
             if section:
                 row.set_activatable(True)
                 row.add_suffix(Gtk.Image.new_from_icon_name("go-next-symbolic"))
@@ -85,6 +89,23 @@ class OverviewTab(Gtk.Box):
         self._rows["uptime"].set_subtitle(_uptime())
         self._rows["health"].set_subtitle("Run a check to see how the system is doing")
         self.append(g)
+
+        # --- a small chart, the way shani-chronoa draws its panels
+        try:
+            from shani_cassini import charts
+            cg = Adw.PreferencesGroup(title="At a Glance (chart)")
+            card, body = charts.card("Uptime", "preferences-system-time-symbolic")
+            ring = charts.Ring(size=100, width=8)
+            try:
+                days = int(float(open("/proc/uptime").read().split()[0])) // 86400
+            except (OSError, ValueError):
+                days = 0
+            ring.set(min(days / 365.0, 1.0), f"{days}d", "of a year")
+            body.append(ring)
+            cg.add(card)
+            self.append(cg)
+        except Exception as exc:  # pragma: no cover - never break the page
+            logger.debug("charts unavailable: %s", exc)
 
         ss.deploy_status(self._on_status, check=True)
 

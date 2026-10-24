@@ -515,9 +515,14 @@ class TestMeasuredManifests:
         assert len(with_dracut) >= 6, with_dracut
         assert not with_mkinitcpio, (
             f"mkinitcpio is now in {with_mkinitcpio}; the generator claim is stale")
-        shanios_module = (base / "server" / "overlay" / "rootfs"
-                          / "usr/lib/dracut/modules.d/99shanios")
-        assert (shanios_module / "module-setup.sh").exists(), (
+        shanios_module = None
+        for profile in sorted(p for p in base.iterdir() if p.is_dir()):
+            candidate = (profile / "overlay" / "rootfs"
+                         / "usr/lib/dracut/modules.d" / "99shanios")
+            if candidate.is_dir():
+                shanios_module = candidate
+                break
+        assert shanios_module is not None and (shanios_module / "module-setup.sh").exists(), (
             "the server profile's own dracut module moved")
 
 

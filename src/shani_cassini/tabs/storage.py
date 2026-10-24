@@ -113,6 +113,12 @@ def _summary_row(summary: dict, key: str, title: str, icon: str) -> Adw.ActionRo
     return row
 
 
+def _size_bytes(text: str) -> float:
+    """The chart module's human-size parse; kept here under its page-local name."""
+    from shani_cassini import charts
+    return charts.size_bytes(text)
+
+
 class StorageTab(Gtk.Box):
     def __init__(self, state=None, auth_manager=None) -> None:
         super().__init__()
@@ -125,6 +131,7 @@ class StorageTab(Gtk.Box):
         # The rows this page added to each group, so a refill can take exactly
         # those back out.
         self._added: list[tuple] = []
+        self._chart_added: list = []
         self._status_group = Adw.PreferencesGroup(title="Storage health")
         self._capacity_group = Adw.PreferencesGroup(title="Capacity",
                                                     description=CAPACITY_HELP)
@@ -134,8 +141,10 @@ class StorageTab(Gtk.Box):
                         "are actually enabled on this machine.")
         self._subvol_group = Adw.PreferencesGroup(title="Subvolumes",
                                                   description=SUBVOLUME_HELP)
+        self._chart_group = Adw.PreferencesGroup(title="Capacity (chart)",
+                                                description="Free versus used, from the same report.")
         self._groups = (self._status_group, self._capacity_group,
-                        self._health_group, self._subvol_group)
+                        self._health_group, self._subvol_group, self._chart_group)
         for group in self._groups:
             self._page.append(group)
         refresh = Gtk.Button(label="Refresh", valign=Gtk.Align.CENTER)
@@ -173,6 +182,9 @@ class StorageTab(Gtk.Box):
             # how a refill ends up accumulating rows.
             group.remove(row)
         self._added = []
+        for group, w in self._chart_added:
+            group.remove(w)
+        self._chart_added = []
 
     def _add(self, group: Adw.PreferencesGroup, row: Adw.ActionRow) -> None:
         group.add(row)
@@ -188,11 +200,11 @@ class StorageTab(Gtk.Box):
         row = _row("No storage report", _esc(problem), *STATE_ICONS["error"])
         row.set_subtitle_selectable(True)
         self._add(self._status_group, row)
-        for group in (self._capacity_group, self._health_group, self._subvol_group):
+        for group in (self._capacity_group, self._health_group, self._subvol_group, self._chart_group):
             group.set_visible(False)
 
     def _render_report(self, result: dict) -> None:
-        for group in (self._capacity_group, self._health_group, self._subvol_group):
+        for group in (self._capacity_group, self._health_group, self._subvol_group, self._chart_group):
             group.set_visible(True)
         summary = result.get("summary") or {}
         warnings = result.get("warnings") or []
@@ -236,6 +248,46 @@ class StorageTab(Gtk.Box):
                        _subvolume_subtitle(entry), icon, cls)
             row.set_subtitle_selectable(True)
             self._add(self._subvol_group, row)
+
+        # --- a chart of the same report
+        try:
+            from shani_cassini import charts
+            free_row = summary.get("Free") or {}
+            total_row = summary.get("Total") or {}
+            free_b = _size_bytes(str(free_row.get("message") or ""))
+            total_b = _size_bytes(str(total_row.get("message") or ""))
+            if total_b > 0:
+                meter = charts.Meter(title="Free space", high_is_bad=False)
+                # The tool's own size strings, not a re-derivation: Free's
+                # message carries a note ("— getting low"), and its `used`
+                # is the plain figure the parser already split off.
+                meter.set(free_b / total_b,
+                          f"{free_row.get('used') or ''} of "
+                          f"{total_row.get('used') or ''} free")
+                self._chart_group.add(meter)
+                self._chart_added.append((self._chart_group, meter))
+            if subvolumes:
+                hb = charts.HBars()
+                rows = []
+                labels = []
+                for entry in subvolumes:
+                    name = str(entry.get("name") or "")
+                    used = _size_bytes(str(entry.get("used") or ""))
+                    if used > 0:
+                        rows.append((name, used))
+                        labels.append(str(entry.get("used") or ""))
+                if rows:
+                    # The widths come from the bytes; the labels are the tool's
+                    # own human strings - the ones a user would see in a
+                    # terminal - rather than this page re-formatting them.
+                    hb.set(rows[:8], values=labels[:8])
+                    self._chart_group.add(hb)
+                    self._chart_added.append((self._chart_group, hb))
+        except Exception as exc:  # pragma: no cover
+            logger.debug("charts unavailable: %s", exc)
+        # A report with no sizes drew nothing: hide the heading rather than
+        # leave it over an empty group.
+        self._chart_group.set_visible(len(self._chart_added) > 0)
 
     def _toast(self, text: str) -> None:
         self._toasts.add_toast(Adw.Toast(title=_esc(text), timeout=4))

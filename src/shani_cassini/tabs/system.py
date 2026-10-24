@@ -69,6 +69,22 @@ class SystemTab(Gtk.Box):
         # Create sensor readings card
         content_box.append(self._create_sensors_card())
 
+        # --- a small chart, the way shani-chronoa draws its panels
+        try:
+            from shani_cassini import charts
+            card, body = charts.card("Uptime", "preferences-system-time-symbolic")
+            try:
+                secs = int(float(open("/proc/uptime").read().split()[0]))
+            except (OSError, ValueError):
+                secs = 0
+            days = secs // 86400
+            ring = charts.Ring(size=90, width=7)
+            ring.set(min(days / 365.0, 1.0), f"{days}d", "of a year")
+            body.append(ring)
+            content_box.append(card)
+        except Exception as exc:
+            logger.debug("charts unavailable: %s", exc)
+
         logger.debug("System tab UI created")
 
         # Fetch and display initial data

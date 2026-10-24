@@ -202,7 +202,13 @@ class BackupTab(Gtk.Box):
             group.remove(row)
         self._added = []
 
-    def _add(self, group: Adw.PreferencesGroup, row: Adw.ActionRow) -> None:
+    def _add(self, group: Adw.PreferencesGroup, row: Gtk.Widget) -> None:
+        """Add any widget the page owns, and remember it for the next refill.
+
+        Mostly Adw.ActionRows; the snapshot-count tile is a chart `stat`, and
+        it belongs here rather than beside a chart group because it answers
+        the same list the rows do.
+        """
         group.add(row)
         self._added.append((group, row))
 
@@ -250,6 +256,12 @@ class BackupTab(Gtk.Box):
             self._add(group, row)
             for path in snapshots:
                 self._add(group, self._snapshot_row(str(path)))
+            try:
+                from shani_cassini import charts
+                tile = charts.stat("Snapshots", str(count or len(snapshots)), "under this path")
+                self._add(group, tile)
+            except Exception as exc:
+                logger.debug("charts unavailable: %s", exc)
         else:
             text = EMPTY_NOTE.format(command="shani-backup snapshot list")
             if isinstance(elsewhere, int) and elsewhere:
