@@ -1,3 +1,7 @@
+# Enrichment 2026-10-24: matrix binary smartctl (/usr/sbin, SBIN_DIRS fallback);
+# badblocks (read-only reference, no action); shani-health --hardware reports
+# "could not detect root disk" (no SMART), so this is the only SMART surface.
+# ENRICHMENTS.md line: 8 (disk-health-extension). Notebook: tab smart (existing).
 """Disk health from SMART: what smartctl says about the disks in this machine,
 word for word, and nothing else.
 

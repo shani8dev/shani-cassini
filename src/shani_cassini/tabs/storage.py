@@ -1,3 +1,8 @@
+# Enrichment 2026-10-24 (matrix binaries: lvm2 — lvs, lvdisplay, pvdisplay,
+# badblocks — read-only, never badblocks -w; thin-provisioning-tools —
+# cache_check/cache_dump. Source-level audit; no privileged load without click.
+# References shani-health --storage-info --json (unprivileged, different from --verify).
+# ENRICHMENTS.md: line 5 (lvm-state) + line 6 (system-performance via iostat).
 """Storage: what `shani-health --storage-info` actually reports about this machine.
 
 That is the only storage interface this system exposes, and its output does not

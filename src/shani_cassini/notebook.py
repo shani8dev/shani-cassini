@@ -38,6 +38,12 @@ from shani_cassini.tabs.directory import DirectoryTab
 from shani_cassini.tabs.maintenance import MaintenanceTab
 from shani_cassini.tabs.btrfs import BtrfsTab
 from shani_cassini.tabs.persistence import PersistenceTab
+from shani_cassini.tabs.memory_state import MemoryStateTab
+from shani_cassini.tabs.attachment import AttachmentTab
+from shani_cassini.tabs.voice_access import VoiceAccessTab
+from shani_cassini.tabs.event_triggers import EventTriggersTab
+from shani_cassini.tabs.network_monitor import NetworkMonitorTab
+from shani_cassini.tabs.lvm_state import LvmStateTab
 from shani_cassini.tabs.timers import TimersTab
 from shani_cassini.tabs.lsm import LsmTab
 from shani_cassini.tabs.audit import AuditTab
@@ -144,6 +150,18 @@ SECTIONS = [
              "Graphics hardware, render nodes, and hybrid-graphics state"),
             (AudioTab, "audio", "Audio", "audio-speakers-symbolic",
              "The PipeWire graph: devices, inputs, outputs and defaults"),
+            (MemoryStateTab, "memory-state", "Memory & State", "folder-download-symbolic",
+             "Stable system facts — read from /sys and /proc"),
+            (LvmStateTab, "lvm-state", "LVM State", "drive-harddisk-symbolic",
+             "Logical volume status — read-only"),
+            (AttachmentTab, "attachment", "Attachment", "folder-archive-symbolic",
+             "Dropped archive formats"),
+            (VoiceAccessTab, "voice-access", "Voice & Screen Reading", "audio-speakers-symbolic",
+             "Speech-dispatcher / at-spi state"),
+            (EventTriggersTab, "event-triggers", "Event Sources", "view-continuous-symbolic",
+             "D-Bus / USB / journal trigger events"),
+            (NetworkMonitorTab, "network-monitor", "Network Monitor", "network-transmit-receive-symbolic",
+             "Reachability / curl / iperf3 reports"),
             (ModulesTab, "modules", "Kernel Modules", "application-x-addon-symbolic",
              "Every loaded module, its dependencies and each parameter's value"),
             (FirmwareTab, "firmware", "Firmware", "preferences-system-devices-symbolic",
