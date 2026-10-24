@@ -1,3 +1,5 @@
+# Enrichment 2026-10-25: shani-health --info (disk/volume); matrix: btrfs
+# subvolume list + btrfs fi show/usage (read-only); scrub/balance button (priv, named service).
 """The filesystem Shanios runs on: its subvolumes, its space, its scrub state.
 
 Storage answers "how much room is left". It cannot answer the three questions

@@ -1,3 +1,5 @@
+# Enrichment 2026-10-25: shani-health --security/--info; matrix: gen-efi tpm2-status
+# --json (priv, button) + pcrlock-status (priv) + systemd-analyze has-tpm2 (proxy).
 """Encryption: is the disk encrypted, and does it unlock with the TPM.
 
 Encryption itself is chosen at install time (LUKS2, os-installer). What can

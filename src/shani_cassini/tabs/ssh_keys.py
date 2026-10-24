@@ -1,3 +1,5 @@
+# Enrichment 2026-10-25: shani-health --security/--info; matrix: ssh-keygen -lf
+# (read-only, /usr/bin) + config_io write (separate guard, no unpriv escalation).
 """Authorized keys: the keys that may open a session on this machine, edited
 where sshd reads them.
 

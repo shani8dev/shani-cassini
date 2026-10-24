@@ -1,3 +1,5 @@
+# Enrichment 2026-10-25: shani-health --verify --json / --security --json (JSON exit 1);
+# matrix: journalctl -b -p 3 -o json / systemctl / coredumpctl / shani-health CLI.
 """Health: run shani-health's checks on request and show every result."""
 
 from __future__ import annotations

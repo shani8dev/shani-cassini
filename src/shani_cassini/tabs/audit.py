@@ -1,3 +1,5 @@
+# Enrichment 2026-10-25: shani-health --verify --json / --security --json (JSON exit 1);
+# matrix: journalctl -b -p 3 -o json / systemctl / coredumpctl / ausearch (priv, button).
 """Audit: what the kernel's audit log says happened, and nothing else.
 
 The kernel audit log is the one place on the machine where a successful ``su``,

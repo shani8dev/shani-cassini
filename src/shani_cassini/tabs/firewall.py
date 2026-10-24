@@ -1,3 +1,5 @@
+# Enrichment 2026-10-25: shani-health --security/--info (nsswitch/network keys);
+# matrix: firewall-cmd (session queries, unpriv) + fail2ban-client (root socket); read-only.
 """Firewall and fail2ban, read from the two tools that own them, word for word.
 
 GNOME and KDE ship a firewall configurator, shani-network depends on it, and

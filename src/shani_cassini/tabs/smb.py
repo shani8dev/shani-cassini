@@ -1,3 +1,5 @@
+# Enrichment 2026-10-25: shani-health --security/--info; matrix: testparm -s (Samba
+# parser/validator, /usr/bin, unpriv); include exact file; no smbpasswd/smbd reload.
 r"""SMB: what Samba is serving, to whom, and which file says so.
 
 **This is not the Sharing page.** `tabs/sharing.py` is NFS: it edits

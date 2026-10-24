@@ -1,3 +1,5 @@
+# Enrichment 2026-10-25: shani-health --security/--info; matrix: btrfs subvolume
+# list / btrfs inspect-internal (read-only /usr/bin); restore via btrfs-receive (priv, button).
 """Backup: the user's own snapshots, and the settings they are configured with.
 
 **What changed on 2026-10-14, and why this page now runs the operations rather

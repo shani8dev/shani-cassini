@@ -1,3 +1,5 @@
+# Enrichment 2026-10-25: shani-deploy --status --json / --check --json (unpriv, contract);
+# matrix: parse_deploy_line() (pure) + DEPLOY_PHASES from script; read-only.
 """Updates & Rollback: the blue/green system, its channel, updating and
 going back - all through shani-deploy (see system_status.py)."""
 
