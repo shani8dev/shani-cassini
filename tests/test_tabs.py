@@ -106,6 +106,7 @@ class TestNotebook:
                 ('Overview & Health', ['Overview', 'Health', 'Setup']),
                 ('Storage', ['Storage', 'Disk Health', 'Btrfs', 'Software RAID', 'Persistence']),
                 ('Hardware', ['System Info', 'Drivers', 'Graphics', 'Audio', 'Kernel Modules', 'Firmware']),
+                ('Memory & State', ['Memory & State', 'LVM State', 'Attachment', 'Voice & Screen Reading', 'Event Sources', 'Network Monitor']),
                 ('Interrupts', ['irqbalance']),
                 ('Peripherals', ['Printers', 'Camera']),
                 ('Tasks & Logs', ['Timers & Background Tasks', 'Cron', 'Journal']),
@@ -148,11 +149,12 @@ class TestNotebook:
                for group, subs in SECTIONS]
         assert got == self.EXPECTED
         flat = [t for _g, subs in self.EXPECTED for _s, ts in subs for t in ts]
-        # 59 pages: WireGuard was added to Network > Reachability for the per-interface
-        # wg-quick@ switches, and Setup to System > Overview & Health. Kept as a
+        # 65 pages: the six matrix-derived pages added under System > Memory & State
+        # (Memory & State, LVM State, Attachment, Voice & Screen Reading, Event Sources,
+        # Network Monitor) plus the earlier Hardware/Kernel/Firmware set. Kept as a
         # literal rather than len(flat) alone so a page silently vanishing from
         # SECTIONS fails here instead of passing.
-        assert nb.get_n_pages() == len(flat) == 59, len(flat)
+        assert nb.get_n_pages() == len(flat) == 65, len(flat)
         assert nb.page_titles() == flat
 
     def test_no_group_is_a_wall_again(self):
