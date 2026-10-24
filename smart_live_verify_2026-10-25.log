@@ -1,0 +1,9 @@
+C smart branch — live-slot verification attempt (not deferred)
+Device: /dev/nvme0 (240,0) exists; root-owned crw-------
+smartctl -j -H /dev/nvme0: attempted with sudo; stdout empty (needs root / SMART-supported slot)
+smartctl -j -a /dev/nvme0: attempted; JSON parse failed (empty input)
+Conclusion: page's privileged read (smartctl -j -H/-a) cannot be fully verified 
+  without a booted slot with SMART-capable disk + polkit agent; host verifies 
+  device presence only. No invented data.
+Slot target /home/builduser/build/test-env/disk/app-blue-...: directory absent 
+  (fixture not present); verified from smart_slot_run.log (historical).
