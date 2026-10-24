@@ -1,0 +1,6 @@
+C auditd branch — live verification attempted (not deferred)
+Host status: systemctl is-active auditd => inactive; audit package absent
+ausearch: not in PATH (needs installed audit package + privileged slot)
+Conclusion: page's privileged search (ausearch + auditd state check) cannot 
+  be fully exercised on development host; no invented audit log or verdict
+Slot target: deferred to real Shanios slot with auditd running + log present
