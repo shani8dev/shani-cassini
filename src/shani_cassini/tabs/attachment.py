@@ -1,4 +1,5 @@
 # Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
+# Enrichment / B-track deep-render: shani-health --json pull; matrix binary refs; harness deferred.
 """Attachment / archive drop reporter — read-only inventory of dropped archives.
 Surface: attachment (matrix). Honest empty-state: none of the archive formats
 this page manages is installed. No invented counts."""

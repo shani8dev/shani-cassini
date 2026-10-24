@@ -1,4 +1,5 @@
 # Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
+# Enrichment / B-track deep-render: shani-health --json pull; matrix binary refs; harness deferred.
 """LVM reporter — surface: verifier + memory (lvs/lvdisplay/pvdisplay)."""
 from gi.repository import Gtk, Adw
 class LvmStateTab(Gtk.Box):

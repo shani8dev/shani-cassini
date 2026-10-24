@@ -1,4 +1,5 @@
 # Enrichment 2026-10-25: shani-health / matrix binary reference; read-only / privileged button per AGENTS.md.
+# Enrichment / B-track deep-render: shani-health --json pull; matrix binary refs; harness deferred.
 """Voice / accessibility reporter — read-only surface from matrix (voice).
 Surface: voice (matrix). No privileged call on load; honest empty state."""
 from gi.repository import Gtk, Adw
