@@ -52,7 +52,8 @@ import pytest  # noqa: E402
 from shani_cassini import system_status as ss  # noqa: E402
 from shani_cassini.tabs import boot_recovery as br  # noqa: E402
 
-from conftest import renders_literally, says  # noqa: E402
+from conftest import (assert_subtitle_shown_as_text,  # noqa: E402
+                       renders_literally, says)
 
 
 @pytest.fixture(autouse=True)
@@ -587,6 +588,9 @@ class TestThePage:
         page._render()
         row = page._check_rows[0]
         assert renders_literally(row.get_title())
-        assert renders_literally(row.get_subtitle())
-        assert says(row.get_subtitle(), "@a&b")
-        assert renders_literally(page._check_rows[1].get_subtitle())
+        assert_subtitle_shown_as_text(
+            row.get_subtitle(), "booted (@a&b) != current-slot (@c&d)",
+            what="the check row")
+        assert_subtitle_shown_as_text(page._check_rows[1].get_subtitle(),
+                                      "rollback & reboot <now>",
+                                      what="the advice row")

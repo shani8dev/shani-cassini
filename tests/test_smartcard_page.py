@@ -25,7 +25,7 @@ from shani_cassini.tabs import smartcard as sc  # noqa: E402
 # `says` / `assert_escaped_not_markup` read a row's text the way a user
 # does - see conftest for why `needle in row.get_title()` stopped working
 # when the pages began escaping properly.
-from conftest import assert_escaped_not_markup, says  # noqa: E402
+from conftest import assert_subtitle_shown_as_text  # noqa: E402
 
 
 def spin(cond, timeout=5.0):
@@ -338,13 +338,12 @@ def test_a_subject_full_of_markup_is_escaped_not_rendered(fake):
     assert row.get_title() == GLib.markup_escape_text(subject), \
         f"the subject was not escaped: {row.get_title()!r}"
     assert "<b>" not in row.get_title()
-    # An AdwActionRow hands the subtitle back unescaped, and a raw "<1>" is not
-    # markup at all: libadwaita fails to parse it, logs a Gtk-WARNING and leaves
-    # the subtitle empty. So the plain text coming back is the proof that the
-    # escaped form is what the label was given.
-    assert_escaped_not_markup(row.get_subtitle(), what="the account")
-    assert says(row.get_subtitle(), "ops<1>"), \
-        f"the account was not shown to the user: {row.get_subtitle()!r}"
+    # The two getter conventions split here (see the helper's docstring): an
+    # as-set getter hands back the escaped form, a decoding one the plain
+    # text - and `ops<1>` is not markup at all either way. The helper carries
+    # the promise on both, which the old stored-form assertion could not.
+    assert_subtitle_shown_as_text(row.get_subtitle(), "ops<1>",
+                                  what="the account")
 
 
 def test_every_mapping_offers_edit_and_remove(fake):

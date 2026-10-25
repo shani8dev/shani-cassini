@@ -51,7 +51,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
 from gi.repository import Adw  # type: ignore  # noqa: E402
-from conftest import says  # noqa: E402
+from conftest import assert_subtitle_shown_as_text, says  # noqa: E402
 
 from shani_cassini import system_status as ss  # noqa: E402
 from shani_cassini.tabs import fleet as fleet_mod  # noqa: E402
@@ -321,8 +321,9 @@ class TestThePage:
              "drift": ["<b>slot_unknown</b> & co"]}, ""))
         tab.check_drift()
         row = tab._finding_rows[0]
-        assert "&amp;" in row.get_subtitle() or "&" not in row.get_subtitle()
-        assert "<b>" not in row.get_subtitle()
+        assert_subtitle_shown_as_text(
+            row.get_subtitle(), "<b>slot_unknown</b> & co",
+            what="the drift finding")
 
     def test_the_keyring_is_looked_for_where_the_agent_looks(self):
         """The privilege is load-bearing: the agent runs as root, so its

@@ -328,8 +328,12 @@ class TestTheStatusRow:
 
     def test_the_text_is_escaped_on_the_way_in(self):
         """The module has exactly one `set_subtitle` site; this proves the
-        status row goes through it rather than around it."""
+        status row goes through it rather than around it. `_markup_safe` judged
+        the *stored* form, which a decoding getter (libadwaita 1.5) answers
+        about the text it would show instead - the helper asks the
+        user-visible question on either convention."""
         tab = SmbTab()
         tab._set_status("a & b")
-        from tests.test_smb_page import _markup_safe
-        assert _markup_safe(tab._status.get_subtitle())
+        from tests.conftest import assert_subtitle_shown_as_text
+        assert_subtitle_shown_as_text(tab._status.get_subtitle(), "a & b",
+                                      what="the status row")

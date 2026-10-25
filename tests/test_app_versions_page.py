@@ -35,8 +35,7 @@ bounds its own `snap list` at 5 seconds.
 
 from __future__ import annotations
 
-from conftest import (assert_escaped_not_markup, literal_text,  # noqa: E402
-                       says,
+from conftest import (assert_subtitle_shown_as_text, says,  # noqa: E402
                        renders_literally)
 
 import ast
@@ -754,17 +753,20 @@ def test_the_escaping_helper_is_what_every_row_goes_through() -> None:
     assert row.get_title(), "an unescaped title renders as nothing"
     sub = row.get_subtitle()
     assert sub.strip(), "an unescaped subtitle rendered as nothing"
-    assert ("c < d" in sub) or ("c &lt; d" in sub), sub
+    assert_subtitle_shown_as_text(sub, "c < d", what="_row()'s subtitle")
 
     # The control, rewritten for this stack. The old one asserted that an
     # unescaped `&` blanks the subtitle - true when a bare `&` was invalid
     # Pango markup, and the reason the tests below used to be readable at all.
     # On libadwaita 1.9 the row keeps the string instead, so the failure mode is
     # no longer an empty row: it is that the text renders WITH the tag acted on.
-    # Asserting the old blank-row symptom would be asserting a libadwaita bug,
-    # so the control now asserts what still matters and can still fail.
-    assert renders_literally(sub), (
-        f"the escaped subtitle is not safe for a use-markup row: {sub!r}")
+    # Asserting the old blank-row symptom would be asserting a libadwaita bug.
+    # Gone with it is the direct `renders_literally(sub)`: on a decoding getter
+    # (1.5.0) the subtitle comes back as plain text, and renders_literally asks
+    # its question about the *stored* form, so the check cannot be asked there.
+    # An UNescaped string is still not safe on either stack, so renders_literally
+    # must reject one - otherwise this test would pass whether or not `_row()`
+    # escaped anything, and the control would be vacuous.
     assert not renders_literally("1 policy & 1 protector"), (
         "if an UNescaped string were also safe, this test would pass whether or "
         "not `_row()` escaped anything - the control would be vacuous")

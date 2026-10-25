@@ -793,6 +793,10 @@ def write_staged_privileged(staged: Staged, done: Callable[[str, str], None]) ->
         return _write_via_helper(staged, target, done)
 
     temp = Path(_staging_path(staged.path))
+    # Same as `_write_backup`: the staging temp lives under `_backup_root()`,
+    # which exists there but not for a caller whose write never made a backup
+    # - leaving open() to answer with FileNotFoundError.
+    os.makedirs(_backup_root(), mode=0o700, exist_ok=True)
     _write_file(temp, staged.text.encode("utf-8"), 0o600)
     try:
         try:

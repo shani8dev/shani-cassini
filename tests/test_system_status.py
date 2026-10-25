@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 from gi.repository import GLib
 
-from conftest import (assert_escaped_not_markup, literal_text,  # noqa: E402
+from conftest import (assert_escaped_not_markup,  # noqa: E402
+                       assert_subtitle_shown_as_text, literal_text,
                        renders_literally)
 
 
@@ -1399,15 +1400,13 @@ def test_biometrics_escapes_every_string_fprintd_hands_over(fake_bin, fake_fprin
     fake_fprintd.daemon.fingers = ["left-index-finger"]
     tab = BiometricsTab()
     assert spin(lambda: tab._row_fingers.get_subtitle() == "1 enrolled")
-    # `literal_text`, not the raw string: on a `use-markup` row `get_subtitle()`
-    # returns the form as STORED, which is escaped - that is what makes the
-    # device name render as `Sync & <hold> "reader"` instead of as a tag. The old
-    # `startswith` compared against the unescaped form and so asserted the
-    # escaping had been removed. What the user must read is the raw name.
-    assert literal_text(tab._row_device.get_subtitle()).startswith(
-        'Sync & <hold> "reader" '), tab._row_device.get_subtitle()
-    assert_escaped_not_markup(tab._row_device.get_subtitle(),
-                              what="the fprintd device name")
+    # The helper, not the raw getter: on a decoding getter (1.5) the subtitle
+    # comes back as the text the user reads, on an as-set one as the escaped
+    # form - the startswith used to compare against the unescaped form either
+    # way and asserted the escaping had been removed.
+    assert_subtitle_shown_as_text(
+        tab._row_device.get_subtitle(), 'Sync & <hold> "reader"',
+        what="the fprintd device name")
     # Two assertions removed here, both broken the same way.
     #
     # `assert "&amp;" not in subtitle` read "the escaping did not happen" - the

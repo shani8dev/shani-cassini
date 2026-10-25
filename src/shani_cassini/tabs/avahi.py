@@ -94,18 +94,20 @@ so the settings actually in effect are six uncommented lines and nothing else:
                ratelimit-interval-usec=1000000  ratelimit-burst=1000
     [publish]  publish-hinfo=no  publish-workstation=no
 
-**This paragraph previously claimed a per-distribution difference that does not
-exist, and the correction matters more than the original claim.** It said
-Ubuntu's `avahi-daemon 0.8-13ubuntu6.2` ships `enable-wide-area=yes`
-**uncommented** under `[wide-area]` while Arch's `0.9rc5` leaves it commented, so
-that "wide-area DNS unicast is on" was a fact about this host and not about
-Shanios. Re-measured on a *newer* Ubuntu of the same `0.8` series -
-`avahi-daemon 0.8-18ubuntu1.1` - the file carries `#enable-wide-area=no`
-**commented, exactly as Arch does**. So that was never a property of the
-distribution; it was a property of one build of one package, recorded as a
-generalisation. Both distributions' shipped files leave the key commented, so the
-page says nothing about wide-area on either, and the honest statement is the
-weaker one below.
+**This paragraph's history is the reason the parser asks the file.** It first
+claimed Ubuntu's `avahi-daemon 0.8-13ubuntu6.2` ships `enable-wide-area=yes`
+**uncommented** under `[wide-area]` while Arch's `0.9rc5` leaves it commented,
+so that "wide-area DNS unicast is on" was a fact about this host and not about
+Shanios. A re-measure on a *newer* Ubuntu of the same `0.8` series -
+`avahi-daemon 0.8-18ubuntu1.1` - found `#enable-wide-area=no` **commented,
+exactly as Arch does**, and the claim was corrected to "unreproduced". Then the
+runner build itself was measured (2026-10-25, in the CI-equivalent container):
+**`0.8-13ubuntu6.2` really does ship the key uncommented.** So two builds of one
+package's `0.8` series disagree - the older one active, the newer one commented -
+and the original claim was a fact about one build recorded as a generalisation
+about a distribution. Neither reading is a property of Ubuntu or of Arch; there
+is no per-distribution fact here to assert, which is exactly why the page asks
+the file in front of it.
 
 **What survives, and is the reason this parser exists.** Whether wide-area DNS
 unicast is in effect depends on whether the line is commented **on the machine in
@@ -483,12 +485,16 @@ def parse_avahi_conf(text: str) -> list[dict]:
     this machine even if this parser has not seen the header it sits under.
 
     What this reports is **what the file on this machine sets**, not what a
-    distribution usually ships. That distinction used to be argued from a
-    per-distribution table that turned out to be wrong: an earlier version of
-    this docstring claimed Ubuntu shipped `enable-wide-area=yes` uncommented while
-    Arch left it commented, which a newer Ubuntu of the same series contradicts -
-    it leaves it commented too. Two builds of one package shipping both ways is
-    exactly why the parser asks the file rather than the distribution.
+    distribution usually ships. That distinction earned itself the hard way: an
+    earlier version of this docstring argued from a per-distribution table -
+    Ubuntu ships `enable-wide-area=yes` uncommented while Arch leaves it
+    commented - that a correction on a newer Ubuntu build
+    (`0.8-18ubuntu1.1`, commented) then seemed to refute. Re-measuring the
+    original build recorded the last word: CI's Ubuntu 24.04 runner ships
+    `avahi-daemon 0.8-13ubuntu6.2`, and that file really does carry the key
+    uncommented (2026-10-25). **Two builds of one series ship both ways.** There
+    is no per-distribution fact here at all, and each build's own file is the
+    only thing that answers for it - which is what this parser reads.
     """
     entries: list[dict] = []
     section = ""

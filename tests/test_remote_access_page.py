@@ -46,7 +46,7 @@ from shani_cassini.tabs import remote_access as ra  # noqa: E402
 # `says` / `assert_escaped_not_markup` read a row's text the way a user
 # does - see conftest for why `needle in row.get_title()` stopped working
 # when the pages began escaping properly.
-from conftest import assert_escaped_not_markup, says  # noqa: E402
+from conftest import assert_subtitle_shown_as_text, says  # noqa: E402
 
 
 def spin(cond, timeout=20.0) -> bool:
@@ -719,8 +719,8 @@ def test_markup_off_disk_is_escaped_not_rendered(env):
     write_dropin(env, "<b>evil</b> yes\n")
     page = build(env)
     kept = " ".join(f"{t} {s}" for t, s in texts(group_titled(page, "kept")))
-    assert_escaped_not_markup(kept, what="the kept directives")
-    assert says(kept, "<b>evil</b>"), f"the line is not shown at all: {kept!r}"
+    assert_subtitle_shown_as_text(kept, "<b>evil</b>",
+                                  what="the kept directives")
 
 
 # --- 4. the add dialog -----------------------------------------------------

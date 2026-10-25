@@ -92,7 +92,8 @@ from __future__ import annotations
 # `says` reads a row's text the way a user does - see conftest for why
 # `needle in row.get_title()` stopped working when the pages began
 # escaping properly.
-from conftest import assert_escaped_not_markup, says  # noqa: E402
+from conftest import (assert_subtitle_shown_as_text,  # noqa: E402
+                       assert_escaped_not_markup, says)
 
 import ast
 import inspect
@@ -1575,16 +1576,17 @@ class TestRendering:
                          ("Research & Dev", [("path", "/srv/r&d")]))
         rows = _rows(_rendered(conf_stdout=dump))
         stored = dict(rows)["Research &amp; Dev"]
-        # What the user READS must be the share's real name and path...
-        assert says(stored, "/srv/r&d"), rows
-        # ...and the stored form must not have been escaped TWICE, which is what
-        # `&amp;amp;` would look like. Checking `stored.count("&amp;") == 0` was
-        # the old assertion and it asserts the opposite of the property: on a
-        # `use-markup` row the STORED form *should* contain `&amp;`, because that
-        # is what makes it render as `&`.
+        # ...and the stored form must not have been escaped TWICE - what
+        # `&amp;amp;` looks like on the as-set stack. (The helper checks the
+        # same residue only where a decoding getter makes it observable.)
+        # Checking `stored.count("&amp;") == 0` was the old assertion and it
+        # asserts the opposite of the property: on a `use-markup` row the
+        # STORED form *should* contain `&amp;`, because that is what makes it
+        # render as `&`.
         assert "&amp;amp;" not in stored, (
             f"escaped twice: the user would see &amp; - {stored!r}")
-        assert_escaped_not_markup(stored, what="the share row")
+        assert_subtitle_shown_as_text(stored, "/srv/r&d",
+                                      what="the share row")
 
     def test_the_markup_check_itself_can_fail(self):
         """A control for `_markup_safe`: the shapes it exists to reject. A

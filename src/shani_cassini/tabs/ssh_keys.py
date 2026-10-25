@@ -71,6 +71,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # type: ignore
 
 from shani_cassini import config_io
 from shani_cassini.config_io import ConfigRefused, Document, Line, Staged
+from shani_cassini.widgets import reserve_leading_column
 
 logger = logging.getLogger(__name__)
 
@@ -707,10 +708,16 @@ class SshKeysTab(Gtk.Box):
             return
 
         self._row_fingerprints = _row("Fingerprints", FINGERPRINTS_NOTE)
+        # A placeholder leading column, not an icon: in the no-keys state the
+        # rows beside this one carry a state icon ("No keys") or a button
+        # ("Add a key"), so leaving this one flush gave the list two left
+        # edges - see `widgets.reserve_leading_column`.
+        reserve_leading_column(self._row_fingerprints)
         self._add(group, _selectable(self._row_fingerprints))
 
         for entry in entries:
             row = _row(_esc(entry.title), _key_subtitle(entry, "", PENDING_NOTE))
+            reserve_leading_column(row)
             drop = Gtk.Button(label="Remove…", valign=Gtk.Align.CENTER)
             drop.add_css_class("destructive-action")
             drop.connect("clicked", lambda _b, e=entry:
@@ -732,6 +739,7 @@ class SshKeysTab(Gtk.Box):
         add.add_css_class("suggested-action")
         add.connect("clicked", lambda *_: self._present(self._add_dialog()))
         row = _row("Add a key", "One public key, on a line of its own")
+        reserve_leading_column(row)
         row.add_suffix(add)
         self._add(group, row)
 

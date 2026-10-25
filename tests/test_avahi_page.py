@@ -690,6 +690,29 @@ def _run(argv):
     return subprocess.run(argv, capture_output=True, text=True, timeout=20)
 
 
+def _avahi_version():
+    """Which avahi build is installed, by its package version.
+
+    `dpkg-query` on the Debian side, `pacman -Q` on Arch, `None` where neither
+    answers: the platform tests key on the build, and a build nobody measured
+    is a skip rather than a distributed claim.
+    """
+    try:
+        proc = _run(["dpkg-query", "-W", "-f=${Version}", "avahi-daemon"])
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        proc = _run(["pacman", "-Q", "avahi"])
+        if proc.returncode == 0:
+            parts = proc.stdout.strip().split()
+            return parts[1] if len(parts) > 1 else None
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
 def shutil_which(name: str):
     import shutil
     return shutil.which(name)
@@ -3012,35 +3035,72 @@ class TestAgainstThisHost:
                        for e in entries), (
             "commented keys are being reported as settings")
 
-    def test_the_conf_file_matches_this_platform(self):
-        """Kept as the distribution-shaped read of the same fact.
+    # The wide-area state of the file each measured build ships. Keyed on the
+    # avahi-daemon **package version**, not on the distribution, because two
+    # builds of one series measured differently (see the test's docstring).
+    # A version not in this table is a skip - never a distributed claim.
+    MEASURED_WIDE_AREA = {
+        "0.8-13ubuntu6.2": "active",     # CI's Ubuntu 24.04 runner, 2026-10-25
+        "0.8-18ubuntu1.1": "commented",  # this dev host (Ubuntu 26.04)
+        "1:0.9rc5-1": "commented",       # Shanios's Arch, and the Arch container
+    }
 
-        What survives of the original test, measured rather than assumed:
-        **both** distributions' shipped files leave `enable-wide-area`
-        commented, so the page says nothing about it either way. Arch's
-        `1:0.9rc5-1` measured `#enable-wide-area=no`; this Ubuntu host's
-        `0.8-18ubuntu1.1` measures the same. The previously recorded Ubuntu
-        claim - `0.8-13ubuntu6.2` with `enable-wide-area=yes` *uncommented* -
-        could not be reproduced on a newer build of the same series and is
-        therefore not a property worth asserting per-distro; the invariant test
-        above is what now holds the parser to something.
+    def test_the_conf_file_matches_this_platform(self):
+        """The file this page reads, against the measurement stored for the
+        build that installed it - keyed on the avahi-daemon version, not on
+        the distribution.
+
+        The original test claimed per-distribution facts. Measured, they do not
+        hold at that granularity: **two builds of the 0.8 series ship the
+        wide-area key two different ways**.
+
+        | avahi-daemon build | measured state | where |
+        |---|---|---|
+        | `1:0.9rc5-1` | `#enable-wide-area=no`, commented | Shanios's Arch |
+        | `0.8-18ubuntu1.1` | `#enable-wide-area=no`, commented | this dev host |
+        | `0.8-13ubuntu6.2` | `enable-wide-area=yes`, active | CI's Ubuntu 24.04 runner (2026-10-25) |
+
+        The last row is the build whose "uncommented" reading the docstrings
+        once recorded and then disbelieved as unreproducible - it was measured
+        on the *older* build and generalised to the whole distribution. Re-measured
+        in the runner stack, it is real: Ubuntu 24.04's `0.8-13ubuntu6.2` ships
+        the key active, and the newer `0.8-18ubuntu1.1` on this dev host does
+        not. A per-distro assertion therefore had to be either false on CI or
+        false at home; keyed on the build, each measured row is true where it
+        was measured and an unmeasured version skips instead of guessing.
+
+        The active branch also asks the *parser* the same question the file
+        answers - "the file, not the distribution" is what `parse_avahi_conf`
+        exists for, so the page must report the set key this build actually
+        ships rather than assume the commented case above it.
         """
         if not os.path.exists(avahi_mod.AVAHI_CONF):
             pytest.skip("no avahi config on this host")
+        version = _avahi_version()
+        if version is None:
+            pytest.skip("avahi installed without a queryable package version")
+        state = self.MEASURED_WIDE_AREA.get(version)
+        if state is None:
+            pytest.skip(f"avahi-daemon {version} is not a measured build - "
+                        "measure it and add it to MEASURED_WIDE_AREA")
         raw = open(avahi_mod.AVAHI_CONF, encoding="utf-8").read()
         entries = parse_avahi_conf(raw)
         wide = [e for e in entries if e["key"] == "enable-wide-area"]
-        if self._on_arch() or self._on_debian():
+        if state == "active":
+            assert [(e["key"], e["value"]) for e in wide] == \
+                [("enable-wide-area", "yes")], (
+                f"avahi-daemon {version} measured with `enable-wide-area=yes` "
+                f"active; the parser now reports {wide} - re-measure the build "
+                "before changing this table")
+        else:
             assert wide == [], (
-                f"{self._family()}'s file sets wide-area as {wide}; both "
-                f"measured distributions leave it commented and the page "
-                f"deliberately says nothing about a key the daemon never sees")
+                f"avahi-daemon {version} measured with the wide-area key "
+                f"commented; the parser now reports {wide} - re-measure the "
+                "build before changing this table")
             assert re.search(r"^[ \t]*#[ \t]*enable-wide-area[ \t]*=[ \t]*no$",
                              raw, re.M), (
-                "this file no longer carries the commented wide-area line the "
-                "two measurements agree on")
-        else:
-            pytest.skip(f"unmeasured platform {self._family()!r}")
+                f"this build ({version}) no longer carries the commented "
+                "wide-area line its measurement records")
 
     def test_the_conf_dropin_directory_is_absent_on_both_platforms(self):
         if not self._avahi_installed():

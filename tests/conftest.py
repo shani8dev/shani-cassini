@@ -303,3 +303,95 @@ def says(haystack: str, needle: str) -> bool:
     string to ask it.
     """
     return needle in literal_text(haystack)
+
+
+# ============================================================================
+# get_subtitle() is stack-dependent; the escaping property is not
+# ============================================================================
+#
+# `renders_literally` / `assert_escaped_not_markup` above inspect the string
+# they are handed, and the *subtitle* getter hands different strings on
+# different libadwaita builds. Measured same input, both stacks:
+#
+# | what was set (the pages always escape) | get_subtitle() on 1.5.0 | on 1.9.4 |
+# |---|---|---|
+# | `"c &lt; d"` | `'c < d'` — the **decoded** presentation text | `'c &lt; d'` — **as set** |
+#
+# (1.5.0 probed 2026-10-25 on the CI stack — libadwaita 1.5.0 / GTK 4.14.5,
+# `get_title()` returns the string as set on both stacks, it is only the
+# subtitle getter that differs. On an escaped subtitle with a hostile
+# `<b>…</b>` in it, 1.5.0's decoded return keeps the tag characters as
+# literal text, which is exactly the guarantee escaping buys: a tag that had
+# been *acted on* would have consumed its characters.)
+#
+# So `assert_escaped_not_markup(row.get_subtitle())` asserts on the plain form
+# a 1.5.0 getter hands back and fails there while passing on Shanios - the
+# twelve CI failures of 2026-10-13..25. `assert_subtitle_shown_as_text` below
+# asks, with its own probe, which convention this build uses, and then asserts
+# the property that build can testify to. It is deliberately a **cached
+# function**, not a module-level widget: a module-level probe segfaulted the
+# suite during collection on Arch (see `test_irqbalance_page.py`'s history).
+
+
+_SUBTITLE_GETTER_DECODES: bool | None = None
+
+
+def subtitle_getter_decodes() -> bool:
+    """Does THIS libadwaita's subtitle getter decode markup before handing it back?
+
+    Measured with a probe row on first call, cached thereafter - never a
+    module-level widget, for the segfault reason above. The probe row carries a
+    marker only pages would escape deliberately, so the two conventions cannot
+    answer alike: an as-set getter hands back `&lt;`, a decoding one hands back
+    `<`.
+    """
+    global _SUBTITLE_GETTER_DECODES
+    if _SUBTITLE_GETTER_DECODES is None:
+        gi.require_version("Adw", "1")
+        from gi.repository import Adw  # noqa: PLC0415 - display-bound import
+
+        row = Adw.ActionRow(title="t &lt;b&gt; &amp; t",
+                            subtitle="s &lt;b&gt; &amp; s")
+        _SUBTITLE_GETTER_DECODES = "&lt;" not in (row.get_subtitle() or "")
+    return _SUBTITLE_GETTER_DECODES
+
+
+def assert_subtitle_shown_as_text(subtitle: str, hostile: str, *,
+                                  what: str = "the string") -> None:
+    """The escaped subtitle's user-visible guarantee, on either getter convention.
+
+    The property the pages owe the user is one: a hostile string reaches the
+    screen as text, its tag characters intact, no tag acted on. The two getter
+    conventions just testify to it differently:
+
+    - **as-set getter** (1.9.4, Shanios): the escaped form is what came back,
+      so `assert_escaped_not_markup` is directly checkable - and `says` then
+      re-decodes it to prove the hostile characters were escaped, not dropped
+      (a double-escape would survive the first check and fail the second).
+    - **decoding getter** (1.5.0, CI): the getter returns the text it would
+      *show*. A tag acted on would have consumed its characters, so the
+      hostile text surviving verbatim in the plain form is the one proof a
+      plain-form getter can still give - and it is the user-visible guarantee
+      itself, not a weaker stand-in. This branch also asserts **no entity
+      survives**: a getter that decodes eats exactly one escaping layer, so a
+      page that escaped twice would leave `&amp;` visible on screen as
+      punctuation - and `says` alone would read that residue back as a bare
+      `&` and pass it.
+
+    `mock-as-set` / `mock-decoded` controls for this helper live in
+    `tests/test_conftest_helpers.py`, which drives it both ways.
+    """
+    if not subtitle_getter_decodes():
+        assert_escaped_not_markup(subtitle, what=what)
+    if not says(subtitle, hostile):
+        raise AssertionError(
+            f"{what}: the hostile text did not survive to the screen. "
+            f"{hostile!r} does not read back from a subtitle getter returning "
+            f"{subtitle!r} - markup was acted on (or escaped twice), not shown")
+    if subtitle_getter_decodes() and _ENTITY_RE.search(subtitle):
+        raise AssertionError(
+            f"{what}: this getter decodes, so no entity should be left in "
+            f"{subtitle!r} - one decode layer already happened, and a "
+            f"remaining entity means the page escaped twice (or the page "
+            f"wrote an entity of its own, which a use-markup row renders as "
+            f"the entity's characters, not as text)")
