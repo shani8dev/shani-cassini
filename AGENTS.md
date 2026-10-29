@@ -137,6 +137,29 @@ five-minute randomized delay. The oneshot service runs
 notifications, and opens **Updates & Rollback** when a notification is
 activated. It never deploys or rolls back.
 
+## Cassini and shani-shell: one place for each thing
+
+Cassini **extends the desktop's own settings app and repeats none of it.** On
+GNOME and Plasma that app is theirs, and every page here already says which of
+their panels it does not duplicate. On the niri image the desktop's settings app
+is **shani-shell's Settings**, and the same rule holds against it:
+
+| Owner | What |
+|---|---|
+| **shani-shell Settings** (what a desktop's settings app has) | network, Bluetooth, displays, sound, input, tablets, appearance, notifications, focus and wellbeing, default apps, search, **printers** (add, default, test, queue), **sharing your folders** (Samba usershares) and remote login on/off, **fingerprints** (enrol/remove), your account, users, power, date & language, Chronoa's switches, the backup *summary* |
+| **Cassini** (beyond a settings app) | updates & rollback, firmware, encryption/TPM, Secure Boot, firewall, services, disk health, storage & maintenance, health, journal, audit, kernel/modules, boot entries, system Samba/NFS shares, sshd sign-in rules, security-key policy, smartcard, Kerberos/directory, sudo access, containers/VMs, fleet, and the raw btrfs snapshot tool |
+
+**Handovers, both ways.** Inside the shell (`shell_bridge.in_shani_shell()`:
+niri + the shell's config installed), `SHELL_OWNS` in `notebook.py` turns
+Chronoa and Printers into a pointer to the shell's Settings, and the Fingerprint
+page hides enrolment and points there too (`open_shell_settings(category)` runs
+`qs -c shani ipc call shani settingsCategory <id>`). The shell points the other
+way with `shani-cassini --section=<id>`: its update badge, firmware and failing-disk
+notifications, and Settings > About's "More in Cassini". On GNOME/Plasma nothing
+changes. **Adding a page:** if a desktop settings app would have it, it is the
+shell's on niri - add it to `SHELL_OWNS` (or hide its duplicate controls) in the
+same change.
+
 ## Empirical verification (mandatory)
 
 **Reading code is analysis; running code is verification.** A change is not

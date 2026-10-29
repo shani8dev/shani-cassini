@@ -31,6 +31,7 @@ import shutil
 
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
+from shani_cassini.shell_bridge import in_shani_shell, open_shell_settings
 from shani_cassini import system_status as ss
 from shani_cassini.widgets import reserve_leading_column
 
@@ -182,6 +183,19 @@ class BiometricsTab(Gtk.Box):
                                          show_text=True)
         add.add(self._progress)
         self._page.append(add)
+        # Inside shani-shell, adding and removing fingers is the desktop's own
+        # Settings (Your account) - Cassini repeats no desktop setting. What this
+        # page adds stays: the reader, where PAM asks for a finger, other ways in.
+        self._in_shell = in_shani_shell()
+        if self._in_shell:
+            add.set_visible(False)
+            moved = Adw.PreferencesGroup(title="Add or Remove Fingerprints")
+            row = _row("In Settings", "Your account → Fingerprints")
+            btn = Gtk.Button(label="Open Settings", valign=Gtk.Align.CENTER)
+            btn.connect("clicked", lambda *_: open_shell_settings("account"))
+            row.add_suffix(btn)
+            moved.add(row)
+            self._page.append(moved)
 
         where = Adw.PreferencesGroup(
             title="Where a Fingerprint Works",
@@ -288,10 +302,11 @@ class BiometricsTab(Gtk.Box):
                                  description=FINGERS_HELP)
         for f in fingers or []:
             r = _row(_esc(_finger_label(f)), "Enrolled on this device")
-            b = Gtk.Button(label="Delete…", valign=Gtk.Align.CENTER)
-            b.add_css_class("destructive-action")
-            b.connect("clicked", lambda _b, finger=f: self._delete(finger))
-            r.add_suffix(b)
+            if not getattr(self, "_in_shell", False):     # in the shell: Settings removes them
+                b = Gtk.Button(label="Delete…", valign=Gtk.Align.CENTER)
+                b.add_css_class("destructive-action")
+                b.connect("clicked", lambda _b, finger=f: self._delete(finger))
+                r.add_suffix(b)
             g.add(r)
         return g
 

@@ -9,7 +9,9 @@ startup ran every one of those before the window appeared.
 
 import logging
 
-from gi.repository import Adw, Gio, Gtk  # type: ignore
+from shani_cassini.shell_bridge import in_shani_shell, open_shell_settings
+
+from gi.repository import Adw, Gio, GLib, Gtk  # type: ignore
 
 from shani_cassini.state import AppState
 from shani_cassini.auth import AuthManager
@@ -52,6 +54,7 @@ from shani_cassini.tabs.containers import ContainersTab
 from shani_cassini.tabs.virtualization import VirtualizationTab
 from shani_cassini.tabs.kernel import KernelTab
 from shani_cassini.tabs.access import AccessTab
+from shani_cassini.tabs.groups import GroupsTab
 from shani_cassini.tabs.remote_access import RemoteAccessTab
 from shani_cassini.tabs.sharing import SharingTab
 # Interfaces with no panel in GNOME Control Center or KDE System Settings. All
@@ -264,6 +267,8 @@ SECTIONS = [
         ("Access & Directory", [
             (AccessTab, "access", "Access", "system-users-symbolic",
              "The sudoers rules this drop-in grants, and nothing else"),
+            (GroupsTab, "groups", "Groups", "system-users-symbolic",
+             "Who may share folders, run VMs, use serial devices - the groups that switch features on"),
             (DirectoryTab, "directory", "Directory", "folder-symbolic",
              "The name-service clients shani-health already parses"),
         ]),
@@ -408,6 +413,19 @@ REQUIRES = {
 }
 
 
+# Cassini extends the desktop's own settings and repeats none of them. On GNOME
+# and Plasma that settings app has no Chronoa page and (Plasma) no printers, so
+# these pages are Cassini's; inside shani-shell (the niri desktop) the shell's
+# Settings has both, so here they hand over: one place for each thing.
+SHELL_OWNS = {
+    "chronoa": ("chronoa", "Chronoa is in Settings",
+                "Chronoa's switches are in the desktop's Settings, under Chronoa."),
+    "printers": ("printers", "Printers are in Settings",
+                 "Adding a printer, the default printer and the print queue are in the "
+                 "desktop's Settings, under Printers."),
+}
+
+
 def _unnest_scrolling(tab: Gtk.Widget) -> None:
     """The older tabs wrap their whole content in their own ScrolledWindow;
     inside the page's scroller that one was squeezed to a sliver. Let such
@@ -539,6 +557,16 @@ class ShaniosNotebook(Adw.Bin):
         # have_sbin(), not shutil.which(): fprintd's tools are in /usr/sbin,
         # which is not on the PATH a desktop session or a systemd user unit
         # gets - a plain which() would report an installed fprintd as missing.
+        handed = SHELL_OWNS.get(pid)
+        if handed and in_shani_shell():
+            tab = Adw.StatusPage(icon_name=_icon, title=handed[1], description=handed[2])
+            btn = Gtk.Button(label="Open in Settings", halign=Gtk.Align.CENTER)
+            btn.add_css_class("pill")
+            btn.add_css_class("suggested-action")
+            btn.connect("clicked", lambda *_: open_shell_settings(handed[0]))
+            tab.set_child(btn)
+            tab.set_vexpand(True)
+            return self._add_page(pid, tab)
         if need and not ss.have_sbin(need[0]):
             tab = Adw.StatusPage(icon_name=_icon, title=need[1], description=need[2])
             tab.set_vexpand(True)
