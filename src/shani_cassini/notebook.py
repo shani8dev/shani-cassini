@@ -57,6 +57,9 @@ from shani_cassini.tabs.access import AccessTab
 from shani_cassini.tabs.groups import GroupsTab
 from shani_cassini.tabs.remote_access import RemoteAccessTab
 from shani_cassini.tabs.sharing import SharingTab
+from shani_cassini.tabs.hosts_env import HostsEnvTab
+from shani_cassini.tabs.caddy import CaddyTab
+from shani_cassini.tabs.cloudflared import CloudflaredTab
 # Interfaces with no panel in GNOME Control Center or KDE System Settings. All
 # read-only reporters: the desktop apps own whatever they do cover, and a second
 # place to change it is a second place to keep honest about it.
@@ -197,6 +200,14 @@ SECTIONS = [
         ("Name Resolution", [
             (DnsTab, "dns", "DNS", "network-transmit-receive-symbolic",
              "Which of the four installed resolvers answers, and what is on port 53"),
+            (HostsEnvTab, "hosts-env", "Hosts & Environment", "network-wired-symbolic",
+             "What /etc/hosts carries, and the variables environment.d sets"),
+        ]),
+        ("Web & Tunnel", [
+            (CaddyTab, "caddy", "Caddy", "network-server-symbolic",
+             "What the Caddyfile declares, and whether caddy agrees with it"),
+            (CloudflaredTab, "cloudflared", "Cloudflared", "network-vpn-symbolic",
+             "Whether cloudflared is installed, and whether a tunnel is configured"),
         ]),
         ("Reachability", [
             (InboundAccessTab, "inbound-access", "Inbound Access", "network-server-symbolic",

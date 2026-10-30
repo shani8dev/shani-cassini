@@ -112,7 +112,8 @@ class TestNotebook:
                 ('Tasks & Logs', ['Timers & Background Tasks', 'Cron', 'Journal']),
             ]),
             ('Network', [
-                ('Name Resolution', ['DNS']),
+                ('Name Resolution', ['DNS', 'Hosts & Environment']),
+                ('Web & Tunnel', ['Caddy', 'Cloudflared']),
                 ('Reachability', ['Inbound Access', 'Remote Access', 'WireGuard']),
                 ('Sharing', ['SMB', 'Service Discovery', 'Sharing']),
             ]),
@@ -123,7 +124,7 @@ class TestNotebook:
                 ('Passwords', ['Password Policy']),
                 ('Privileges', ['Privileges']),
                 ('Firewall', ['Firewall']),
-                ('Access & Directory', ['Access', 'Directory']),
+                ('Access & Directory', ['Access', 'Groups', 'Directory']),
             ]),
             ('Updates', [
                 ('Deployment', ['Boot & Recovery', 'Updates & Rollback']),
@@ -154,7 +155,7 @@ class TestNotebook:
         # Network Monitor) plus the earlier Hardware/Kernel/Firmware set. Kept as a
         # literal rather than len(flat) alone so a page silently vanishing from
         # SECTIONS fails here instead of passing.
-        assert nb.get_n_pages() == len(flat) == 65, len(flat)
+        assert nb.get_n_pages() == len(flat) == 69, len(flat)
         assert nb.page_titles() == flat
 
     def test_no_group_is_a_wall_again(self):

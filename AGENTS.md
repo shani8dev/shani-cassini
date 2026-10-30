@@ -425,7 +425,7 @@ built image's package list, and absent from GNOME's 28 and Plasma's 62):
 > `firmware.py` reads the revision from sysfs in a group of its own. Every
 > correction above is taken from the page's own `notebook.py` registration
 > string, not from a recollection of what the page does.
-> **65 pages are registered today**, and `tests/test_documented_pages_exist.py`
+> **69 pages are registered today**, and `tests/test_documented_pages_exist.py`
 > asserts that number against `SECTIONS` on every run — so the next page that
 > lands without this note being re-read gets a red line. The "32 sections" claim
 > further down this file is wrong by 26 and is corrected there too. The table's
@@ -1151,7 +1151,7 @@ image is itself worth a look.
   **The correction is now enforced, not just written — and finding that out
   took five controls.** `tests/test_documented_pages_exist.py` re-checks the
   corrected rows on every run: every `` `page-id` `` the table cites must be
-  registered in `SECTIONS`, and the note's "**65 pages are registered**" claim
+  registered in `SECTIONS`, and the note's "**69 pages are registered**" claim
   must equal the real count. A prose correction is not a verified correction,
   and this repo's whole discipline is that a change nobody can re-check has not
   landed. **All five controls were run, and all five fail the file when broken:**
