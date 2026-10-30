@@ -158,7 +158,7 @@ SECTIONS = [
              "The PipeWire graph: devices, inputs, outputs and defaults"),
             (ModulesTab, "modules", "Kernel Modules", "application-x-addon-symbolic",
              "Every loaded module, its dependencies and each parameter's value"),
-            (FirmwareTab, "firmware", "Firmware", "preferences-system-devices-symbolic",
+            (FirmwareTab, "firmware", "Firmware", "computer-symbolic",
              "Device firmware from LVFS, and the CPU microcode revision"),
         ]),
         ("Memory & State", [
@@ -242,9 +242,9 @@ SECTIONS = [
              "What the firmware will boot, and where the slot is really decided"),
         ]),
         ("Sign-in", [
-            (BiometricsTab, "biometrics", "Fingerprint", "auth-fingerprint-symbolic",
+            (BiometricsTab, "biometrics", "Fingerprint", "fingerprint-symbolic",
              "Fingers fprintd has stored, and which readers are attached"),
-            (SmartcardTab, "smartcard", "Smartcard", "auth-smartcard-symbolic",
+            (SmartcardTab, "smartcard", "Smartcard", "system-users-symbolic",
              "Readers, cards, and the subject mappings pam_pkcs11 reads"),
             (SecurityKeysTab, "securitykeys", "Security Keys", "media-flash-symbolic",
              "FIDO keys, their PIN and touch policy, and what ykman owns"),
@@ -322,7 +322,7 @@ SECTIONS = [
         ("Backup & Maintenance", [
             (BackupTab, "backup", "Backup", "document-save-symbolic",
              "Snapshot settings, and the rest lives in Shani Backup"),
-            (MaintenanceTab, "maintenance", "Maintenance", "applications-system-symbolic",
+            (MaintenanceTab, "maintenance", "Maintenance", "applications-engineering-symbolic",
              "Cleanup, optimization, log export and the reset"),
         ]),
         ("Apps", [

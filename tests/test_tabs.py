@@ -454,7 +454,7 @@ class TestBiometricsNoPrivilegeEscalation:
         # By id, not by position: inserting a section used to move this assertion
         # silently onto a different page, which is how the wrong icon passes.
         assert next(p[3] for p in pages if p[1] == "biometrics") == \
-            "auth-fingerprint-symbolic"
+            "fingerprint-symbolic"
 
     def test_biometrics_page_is_not_gated_on_fprintd(self):
         """The page reports the other hardware-auth login methods too, and a
