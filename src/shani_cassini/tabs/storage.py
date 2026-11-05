@@ -25,6 +25,7 @@ import logging
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Details, Summary, explain_error
 
 logger = logging.getLogger(__name__)
 
@@ -151,11 +152,19 @@ class StorageTab(Gtk.Box):
                                                 description="Free versus used, from the same report.")
         self._groups = (self._status_group, self._capacity_group,
                         self._health_group, self._subvol_group, self._chart_group)
+        # Plain words first: how full the disk is, and whether anything needs
+        # doing. The free-space chart is a picture anyone reads, so it stays
+        # out; shani-health's own rows go under For experts.
+        self._plain = Summary(
+            "Storage", "How full your disk is, and whether anything needs attention.")
+        self._btn_refresh = self._plain.add_action("Check Again", self.refresh)
+        self._page.append(self._plain)
+        self._page.append(self._chart_group)
+        self._details = Details(subtitle="shani-health's storage report, maintenance and subvolumes")
         for group in self._groups:
-            self._page.append(group)
-        refresh = Gtk.Button(label="Refresh", valign=Gtk.Align.CENTER)
-        refresh.connect("clicked", lambda *_: self.refresh())
-        self._btn_refresh = refresh
+            if group is not self._chart_group:
+                self._details.append(group)
+        self._page.append(self._details)
         self.refresh()
 
     # ------------------------------------------------------------------ data
@@ -169,8 +178,37 @@ class StorageTab(Gtk.Box):
         self._clear()
         if not result.get("ok"):
             self._render_failure(str(result.get("problem") or ""))
+        else:
+            self._render_report(result)
+        self._plain_verdict(result)
+
+    def _plain_verdict(self, result: dict) -> None:
+        if not result.get("ok"):
+            what, todo = explain_error(str(result.get("problem") or ""),
+                                       "the storage check")
+            self._plain.set_state("error", what, todo)
             return
-        self._render_report(result)
+        summary = result.get("summary") or {}
+        warnings = result.get("warnings") or []
+        free = summary.get("Free") or {}
+        total = summary.get("Total") or {}
+        free_txt, total_txt = str(free.get("used") or ""), str(total.get("used") or "")
+        space = (f"{free_txt} free of {total_txt}." if free_txt and total_txt
+                 else "")
+        if str(free.get("status") or "") in ("warning", "critical", "fail", "error"):
+            self._plain.set_state(
+                "warning", "Your disk is getting full",
+                f"{space} Remove files you no longer need, or empty the "
+                "Trash. Maintenance can clean up old caches.".strip())
+        elif warnings:
+            n = len(warnings)
+            self._plain.set_state(
+                "warning", "Something needs attention" if n == 1
+                else f"{n} things need attention",
+                f"{space} The details are under For experts.".strip())
+        else:
+            self._plain.set_state("ok", "Your storage is fine",
+                                  f"{space} Nothing to do.".strip())
 
     def _clear(self) -> None:
         """Take back exactly the rows this page added.

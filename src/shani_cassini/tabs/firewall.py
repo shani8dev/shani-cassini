@@ -67,6 +67,7 @@ import re
 from gi.repository import Adw, Gio, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Details, Summary, explain_error
 
 logger = logging.getLogger(__name__)
 
@@ -310,8 +311,17 @@ class FirewallTab(Gtk.Box):
                                                   description=CONFIG_HELP)
         self._config_group.add(self._dispatch_row())
         self._groups = (self._fw_group, self._f2b_group, self._config_group)
+        # Plain words first: is the firewall on, and what does it let in.
+        # Zones, rich rules and fail2ban's jails are under For experts.
+        self._plain = Summary(
+            "Firewall",
+            "Blocks connections to this computer that you did not ask for.")
+        self._plain_open = self._plain.add_action("Change Firewall Settings", self._open)
+        self._page.append(self._plain)
+        self._details = Details(subtitle="firewalld zones, ports and rules, and fail2ban's jails")
         for group in self._groups:
-            self._page.append(group)
+            self._details.append(group)
+        self._page.append(self._details)
         self.refresh()
 
     # ----------------------------------------------------------------- widgets
@@ -462,6 +472,35 @@ class FirewallTab(Gtk.Box):
         self._render_firewall()
         self._render_fail2ban()
         self._btn_refresh.set_sensitive(self._pending == 0)
+        self._plain_verdict()
+
+    def _plain_verdict(self) -> None:
+        self._plain_open.set_visible(
+            FIREWALL_CMD not in self._missing and bool(ss.have_tool(FIREWALL_CONFIG)))
+        if FIREWALL_CMD in self._missing:
+            self._plain.set_state("info", "No firewall is installed",
+                                  "Updating the system usually brings it back.")
+            return
+        entry = self._record("state")
+        if self._reading("state"):
+            self._plain.set_state("busy", "Checking the firewall…")
+            return
+        if entry.get("error"):
+            if "not running" in entry["error"].lower():
+                self._plain.set_state(
+                    "warning", "The firewall is off",
+                    "Other computers on your network can try to connect to this one. "
+                    "Restarting the computer usually turns it back on.")
+                return
+            what, todo = explain_error(entry["error"], "the firewall")
+            self._plain.set_state("warning", what, todo)
+            return
+        allowed = [] if self._reading("services") or self._record("services").get("error") \
+            else _words(self._record("services").get("lines") or [])
+        self._plain.set_state(
+            "ok", "The firewall is on",
+            ("It lets in: " + ", ".join(allowed) + ". Everything else is blocked.")
+            if allowed else "Connections you did not ask for are blocked.")
 
     def _render_firewall(self) -> None:
         if FIREWALL_CMD in self._missing:

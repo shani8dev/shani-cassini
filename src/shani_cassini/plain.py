@@ -247,3 +247,25 @@ def explain_error(raw: str, service: str = "the system") -> tuple[str, str]:
     return (f"Something went wrong while asking {service}",
             "Try again. If it keeps happening, the technical message under "
             "For experts can help someone work out why.")
+
+
+def lead(page: Gtk.Box, summary: Summary, details: Details | None = None,
+         keep: tuple = ()) -> None:
+    """Put ``summary`` first on ``page``; with ``details``, fold the rest under it.
+
+    Every child already on the page except those in ``keep`` moves, in order,
+    under the For experts expander, which goes last. Pages that build their
+    groups straight onto one box use this instead of re-plumbing each group.
+    Without ``details`` the page keeps its detail in view, under the summary -
+    the shape for pages only experts open."""
+    page.prepend(summary)
+    if details is None:
+        return
+    child = summary.get_next_sibling()
+    while child is not None:
+        nxt = child.get_next_sibling()
+        if child not in keep:
+            page.remove(child)
+            details.append(child)
+        child = nxt
+    page.append(details)

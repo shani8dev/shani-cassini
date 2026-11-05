@@ -17,9 +17,18 @@ import time
 from gi.repository import Adw, Gio, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Summary, explain_error
 
 logger = logging.getLogger(__name__)
 TOGGLEABLE = ("enabled", "disabled")
+
+# The choices offered before any typing: (label, which rows it keeps).
+FILTERS = (
+    ("All services", "all"),
+    ("With a problem", "failed"),
+    ("Running", "running"),
+    ("Not running", "stopped"),
+)
 
 
 class ServicesTab(Gtk.Box):
@@ -35,6 +44,23 @@ class ServicesTab(Gtk.Box):
         self.append(self._toasts)
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
         self._toasts.set_child(page)
+
+        self._plain = Summary(
+            "Services",
+            "Programs the system runs in the background. Most people never need "
+            "to change these.")
+        self._show_problems = self._plain.add_action("Show Problems", self._only_problems)
+        self._show_problems.set_visible(False)
+        page.append(self._plain)
+        self._failed: list[str] = []
+
+        # Choices first; the search box below stays for a name you know.
+        show_group = Adw.PreferencesGroup()
+        self._show = Adw.ComboRow(title="Show",
+                                  model=Gtk.StringList.new([l for l, _ in FILTERS]))
+        self._show.connect("notify::selected", lambda *_: self._filter())
+        show_group.add(self._show)
+        page.append(show_group)
 
         self._search = Gtk.SearchEntry(placeholder_text="Search services")
         # a placeholder is not an accessible name: without a label a screen
@@ -65,6 +91,8 @@ class ServicesTab(Gtk.Box):
     def _got(self, which, data, err) -> None:
         if data is None:
             self._spinner.set_visible(False)
+            what, todo = explain_error(err, "the service manager")
+            self._plain.set_state("error", what, todo)
             self._running.set_description(f"systemd did not answer: {err}")
             return
         if which == "files":
@@ -76,13 +104,14 @@ class ServicesTab(Gtk.Box):
 
     def _populate(self) -> None:
         self._spinner.set_visible(False)
-        for row, _ in self._rows:
+        for row, *_ in self._rows:
             row.get_parent() and row.get_ancestor(Adw.PreferencesGroup).remove(row)
         self._rows.clear()
         for w in self._chart_added:
             self._chart_group.remove(w)
         self._chart_added = []
         n_run = n_stop = 0
+        self._failed = []
         for name, f in sorted(self._files.items()):
             if f.get("state") not in TOGGLEABLE or "@" in name:
                 continue
@@ -102,7 +131,11 @@ class ServicesTab(Gtk.Box):
             row.add_suffix(sw)
             row.add_suffix(self._menu(name, active))
             (self._running if active else self._stopped).add(row)
-            self._rows.append((row, f"{name} {desc}".lower()))
+            failed = u.get("active") == "failed"
+            if failed:
+                self._failed.append(desc)
+            state = "failed" if failed else ("running" if active else "stopped")
+            self._rows.append((row, f"{name} {desc}".lower(), state))
             n_run += active
             n_stop += not active
         self._running.set_title(f"Running ({n_run})")
@@ -120,12 +153,33 @@ class ServicesTab(Gtk.Box):
         # No units read, no chart: hide the heading rather than leave it over
         # an empty group.
         self._chart_group.set_visible(len(self._chart_added) > 0)
+        self._plain_verdict(n_run)
         self._filter()
+
+    def _plain_verdict(self, n_run: int) -> None:
+        n = len(self._failed)
+        self._show_problems.set_visible(n > 0)
+        if n:
+            names = ", ".join(self._failed[:3]) + (" and others" if n > 3 else "")
+            self._plain.set_state(
+                "warning",
+                "One service stopped with an error" if n == 1
+                else f"{n} services stopped with an error",
+                f"{names}. Restarting the computer often fixes this; Show Problems "
+                "lists them, and each one's log is in its menu.")
+        else:
+            self._plain.set_state("ok", "Everything is running normally",
+                                  f"{n_run} services are running. Nothing to do.")
+
+    def _only_problems(self) -> None:
+        self._show.set_selected(1)
 
     def _filter(self) -> None:
         q = self._search.get_text().lower().strip()
-        for row, hay in self._rows:
-            row.set_visible(not q or q in hay)
+        want = FILTERS[min(self._show.get_selected(), len(FILTERS) - 1)][1]
+        for row, hay, state in self._rows:
+            keep = want == "all" or want == state or (want == "stopped" and state == "failed")
+            row.set_visible(keep and (not q or q in hay))
 
     # -------------------------------------------------------------- actions
     def _menu(self, unit: str, active: bool) -> Gtk.MenuButton:
@@ -151,8 +205,10 @@ class ServicesTab(Gtk.Box):
 
         def done(rc):
             if rc != 0:
+                what, _todo = explain_error(out[-1] if out else "", "the service manager")
                 self._toasts.add_toast(Adw.Toast(title=GLib.markup_escape_text(
-                    f"Could not {verb} {unit}" + (": " + out[-1] if out else ""))))
+                    f"Could not {verb} {unit.removesuffix('.service')}: {what}")))
+                logger.info("systemctl %s %s failed: %s", verb, unit, out[-1] if out else rc)
                 if sw is not None:
                     sw.handler_block_by_func(self._on_switch)
                     sw.set_active(verb == "disable")

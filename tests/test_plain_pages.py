@@ -1,0 +1,245 @@
+"""The plain-language pass on the remaining pages: each leads with a Summary
+whose verdict comes from the page's own reading, and errors reach it through
+explain_error. Driven through the real pages with their readers faked at the
+same seam their own test files use."""
+
+from __future__ import annotations
+
+import time
+
+import gi
+import pytest
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, GLib, Gtk  # noqa: E402
+
+from conftest import literal_text  # noqa: E402
+
+from shani_cassini import system_status as ss  # noqa: E402
+from shani_cassini.plain import Details, Summary  # noqa: E402
+
+
+def spin(cond, timeout=8.0) -> bool:
+    ctx = GLib.MainContext.default()
+    end = time.monotonic() + timeout
+    while not cond() and time.monotonic() < end:
+        ctx.iteration(False)
+        time.sleep(0.01)
+    return cond()
+
+
+def walk(w, out=None):
+    out = [] if out is None else out
+    c = w.get_first_child()
+    while c is not None:
+        out.append(c)
+        walk(c, out)
+        c = c.get_next_sibling()
+    return out
+
+
+def summary_of(page) -> Summary:
+    found = [w for w in walk(page) if isinstance(w, Summary)]
+    assert found, "the page has no plain Summary"
+    return found[0]
+
+
+def headline(page) -> str:
+    return literal_text(summary_of(page).status.get_title())
+
+
+def detail(page) -> str:
+    return literal_text(summary_of(page).status.get_subtitle())
+
+
+def first_group(page):
+    return next(w for w in walk(page) if isinstance(w, Adw.PreferencesGroup))
+
+
+# --- Storage -----------------------------------------------------------------
+
+def _storage(monkeypatch, result):
+    from shani_cassini.tabs.storage import StorageTab
+    monkeypatch.setattr(ss, "storage_info", lambda done: done(result))
+    return StorageTab()
+
+
+def test_storage_says_the_disk_is_getting_full_from_the_tools_own_status(monkeypatch):
+    tab = _storage(monkeypatch, {
+        "ok": True, "warnings": [{"key": "Free", "status": "warning", "message": "low"}],
+        "summary": {"Free": {"status": "warning", "used": "11.3 GB", "message": "11.3 GB — low"},
+                    "Total": {"status": "info", "used": "12.00GiB", "message": "12.00GiB"}},
+        "subvolumes": []})
+    assert first_group(tab) is summary_of(tab), "the summary is not first"
+    assert headline(tab) == "Your disk is getting full"
+    assert "11.3 GB free of 12.00GiB" in detail(tab)
+
+
+def test_storage_with_nothing_flagged_is_fine(monkeypatch):
+    """Control for the one above: the same page, a clean report."""
+    tab = _storage(monkeypatch, {
+        "ok": True, "warnings": [],
+        "summary": {"Free": {"status": "ok", "used": "90 GB"},
+                    "Total": {"status": "info", "used": "120 GB"}},
+        "subvolumes": []})
+    assert headline(tab) == "Your storage is fine"
+
+
+def test_storage_failure_is_explained_and_the_raw_text_stays_in_details(monkeypatch):
+    tab = _storage(monkeypatch, {"ok": False, "problem": "shani-health: command not found"})
+    assert "not installed" in headline(tab)
+    assert "command not found" not in headline(tab) + detail(tab)
+
+
+# --- System Info -------------------------------------------------------------
+
+def _system_summary(monkeypatch, bt="● Active"):
+    from shani_cassini.tabs import device
+    monkeypatch.setattr(ss, "hostnamectl", lambda done: done(
+        {"HardwareVendor": "LENOVO", "HardwareModel": "X1",
+         "OperatingSystemPrettyName": "Shanios"}, ""))
+    monkeypatch.setattr(ss, "hardware_card", lambda done: done(
+        {"hw-ram": "15872 MB (6000 MB used)", "hw-battery": "80% (Discharging)",
+         "hw-bluetooth": bt}))
+    return device.SystemSummary()
+
+
+def test_system_info_names_the_computer_in_plain_words(monkeypatch):
+    s = _system_summary(monkeypatch)
+    assert literal_text(s.status.get_title()) == "LENOVO X1"
+    sub = literal_text(s.status.get_subtitle())
+    assert "16 GB of memory" in sub and "Battery 80%, discharging" in sub
+    assert "MB used" not in sub
+
+
+def test_pair_a_phone_or_watch_opens_shani_link_on_its_bluetooth_flow(monkeypatch):
+    """`--connect=bluetooth` is the flag shani-link-app's own parser takes."""
+    from shani_cassini.tabs import device
+    started = []
+
+    class FakeSub:
+        @staticmethod
+        def new(argv, flags):
+            started.append(argv)
+
+    monkeypatch.setattr(device.Gio, "Subprocess", FakeSub)
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    s = _system_summary(monkeypatch)
+    assert s.pair_button.get_label() == "Pair a phone or watch"
+    s.pair_button.emit("clicked")
+    assert started == [["shani-link-app", "--connect=bluetooth"]]
+
+
+def test_pair_without_shani_link_says_so_instead_of_doing_nothing(monkeypatch):
+    from shani_cassini.tabs import device
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    s = _system_summary(monkeypatch)
+    s.pair_button.emit("clicked")
+    assert "not installed" in literal_text(s.bluetooth.get_subtitle())
+
+
+def test_system_info_page_leads_with_the_summary_and_folds_the_cards(monkeypatch):
+    from shani_cassini.notebook import SystemInfoPage
+    page = SystemInfoPage()
+    assert isinstance(page.get_first_child(), Summary)
+    assert isinstance(page.get_last_child(), Details)
+
+
+# --- Services ----------------------------------------------------------------
+
+def _services(monkeypatch, units):
+    from shani_cassini.tabs.services import ServicesTab
+
+    def run_json(argv, done):
+        if "list-unit-files" in argv:
+            done([{"unit_file": u, "state": "enabled"} for u, _a in units], "")
+        else:
+            done([{"unit": u, "active": a, "sub": a, "description": u.upper()}
+                  for u, a in units], "")
+
+    monkeypatch.setattr(ss, "run_json", run_json)
+    return ServicesTab()
+
+
+def test_services_name_what_failed_and_offer_only_those(monkeypatch):
+    tab = _services(monkeypatch, [("a.service", "active"), ("b.service", "failed")])
+    assert headline(tab) == "One service stopped with an error"
+    assert "B.SERVICE" in detail(tab)
+    tab._show_problems.emit("clicked")
+    shown = [hay for row, hay, _s in tab._rows if row.get_visible()]
+    assert shown == ["b.service b.service"], shown
+
+
+def test_services_all_running_is_nothing_to_do(monkeypatch):
+    tab = _services(monkeypatch, [("a.service", "active")])
+    assert headline(tab) == "Everything is running normally"
+    assert not tab._show_problems.get_visible()
+
+
+def test_services_unanswered_is_explained(monkeypatch):
+    from shani_cassini.tabs.services import ServicesTab
+    monkeypatch.setattr(ss, "run_json", lambda argv, done: done(
+        None, "Failed to connect to bus: No such file or directory"))
+    tab = ServicesTab()
+    assert "Failed to connect" not in headline(tab) + detail(tab)
+
+
+# --- Secure Boot -------------------------------------------------------------
+
+def test_secure_boot_result_dialog_works_on_gtk4(monkeypatch):
+    """It was a GTK 3 MessageDialog (Gtk.WindowTypeHint, dialog.run()), which
+    raises AttributeError on GTK 4 - so the dialog naming the MokManager
+    password never appeared."""
+    from shani_cassini.tabs.secureboot import SecureBootTab
+    tab = SecureBootTab()
+    tab._show_gen_efi_result("Stage MOK enrollment", "password: shanios", None)
+    tab._show_gen_efi_result("Stage MOK enrollment", "x",
+                             RuntimeError("Error executing command as another user: "
+                                          "Request dismissed"))
+    assert headline(tab).startswith("Stage MOK enrollment did not finish: Permission")
+
+
+def test_a_refused_gen_efi_is_not_reported_as_success(monkeypatch):
+    from unittest.mock import MagicMock, patch
+    from shani_cassini.tabs.secureboot import SecureBootTab
+    tab = SecureBootTab()
+    got = []
+    with patch("shani_cassini.tabs.secureboot.subprocess.run",
+               return_value=MagicMock(returncode=126, stdout="", stderr="dismissed")), \
+            patch.object(tab, "_show_gen_efi_result", side_effect=lambda *a: got.append(a)):
+        tab._run_gen_efi("enroll-mok", "Enroll", "detail")
+    assert got and got[0][2] is not None
+    got.clear()
+    with patch("shani_cassini.tabs.secureboot.subprocess.run",
+               return_value=MagicMock(returncode=0, stdout="", stderr="")), \
+            patch.object(tab, "_show_gen_efi_result", side_effect=lambda *a: got.append(a)):
+        tab._run_gen_efi("enroll-mok", "Enroll", "detail")
+    assert got and got[0][2] is None, "control: success stays success"
+
+
+@pytest.mark.parametrize("uefi,sb,setup,expect", [
+    (False, None, None, "legacy mode"),
+    (True, True, False, "Secure Boot is on"),
+    (True, False, False, "Secure Boot is off"),
+    (True, None, True, "waiting for its keys"),
+])
+def test_secure_boot_verdict(uefi, sb, setup, expect):
+    from shani_cassini.tabs.secureboot import SecureBootStatus, SecureBootTab
+    tab = SecureBootTab()
+    tab._plain_verdict(SecureBootStatus(uefi=uefi, sbctl_present=False, sbctl_installed=False,
+                                        secure_boot=sb, setup_mode=setup, enrolled=False,
+                                        microsoft_keys=False, guid=""))
+    assert expect in headline(tab)
+    assert tab._plain_firmware.get_visible() is (uefi and sb is False)
+
+
+# --- Maintenance -------------------------------------------------------------
+
+def test_maintenance_leads_with_free_space_and_puts_commands_under_experts():
+    from shani_cassini.tabs.maintenance import MaintenanceTab
+    tab = MaintenanceTab()
+    assert first_group(tab) is summary_of(tab)
+    assert headline(tab) in ("Nothing needs cleaning", "Your disk is getting full")
+    details = [w for w in walk(tab) if isinstance(w, Details)]
+    assert details and tab._out_group.get_ancestor(Details) is details[0]

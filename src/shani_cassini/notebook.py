@@ -97,10 +97,17 @@ class SystemInfoPage(Gtk.Box):
 
     def __init__(self, state=None, auth_manager=None) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=24)
-        from shani_cassini.tabs.device import DeviceGroup
+        from shani_cassini.plain import Details
+        from shani_cassini.tabs.device import DeviceGroup, SystemSummary
+        # What this computer is, in plain words, with the Bluetooth row that
+        # pairs a phone or watch; the hardware, sensor and kernel cards are
+        # folded under For experts.
+        self.append(SystemSummary())
         self.append(DeviceGroup())
-        self.append(SystemTab(state=state, auth_manager=auth_manager))
-        self.append(KernelTab(state=state, auth_manager=auth_manager))
+        details = Details(subtitle="Hardware, storage, boot slots, sensors and the kernel")
+        details.append(SystemTab(state=state, auth_manager=auth_manager))
+        details.append(KernelTab(state=state, auth_manager=auth_manager))
+        self.append(details)
 
 # (group, [(sub-group, [(tab class, id, title, icon, subtitle)])])
 #

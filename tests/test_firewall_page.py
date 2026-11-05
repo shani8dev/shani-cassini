@@ -312,11 +312,14 @@ def row_titled(tab: Gtk.Widget, title: str) -> Adw.ActionRow:
 
 
 def group_titles(tab: Gtk.Widget) -> list[str]:
-    """The groups' titles, in the order they are shown."""
+    """The groups' titles, in the order they are shown - the page's own, so
+    not the plain Summary on top or the For experts expander's frame."""
+    from shani_cassini.plain import Details, Summary
     out: list[str] = []
 
     def descend(widget: Gtk.Widget) -> None:
-        if isinstance(widget, Adw.PreferencesGroup):
+        if isinstance(widget, Adw.PreferencesGroup) and not isinstance(
+                widget, Summary) and not isinstance(widget.get_parent(), Details):
             out.append(widget.get_title() or "")
         child = widget.get_first_child()
         while child is not None:
@@ -747,9 +750,14 @@ def test_the_page_offers_refresh_and_nothing_else(tmp_path, monkeypatch) -> None
     fake_tools(tmp_path, monkeypatch)
     tab = fw.FirewallTab()
     assert settled(tab), rows(tab)
-    assert button_labels(tab) == ["Open firewall-config", "Refresh"], \
+    # The summary's button opens the same GUI the dispatch row does.
+    assert button_labels(tab) == ["Change Firewall Settings",
+                                  "Open firewall-config", "Refresh"], \
         button_labels(tab)
+    from conftest import is_details_switch
     for widget in descendants(tab):
+        if is_details_switch(widget):
+            continue  # AdwExpanderRow's own enable switch, never shown here
         assert not isinstance(widget, Gtk.Switch), \
             "a switch on this page would be a way to change the firewall"
         assert not isinstance(widget, Gtk.Entry), \
@@ -907,11 +915,12 @@ def test_repeated_refresh_neither_duplicates_rows_nor_crashes(
         assert len(walk(tab)) == first, \
             f"a refresh left {len(walk(tab))} rows, not {first}: {rows(tab)}"
     assert len(walk(tab)) == first, (len(walk(tab)), first)
-    # Every row except the two permanent ones is tracked, so a refresh has
+    # Every row except the permanent ones is tracked, so a refresh has
     # something to take back out: the firewalld state row keeps its identity
-    # across a refresh because the Refresh button is on it, and the dispatch row
-    # is built once in __init__.
-    assert len(tab._added) == first - 2, (len(tab._added), first)
+    # across a refresh because the Refresh button is on it, the dispatch row
+    # is built once in __init__, and so are the summary's status row and the
+    # For experts expander's header.
+    assert len(tab._added) == first - 4, (len(tab._added), first)
     for group, row in tab._added:
         assert row in descendants(group), \
             f"{row.get_title()} is not in the group it was added to"

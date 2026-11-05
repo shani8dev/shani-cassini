@@ -19,10 +19,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from gi.repository import Gtk, Pango  # type: ignore
+from gi.repository import Adw, Gio, GLib, Gtk, Pango  # type: ignore
 
 from shani_cassini.state import AppState
 from shani_cassini.auth import AuthManager
+from shani_cassini.plain import Details, Summary, explain_error
 from shani_cassini.widgets import Card, Chip, HealthPanel, apply_amoled_theme, find_named
 
 
@@ -286,21 +287,33 @@ class SecureBootTab(Gtk.Box):
         content_box.set_margin_end(20)
         scrolled.set_child(content_box)
 
+        # Plain words first; firmware variables, keys and the MOK buttons are
+        # under For experts.
+        self._plain = Summary(
+            "Secure Boot",
+            "Checks that only trusted software starts when the computer turns on.")
+        self._plain_firmware = self._plain.add_action(
+            "Open Firmware Settings…", self._ask_firmware_setup)
+        self._plain_firmware.set_visible(False)
+        content_box.append(self._plain)
+        details = Details(subtitle="Firmware variables, enrolled keys and MOK enrollment")
+        content_box.append(details)
+
         # Create secure boot status card
         status_card = self._create_status_card()
-        content_box.append(status_card)
+        details.append(status_card)
 
         # Create enrolled keys card
         keys_card = self._create_enrolled_keys_card()
-        content_box.append(keys_card)
+        details.append(keys_card)
 
         # Create MOK action card (enroll/cleanup via gen-efi — NOT direct mokutil)
         actions_card = self._create_mok_actions_card()
-        content_box.append(actions_card)
+        details.append(actions_card)
 
         # Create health panel
         health_panel = self._create_health_panel()
-        content_box.append(health_panel)
+        details.append(health_panel)
 
         logger.debug("Secure boot tab UI created")
 
@@ -421,36 +434,92 @@ class SecureBootTab(Gtk.Box):
         """Run ``pkexec gen-efi <subcommand>`` and surface the result."""
         import subprocess
         try:
-            subprocess.run(
+            proc = subprocess.run(
                 ["pkexec", "gen-efi", subcommand],
                 check=False,
                 timeout=60,
                 capture_output=True,
                 text=True,
             )
-            self._show_gen_efi_result(title, detail, None)
+            # The exit status was ignored, so a refused password prompt was
+            # reported as success - including the MOK password to type at a
+            # prompt that would never come.
+            rc = getattr(proc, "returncode", 0)
+            if isinstance(rc, int) and rc != 0:
+                said = (getattr(proc, "stderr", "") or getattr(proc, "stdout", "") or "")
+                self._show_gen_efi_result(title, detail, RuntimeError(
+                    str(said).strip() or f"gen-efi {subcommand} exited with {rc}"))
+            else:
+                self._show_gen_efi_result(title, detail, None)
         except FileNotFoundError:
             self._show_gen_efi_result(title, detail, FileNotFoundError("pkexec or gen-efi not found on this system."))
         except subprocess.TimeoutExpired:
             self._show_gen_efi_result(title, detail, TimeoutError("gen-efi did not complete within 60 seconds."))
 
     def _show_gen_efi_result(self, title: str, detail: str, error: Exception | None) -> None:
-        from gi.repository import GLib
-        dialog = Gtk.MessageDialog(
-            transient_for=self.get_root() if isinstance(self.get_root(), Gtk.Window) else None,
-            window_type_hint=Gtk.WindowTypeHint.DIALOG,
-        )
-        dialog.set_title(title)
-        dialog.set_markup(f"<b>{title}</b>\n\n{detail}")
+        """The result as an Adw dialog, and in the summary.
+
+        This was a GTK 3 MessageDialog (`Gtk.WindowTypeHint`, `dialog.run()`),
+        which raises AttributeError on GTK 4 - so the dialog that names the
+        MokManager password never appeared."""
         if error is not None:
-            dialog.set_detail_text(str(error))
-            dialog.set_message_type(Gtk.MessageType.ERROR)
+            what, todo = explain_error(str(error), "the boot tool")
+            self._plain.set_state("error", f"{title} did not finish: {what}", todo)
+            body = f"{what}. {todo}\n\n{error}"
         else:
-            dialog.set_message_type(Gtk.MessageType.INFO)
-        dialog.add_button("_Close", Gtk.ResponseType.CLOSE)
-        GLib.idle_add(dialog.show)
-        dialog.run()
-        dialog.destroy()
+            body = detail
+        dialog = Adw.AlertDialog(heading=title, body=body)
+        dialog.add_response("close", "Close")
+        root = self.get_root()
+        dialog.present(root if isinstance(root, Gtk.Widget) else None)
+
+    def _ask_firmware_setup(self) -> None:
+        """Secure Boot is switched on in the firmware, which only a restart
+        reaches; systemd can restart straight into it."""
+        dialog = Adw.AlertDialog(
+            heading="Restart into firmware settings?",
+            body="The computer restarts now and opens its firmware settings. Save "
+                 "your work first. Look for Secure Boot, usually under Security or "
+                 "Boot, and set it to Enabled.")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("restart", "Restart")
+        dialog.set_response_appearance("restart", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_close_response("cancel")
+
+        def resp(_d, r):
+            if r == "restart":
+                try:
+                    Gio.Subprocess.new(["systemctl", "reboot", "--firmware-setup"],
+                                       Gio.SubprocessFlags.NONE)
+                except GLib.Error as e:
+                    what, todo = explain_error(e.message, "the system")
+                    self._plain.set_state("error", what, todo)
+        dialog.connect("response", resp)
+        root = self.get_root()
+        dialog.present(root if isinstance(root, Gtk.Widget) else None)
+
+    def _plain_verdict(self, status: "SecureBootStatus") -> None:
+        self._plain_firmware.set_visible(status.uefi and status.secure_boot is False)
+        if not status.uefi:
+            self._plain.set_state(
+                "info", "This computer starts in legacy mode",
+                "Secure Boot needs a computer that starts in UEFI mode. Nothing to do.")
+        elif status.setup_mode:
+            self._plain.set_state(
+                "warning", "Secure Boot is waiting for its keys",
+                "The firmware is in setup mode, so it checks nothing yet. The "
+                "keys are set up under For experts.")
+        elif status.secure_boot is True:
+            self._plain.set_state("ok", "Secure Boot is on",
+                                  "Only trusted software can start this computer. Nothing to do.")
+        elif status.secure_boot is False:
+            self._plain.set_state(
+                "warning", "Secure Boot is off",
+                "It is switched on in the computer's firmware settings. Encryption "
+                "that unlocks with the computer's security chip is safer with it on.")
+        else:
+            self._plain.set_state("info", "Secure Boot could not be checked",
+                                  "The firmware did not say. Nothing to do.")
 
     def _create_health_panel(self) -> Gtk.Widget:
         """Create a health panel summarising secure-boot posture.
@@ -474,6 +543,7 @@ class SecureBootTab(Gtk.Box):
 
         status = probe_secure_boot()
         key_count = _count_enrolled_keys()
+        self._plain_verdict(status)
 
         # UEFI firmware
         self._update_label("sb-uefi", "Yes" if status.uefi else "No (Legacy BIOS)")

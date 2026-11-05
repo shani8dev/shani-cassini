@@ -395,3 +395,21 @@ def assert_subtitle_shown_as_text(subtitle: str, hostile: str, *,
             f"remaining entity means the page escaped twice (or the page "
             f"wrote an entity of its own, which a use-markup row renders as "
             f"the entity's characters, not as text)")
+
+
+def is_details_switch(widget) -> bool:
+    """Whether ``widget`` is the For experts expander's own, never-shown enable
+    switch (`plain.Details`).
+
+    AdwExpanderRow builds a GtkSwitch for `show-enable-switch` whether or not
+    it is shown, so a page gate that says "this page carries no switch" has to
+    step over exactly that one - and only while it is hidden."""
+    from gi.repository import Adw, Gtk
+    from shani_cassini.plain import Details
+    if not isinstance(widget, Gtk.Switch):
+        return False
+    row = widget.get_ancestor(Adw.ExpanderRow)
+    if row is None or row.get_show_enable_switch():
+        return False
+    box = row.get_ancestor(Details)
+    return box is not None and box.expander is row

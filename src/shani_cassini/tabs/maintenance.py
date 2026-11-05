@@ -18,6 +18,7 @@ import os
 from gi.repository import Adw, Gio, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Details, Summary, explain_error
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,13 @@ class MaintenanceTab(Gtk.Box):
         self.append(self._toasts)
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         self._toasts.set_child(page)
+
+        self._plain = Summary(
+            "Maintenance",
+            "Free up space, make a report when you need help, or start over.")
+        self._plain_clean = self._plain.add_action(
+            "Clean Up", lambda: self._run(["pkexec", ss.DEPLOY, "--cleanup"], "Clean up"))
+        page.append(self._plain)
 
         # --- storage
         st = Adw.PreferencesGroup(title="Storage",
@@ -91,7 +99,17 @@ class MaintenanceTab(Gtk.Box):
         self._out_scroll = Gtk.ScrolledWindow(child=tv, min_content_height=200, max_content_height=340,
                                               hscrollbar_policy=Gtk.PolicyType.NEVER)
         self._out_group.add(self._out_scroll)
-        page.append(self._out_group)
+        # Raw tool output and the commands behind each button are for experts;
+        # the summary above says what is happening in plain words.
+        self._details = Details(subtitle="What each job prints, and the commands behind the buttons")
+        self._details.append(self._out_group)
+        self._details.commands("Commands", (
+            (f"pkexec {ss.DEPLOY} --cleanup", "Clean up"),
+            (f"pkexec {ss.DEPLOY} --optimize", "Deduplicate"),
+            (f"pkexec {ss.HEALTH} --export-logs ~", "Create a diagnostic report"),
+            ("pkexec shani-reset --yes [--home] [--keep-downloads]", "Reset this computer"),
+        ))
+        page.append(self._details)
 
         self._update_space()
 
@@ -107,32 +125,54 @@ class MaintenanceTab(Gtk.Box):
         fs = _fs("/data") or _fs("/")
         if not fs or not fs[0]:
             self._space.set_subtitle("Unknown")
+            self._plain.set_state("info", "Could not read how full the disk is",
+                                  "The buttons below still work.")
             return
         size, free = fs
         used = (size - free) / size
         self._bar.set_value(used)
         self._space.set_subtitle(f"{GLib.format_size(free)} free of {GLib.format_size(size)}"
                                  + (" - running low, updates need about 10 GB" if free < 10 * 1024**3 else ""))
+        if self._busy:
+            return
+        if free < 10 * 1024**3:
+            self._plain.set_state(
+                "warning", "Your disk is getting full",
+                f"{GLib.format_size(free)} free. Updates need about 10 GB. Clean Up "
+                "removes old update downloads and backups.")
+            self._plain_clean.add_css_class("suggested-action")
+        else:
+            self._plain.set_state("ok", "Nothing needs cleaning",
+                                  f"{GLib.format_size(free)} free of {GLib.format_size(size)}.")
+            self._plain_clean.remove_css_class("suggested-action")
 
     def _run(self, argv, what, inhibit: bool = True) -> None:
         if self._busy:
             return
         self._busy = True
-        for b in (self._cleanup, self._optimize, self._btn_report):
+        for b in (self._cleanup, self._optimize, self._btn_report, self._plain_clean):
             b.set_sensitive(False)
+        self._plain.set_state("busy", f"{what}…", "This can take a while. You can keep working.")
         self._out.set_text(f"{what}…\n")
         self._out_group.set_visible(True)
 
+        last: list[str] = []
+
         def line(t):
+            if t.strip():
+                last[:] = [t]
             self._out.insert(self._out.get_end_iter(), t + "\n")
             adj = self._out_scroll.get_vadjustment()
             GLib.idle_add(lambda: adj.set_value(adj.get_upper()))
 
         def done(rc):
             self._busy = False
-            for b in (self._cleanup, self._optimize, self._btn_report):
+            for b in (self._cleanup, self._optimize, self._btn_report, self._plain_clean):
                 b.set_sensitive(True)
             self._update_space()
+            if rc not in (0, 126, 127):
+                said, todo = explain_error(last[0] if last else "", "the maintenance tool")
+                self._plain.set_state("error", f"{what} did not finish: {said}", todo)
             self._toasts.add_toast(Adw.Toast(title="Authorization was cancelled" if rc in (126, 127)
                                              else f"{what}: done" if rc == 0 else f"{what} did not complete"))
         ss.run_streaming(ss.inhibited(argv, what) if inhibit else argv, line, done)
@@ -145,6 +185,9 @@ class MaintenanceTab(Gtk.Box):
         def done(rc):
             self._btn_report.set_sensitive(True)
             if rc != 0:
+                if rc not in (126, 127):
+                    said, todo = explain_error(out[-1] if out else "", "the report tool")
+                    self._plain.set_state("error", f"The report could not be created: {said}", todo)
                 self._toasts.add_toast(Adw.Toast(title="Authorization was cancelled" if rc in (126, 127)
                                                  else "The report could not be created"))
                 return
