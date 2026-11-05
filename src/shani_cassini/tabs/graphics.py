@@ -37,6 +37,7 @@ import logging
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Details, Summary, explain_error, settings_row
 
 logger = logging.getLogger(__name__)
 
@@ -130,8 +131,19 @@ class GraphicsTab(Gtk.Box):
         why = Adw.PreferencesGroup(title="Where the driver comes from")
         why.add(_row("Drivers ship in the image", WHY_NOTE))
 
+        # Plain words first; every group above goes under For experts.
+        self._plain = Summary(
+            "Graphics",
+            "The graphics card that draws your screen, and whether it has a "
+            "working driver.")
+        self._plain_cards: list[Adw.ActionRow] = []
+        self.append(self._plain)
+        self.append(settings_row("displays", "Screens, resolution and scaling",
+                                 "Settings › Displays"))
+        self._details = Details()
         for group in (gpus, render, self._hybrid, self._launch_group, why):
-            self.append(group)
+            self._details.append(group)
+        self.append(self._details)
 
         self.load()
         self.load_hybrid()
@@ -161,11 +173,17 @@ class GraphicsTab(Gtk.Box):
                 RENDER_NOTE + "\nNo render nodes — this session has no DRM "
                               "device to draw through.")
 
+        for row in self._plain_cards:
+            self._plain.remove(row)
+        self._plain_cards = []
         if not payload.get("ok"):
             self._gpus_group.set_description(payload["problem"])
+            what, todo = explain_error(payload["problem"], "the graphics hardware")
+            self._plain.set_state("info", "Could not check the graphics card", todo)
             return
 
         gpus = payload["gpus"]
+        self._plain_verdict(gpus, nodes)
         self._gpus_group.set_description(
             GPUS_NOTE if gpus else
             GPUS_NOTE + "\nlspci reports no graphics hardware on this machine.")
@@ -194,6 +212,34 @@ class GraphicsTab(Gtk.Box):
                 img.add_css_class("warning")
                 row.add_prefix(img)
             self._add(self._gpus_group, row)
+
+    def _plain_verdict(self, gpus: list, nodes: list) -> None:
+        missing = [g for g in gpus if not g["driver"]]
+        if not gpus:
+            self._plain.set_state("info", "No graphics card was found",
+                                  "This can happen in a virtual machine. Nothing to do.")
+        elif missing:
+            self._plain.set_state(
+                "warning", "A graphics card has no driver",
+                "Screens connected to it may stay black. Updating the system "
+                "usually brings the driver back.")
+        elif not nodes:
+            self._plain.set_state(
+                "warning", "Apps cannot use the graphics card",
+                "The card has a driver, but this session cannot draw through it. "
+                "Signing out and back in, or restarting, usually fixes this.")
+        else:
+            n = len(gpus)
+            self._plain.set_state(
+                "ok", "Your graphics are working",
+                f"{n} graphics card{'s' * (n != 1)}, each with a driver. Nothing to do.")
+        for gpu in gpus:
+            device = gpu["device"]
+            name = device.split(":", 1)[1].strip() if ":" in device else device
+            row = self._plain.add_row(name)
+            self._plain.set_row(row, "ok" if gpu["driver"] else "warning",
+                                "Working" if gpu["driver"] else "No driver")
+            self._plain_cards.append(row)
 
     # -------------------------------------------------------- hybrid graphics
     def load_hybrid(self) -> None:

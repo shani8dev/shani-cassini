@@ -776,30 +776,24 @@ class TestTheHealthPageSaysWhyItsChecksCannotRun:
             # drive it directly rather than hoping the machine lacks it.
             ss.have = lambda tool: False if tool is ss.HEALTH else saved(tool)
             tab = HealthTab()
-            banners = [w for w in self._walk(tab) if isinstance(w, Adw.Banner)]
-            assert banners, (
-                "no Adw.Banner on the page: the absent-tool notice has gone back "
-                "to being something else, and this gate must be re-pointed at "
-                "the new widget rather than deleted")
-            banner = banners[0]
-            assert banner.get_revealed(), (
-                "AdwBanner.revealed defaults to False, so an unrevealed banner "
-                "is present in the tree and occupies 0px of height - which is "
-                "exactly the invisible notice this test exists to catch")
-            assert (banner.get_title() or "").strip(), (
-                "the notice has no text, so it explains nothing even when shown")
-
-            # Height, asserted on the built widget rather than on the source:
-            # a grep for `revealed=True` would pass while the banner sat at
-            # 0px, and would also fire on this file's own comments.
-            # `Gtk.Widget.measure()` returns a 5-tuple (minimum, natural,
-            # minimum_baseline, natural_baseline, minimum_ascent, ...); only
-            # index 1 is the natural height. The first version unpacked two
-            # values and raised rather than asserting.
+            # Re-pointed (plain-language pass): the notice is now the page's
+            # own Summary at the TOP, with the cause in its headline - not a
+            # banner below the checks it disables.
+            from shani_cassini.plain import Summary
+            summaries = [w for w in self._walk(tab) if isinstance(w, Summary)]
+            assert summaries, "no Summary on the page: the notice went missing"
+            notice = summaries[0].status
+            assert "not installed" in (notice.get_title() or ""), (
+                "the notice no longer names the cause")
+            assert (notice.get_subtitle() or "").strip(), (
+                "the notice says what is wrong but not what to do")
             assert tab.measure(Gtk.Orientation.VERTICAL, -1)[1] > 0, (
                 "the page measures zero height")
-            assert banner.measure(Gtk.Orientation.VERTICAL, -1)[1] > 0, (
-                "the banner measures zero height, so it renders as nothing")
+            assert notice.measure(Gtk.Orientation.VERTICAL, -1)[1] > 0, (
+                "the notice measures zero height, so it renders as nothing")
+            # it is the first thing on the page, not below the fold
+            page = tab._toasts.get_child()
+            assert page.get_first_child() is summaries[0]
         finally:
             ss.have = saved
 

@@ -76,6 +76,7 @@ from typing import Callable, Final
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Details, Summary
 from shani_cassini.tabs.compression import CompressionTab
 from shani_cassini.widgets import find_named, reserve_leading_column
 
@@ -485,7 +486,14 @@ class BtrfsTab(Gtk.Box):
         self._row_maint = _row("Maintenance jobs", "Reading\u2026")
         self._maint.add(self._row_maint)
         self._maint_rows: list[Adw.ActionRow] = []
-        page.append(self._maint)
+        # Plain words first; every btrfs read below is under For experts.
+        self._plain = Summary(
+            "Btrfs",
+            "The way Shanios stores everything on disk. It keeps snapshots and "
+            "checks itself for damage every month.")
+        page.append(self._plain)
+        self._details = Details(subtitle="Subvolumes, space allocation, scrub and compression")
+        self._details.append(self._maint)
         # The rows this page added to each group, so a refill can take exactly
         # those back out - see _clear.
         self._added: list[tuple[Adw.PreferencesGroup, Adw.ActionRow]] = []
@@ -566,8 +574,22 @@ class BtrfsTab(Gtk.Box):
 
         for group in (self._subvol_group, self._fs_group, self._df_group,
                       self._scrub_group, self._du_group):
-            self._page.append(group)
-        self._page.append(self._compression)
+            self._details.append(group)
+        self._details.append(self._compression)
+        self._page.append(self._details)
+        # The summary's and the expander's own rows are built once and never
+        # refilled: owned like the other permanent rows (the expander keeps an
+        # Adw.ActionRow of its own inside it).
+        for root in (self._plain, self._details.expander):
+            stack = [root]
+            while stack:
+                w = stack.pop()
+                if isinstance(w, Adw.ActionRow):
+                    self._permanent.append(w)
+                c = w.get_first_child()
+                while c is not None:
+                    stack.append(c)
+                    c = c.get_next_sibling()
         # Additive, not a replacement: an earlier edit put this line *instead of*
         # `self.refresh()`, so the page's primary reads never started and it sat
         # on "Asking btrfs..." for ever while every other test on this page went
@@ -591,7 +613,22 @@ class BtrfsTab(Gtk.Box):
             # this image would otherwise be running do not exist here. Not an
             # error, and emphatically not "all four succeeded".
             self._maint.set_visible(False)
+            self._plain.set_state("info", "No monthly checks are set up here",
+                                  "Nothing to do.")
             return
+        failed = [r for r in rows if r["state"] == "failed"]
+        ran = [r for r in rows if r["state"] == "ok"]
+        if failed:
+            self._plain.set_state(
+                "warning", "A monthly disk check failed",
+                f"{', '.join(r['label'] for r in failed)} did not finish. It runs "
+                f"again next month; the details are under For experts.")
+        elif ran:
+            self._plain.set_state("ok", "The monthly disk checks are passing",
+                                  "Nothing to do.")
+        else:
+            self._plain.set_state("info", "The monthly disk checks have not run yet",
+                                  "They run on their own. Nothing to do.")
         self._maint.set_visible(True)
         states = {"ok": 0, "failed": 0, "never-run": 0, "absent": 0}
         for r in rows:

@@ -809,6 +809,10 @@ def test_the_page_offers_a_refresh_and_the_du_button_and_nothing_else(
         ("a re-read and one opt-in measurement are all a click may do: "
          f"{button_labels(tab)}")
     for widget in descendants(tab):
+        # Adw.ExpanderRow (the For experts fold) carries an enable-expansion
+        # switch of its own that it never shows; it changes nothing on disk.
+        if isinstance(widget, Gtk.Switch) and not widget.get_visible():
+            continue
         assert not isinstance(widget, Gtk.Switch), \
             "a switch would be a way to change a filesystem"
         assert not isinstance(widget, Gtk.CheckButton), \

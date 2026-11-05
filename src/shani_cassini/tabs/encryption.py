@@ -17,6 +17,7 @@ import os
 from gi.repository import Adw, Gio, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Details, explain_error
 from shani_cassini.widgets import reserve_leading_column
 from shani_cassini.tabs.tpm2_boot import Tpm2BootTab
 
@@ -110,7 +111,10 @@ class EncryptionTab(Gtk.Box):
 
         self._luks_rows = {}
         encrypted = _encrypted()
-        g = Adw.PreferencesGroup(title="Disk Encryption")
+        g = Adw.PreferencesGroup(
+            title="Disk Encryption",
+            description="Encryption keeps your files unreadable to anyone who takes "
+                        "the computer or its disk.")
         if encrypted:
             g.add(_row("Encrypted", "The system disk is protected with LUKS2 encryption",
                        "channel-secure-symbolic", "success"))
@@ -134,10 +138,14 @@ class EncryptionTab(Gtk.Box):
         # which is the exact opposite of the condition that matters.
         self._boot_factor = Tpm2BootTab(self._state, self._auth_manager,
                                         autoload=False)
-        self._page.append(self._boot_factor)
+        # Technical detail - the boot second factor's package inventory and the
+        # LUKS header values - is folded under For experts at the bottom.
+        self._details = Details()
+        self._details.append(self._boot_factor)
         self._load_boot_second_factor()
 
         if not encrypted:
+            self._page.append(self._details)
             self._ask_tpm(tpm_row)
             return
 
@@ -186,7 +194,8 @@ class EncryptionTab(Gtk.Box):
             row = _row(title, NOT_AVAILABLE)
             self._luks_rows[key] = row
             details.add(row)
-        self._page.append(details)
+        self._details.prepend(details)
+        self._page.append(self._details)
 
         # The boot-time second factor: the same TPM2, asked whether there is a
         # second factor at all. It was its own page until the two were folded,
@@ -234,7 +243,9 @@ class EncryptionTab(Gtk.Box):
     def _on_status(self, st, err) -> None:
         self._btn_details.set_sensitive(True)
         if st is None:
-            self._toast(err or "Could not read the encryption state")
+            what, todo = explain_error(err or "", "the encryption tool")
+            self._status_row.set_subtitle(GLib.markup_escape_text(f"{what}. {todo}"))
+            self._toast(what)
             return
         if st.get("tpm2_enrolled"):
             pin = " and a PIN" if st.get("tpm2_pin") else ""

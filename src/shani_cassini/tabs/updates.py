@@ -10,6 +10,7 @@ import logging
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Details, explain_error
 
 logger = logging.getLogger(__name__)
 
@@ -78,10 +79,17 @@ class UpdatesTab(Gtk.Box):
         self._row_default = Adw.ActionRow(title="Will start next from", subtitle="…")
         self._row_default.set_subtitle_selectable(True)
         sysg.add(self._row_default)
-        page.append(sysg)
+        # The slot names are for experts: they go under For experts at the
+        # bottom, and the update itself leads.
+        self._details = Details(subtitle="Versions, system slots and error messages")
+        self._details.append(sysg)
+        self._row_error = self._details.add_row("Last error", "None")
 
         # --- updates
-        upd = Adw.PreferencesGroup(title="Updates")
+        upd = Adw.PreferencesGroup(
+            title="Updates",
+            description="Shanios updates the whole system at once and keeps the "
+                        "previous version, so you can always go back.")
         self._channel = Adw.ComboRow(title="Update channel")
         model = Gtk.StringList()
         for _id, name, _sub in CHANNELS:
@@ -153,6 +161,7 @@ class UpdatesTab(Gtk.Box):
         self._out_scroll.set_child(view)
         self._out_group.add(self._out_scroll)
         page.append(self._out_group)
+        page.append(self._details)
 
         self._phase_index = -1
         self.refresh(check=True)
@@ -171,8 +180,10 @@ class UpdatesTab(Gtk.Box):
         self._btn_check.set_sensitive(not self._busy)
         if st is None:
             self._row_version.set_subtitle("Unavailable")
-            self._row_update.set_title("Cannot read the system state")
-            self._row_update.set_subtitle(err)
+            what, todo = explain_error(err or "", "the update tool")
+            self._row_update.set_title("Cannot check for updates")
+            self._row_update.set_subtitle(GLib.markup_escape_text(f"{what}. {todo}"))
+            self._row_error.set_subtitle(GLib.markup_escape_text(err or "no message"))
             for b in (self._btn_update, self._btn_prefetch, self._btn_rollback):
                 b.set_sensitive(False)
             return

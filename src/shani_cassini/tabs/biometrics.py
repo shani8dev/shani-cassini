@@ -417,7 +417,7 @@ class BiometricsTab(Gtk.Box):
                     "error", "Fingerprint support is not installed",
                     "The fprintd service is missing. Updating the system brings it back.")
             else:
-                what, todo = explain_error(err, "fingerprint")
+                what, todo = explain_error(err, "the fingerprint service")
                 self._summary.set_state("warning", what, todo)
             self._btn_retry.set_visible(True)
             self._set(self._row_device, "Reader", "Not known - fprintd did not answer", None)

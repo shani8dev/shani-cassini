@@ -72,8 +72,11 @@ def test_updates_page_without_deploy(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", str(tmp_path))  # no shani-deploy at all
     from shani_cassini.tabs.updates import UpdatesTab
     tab = UpdatesTab()
-    assert spin(lambda: tab._row_update.get_title() == "Cannot read the system state")
+    assert spin(lambda: tab._row_update.get_title() == "Cannot check for updates")
     assert not tab._btn_rollback.get_sensitive()
+    # plain words on the page; the raw message only under For experts
+    assert "not installed" in tab._row_update.get_subtitle()
+    assert "shani-deploy" in tab._row_error.get_subtitle()
 
 
 def test_health_shows_failures_first_despite_exit_1(fake_bin):

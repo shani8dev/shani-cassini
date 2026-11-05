@@ -11,6 +11,7 @@ so a missing tool or unreadable file never crashes the tab.
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -21,6 +22,7 @@ from gi.repository import Gtk, Pango  # type: ignore
 from shani_cassini.state import AppState
 from shani_cassini.auth import AuthManager
 from shani_cassini.widgets import Card, Chip, HealthPanel, apply_amoled_theme, find_named
+from shani_cassini.plain import Details, Summary
 
 
 logger = logging.getLogger(__name__)
@@ -54,6 +56,9 @@ class PciDevice:
     device_id: str
     driver: Optional[str]
     modules: tuple[str, ...] = field(default_factory=tuple)
+    #: The model's own name ("TigerLake-LP GT2 [Iris Xe Graphics]"), which is
+    #: what a person recognises; ``description`` is only the PCI class.
+    name: str = ""
 
     @property
     def is_gpu(self) -> bool:
@@ -135,7 +140,6 @@ def _parse_lspci_nn(output: str) -> list[PciDevice]:
         device_id = ""
         if "[" in rest and "]" in rest:
             # Find the last [xxxx:xxxx] pattern
-            import re
             matches = re.findall(r"\[([0-9a-fA-F]{4}):([0-9a-fA-F]{4})\]", rest)
             if matches:
                 vendor_id, device_id = matches[-1]
@@ -145,7 +149,16 @@ def _parse_lspci_nn(output: str) -> list[PciDevice]:
         if "[" in desc:
             desc = desc[:desc.index("[")].strip()
 
+        # The model name: after the class bracket's "]: ", without the
+        # trailing [vendor:device] id and "(rev NN)".
+        name = ""
+        if "]: " in rest:
+            name = rest.split("]: ", 1)[1]
+            name = re.sub(r"\s*\(rev [0-9a-fA-F]+\)\s*$", "", name)
+            name = re.sub(r"\s*\[[0-9a-fA-F]{4}:[0-9a-fA-F]{4}\]\s*$", "", name).strip()
+
         devices.append(PciDevice(
+            name=name,
             slot=slot,
             description=desc,
             vendor_id=class_code,
@@ -301,25 +314,38 @@ class DriversTab(Gtk.Box):
         content_box.set_margin_end(20)
         scrolled.set_child(content_box)
 
+        # Plain words first: does each kind of device have a driver.
+        self._plain = Summary(
+            "Drivers",
+            "Drivers let the computer use its hardware. Shanios includes them, "
+            "so there is nothing to install.")
+        self._plain_rows: list = []
+        content_box.append(self._plain)
+
+        # The cards with driver and module names, under For experts.
+        details = Details()
+        self._details = details
+        content_box.append(details)
+
         # Create GPU devices card
         gpu_card = self._create_gpu_card()
-        content_box.append(gpu_card)
+        details.append(gpu_card)
 
         # Create audio devices card
         audio_card = self._create_audio_card()
-        content_box.append(audio_card)
+        details.append(audio_card)
 
         # Create network devices card
         network_card = self._create_network_card()
-        content_box.append(network_card)
+        details.append(network_card)
 
         # Create loaded modules card
         modules_card = self._create_modules_card()
-        content_box.append(modules_card)
+        details.append(modules_card)
 
         # Create health panel
         health_panel = self._create_health_panel()
-        content_box.append(health_panel)
+        details.append(health_panel)
 
         logger.debug("Drivers tab UI created")
 
@@ -437,6 +463,8 @@ class DriversTab(Gtk.Box):
         audio_devs = [d for d in devices if d.is_audio]
         network_devs = [d for d in devices if d.is_network]
 
+        self._plain_verdict(gpus, audio_devs, network_devs)
+
         # GPU info
         if gpus:
             gpu = gpus[0]
@@ -501,6 +529,31 @@ class DriversTab(Gtk.Box):
             health_panel.add_row("Audio", f"{len(audio_devs)} device(s)")
             health_panel.add_row("Network", f"{len(network_devs)} device(s)")
             health_panel.add_row("Modules", f"{len(loaded)} loaded")
+
+    def _plain_verdict(self, gpus, audio_devs, network_devs) -> None:
+        for row in self._plain_rows:
+            self._plain.remove(row)
+        self._plain_rows = []
+        kinds = (("Graphics", gpus), ("Sound", audio_devs), ("Network", network_devs))
+        missing = [d for _k, devs in kinds for d in devs if not d.driver]
+        if not any(devs for _k, devs in kinds):
+            self._plain.set_state("info", "Could not list this computer's devices",
+                                  "Restarting the computer usually fixes this.")
+            return
+        if missing:
+            self._plain.set_state(
+                "warning", f"{len(missing)} device{'s' * (len(missing) != 1)} "
+                           f"without a driver",
+                "A device without a driver does not work. Updating the system "
+                "usually brings the driver back.")
+        else:
+            self._plain.set_state("ok", "Every device has a driver", "Nothing to do.")
+        for kind, devs in kinds:
+            for d in devs:
+                row = self._plain.add_row(f"{kind}: {d.name or d.description}")
+                self._plain.set_row(row, "ok" if d.driver else "warning",
+                                    "Working" if d.driver else "No driver")
+                self._plain_rows.append(row)
 
     # ------------------------------------------------------------------
     # Helpers (mirror the _create_card / _add_info_row / _update_label

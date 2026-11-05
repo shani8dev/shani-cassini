@@ -59,7 +59,7 @@ def _inside_details(widget) -> bool:
 ])
 def test_a_raw_error_becomes_what_happened_and_what_to_do(raw, needle):
     from shani_cassini.plain import explain_error
-    what, todo = explain_error(raw, "fingerprint")
+    what, todo = explain_error(raw, "the fingerprint service")
     assert needle in what, what
     assert todo, "an explanation must say what to do"
     # the raw text never leaks into the plain words

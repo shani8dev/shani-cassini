@@ -41,11 +41,13 @@ Shani Backup's business and is not asked for.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 
 from gi.repository import Adw, Gio, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Details, settings_row
 
 logger = logging.getLogger(__name__)
 SCHEMA = "org.shani.backup"
@@ -95,7 +97,10 @@ class BackupTab(Gtk.Box):
         # started is dropped rather than written onto rows it never described.
         self._generation = 0
 
-        self._open_group = Adw.PreferencesGroup()
+        self._open_group = Adw.PreferencesGroup(
+            title="Backup",
+            description="Keep copies of your files and of the system, so you can "
+                        "get them back if something goes wrong.")
         row = Adw.ActionRow(title="Shani Backup",
                             subtitle="System snapshots (Btrfs) and backups of your files (restic)")
         img = Gtk.Image.new_from_icon_name("drive-multidisk-symbolic")
@@ -112,7 +117,16 @@ class BackupTab(Gtk.Box):
             title="Snapshots",
             description="What you can restore from. These are the subvolumes "
                         "Shani Backup can see under the path above.")
-        self._path_row = Adw.EntryRow(title="Filesystem path")
+        # Choices first; typing a path is the optional custom route.
+        self._presets = [("/", "The whole system"),
+                         (os.path.expanduser("~"), "Your home folder")]
+        self._where = Adw.ComboRow(
+            title="Show snapshots of",
+            model=Gtk.StringList.new([label for _p, label in self._presets]))
+        self._where.connect("notify::selected", self._on_where)
+        self._snapshots_group.add(self._where)
+        self._permanent.append(self._where)
+        self._path_row = Adw.EntryRow(title="Or type a folder")
         self._path_row.set_text("/")
         self._btn_refresh = Gtk.Button(label="Refresh", valign=Gtk.Align.CENTER)
         self._path_row.add_suffix(self._btn_refresh)
@@ -154,13 +168,22 @@ class BackupTab(Gtk.Box):
         self._linger_note = Adw.PreferencesGroup(
             title="Backups without a session", description=LINGER_NOTE)
 
-        for group in (self._open_group, self._snapshots_group, self._info,
-                      self._linger_note):
+        self._details = Details(subtitle="Commands, and why schedules need linger")
+        self._details.append(self._linger_note)
+        for group in (self._open_group,
+                      settings_row("backup", "Backup schedule and summary",
+                                   "Settings › Backup"),
+                      self._snapshots_group, self._info, self._details):
             self._page.append(group)
 
         self._load_settings()
         GLib.idle_add(self._load_linger)
         self.refresh()
+
+    def _on_where(self, combo, _pspec) -> None:
+        index = combo.get_selected()
+        if 0 <= index < len(self._presets):
+            self._path_row.set_text(self._presets[index][0])   # its handler refreshes
 
     # -------------------------------------------------------------------- data
     def _load_settings(self) -> None:

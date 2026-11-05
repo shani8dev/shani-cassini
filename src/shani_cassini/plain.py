@@ -29,6 +29,7 @@ from __future__ import annotations
 from gi.repository import Adw, GLib, GObject, Gtk  # type: ignore
 
 from shani_cassini.shell_bridge import in_shani_shell, open_shell_settings
+from shani_cassini.widgets import reserve_leading_column
 
 # The categories shani-shell's Settings answers to (`settingsCategory <id>`).
 SETTINGS_CATEGORIES = frozenset({
@@ -130,7 +131,7 @@ class Details(Gtk.Box):
     """
 
     def __init__(self, title: str = "For experts",
-                 subtitle: str = "Service names, error messages, files and commands") -> None:
+                 subtitle: str = "Service names, technical messages, files and commands") -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         group = Adw.PreferencesGroup()
         self.expander = Adw.ExpanderRow(title=esc(title), subtitle=esc(subtitle))
@@ -151,12 +152,18 @@ class Details(Gtk.Box):
         row = Adw.ActionRow(title=title if markup else esc(title),
                             subtitle=subtitle if markup else esc(subtitle))
         row.set_subtitle_selectable(True)
+        # the expander's own title carries an icon: keep these in its column
+        reserve_leading_column(row)
         self.expander.add_row(row)
         return row
 
     def append(self, widget: Gtk.Widget) -> None:  # type: ignore[override]
         """Put a whole group under the expander, revealed with it."""
         self._inner.append(widget)
+
+    def prepend(self, widget: Gtk.Widget) -> None:  # type: ignore[override]
+        """Put a whole group first under the expander."""
+        self._inner.prepend(widget)
 
     def commands(self, title: str, rows, description: str = "") -> Adw.PreferencesGroup:
         """A group of terminal commands, each copyable, under the expander."""
@@ -178,6 +185,11 @@ def settings_row(category: str, what: str, where: str = "") -> Adw.PreferencesGr
     if category not in SETTINGS_CATEGORIES:
         raise ValueError(f"not a shani-shell Settings category: {category!r}")
     g = Adw.PreferencesGroup(visible=in_shani_shell())
+    g.button = None  # type: ignore[attr-defined]
+    if not g.get_visible():
+        # Nothing to press outside the shell, so nothing is built: a hidden
+        # button is still a button to every page's "what can a click do" gate.
+        return g
     row = Adw.ActionRow(title=esc(what), subtitle=esc(where or "In the desktop's Settings"))
     row.add_prefix(Gtk.Image.new_from_icon_name("preferences-system-symbolic"))
     btn = Gtk.Button(label="Open in Settings", valign=Gtk.Align.CENTER)
@@ -198,20 +210,20 @@ _ERRORS = (
      "Try again, and enter your password when the system asks for it."),
     (("serviceunknown", "was not provided by any .service", "name has no owner",
       "could not activate", "spawn.servicenotfound"),
-     "The {svc} service is not running",
+     "{svc} is not running",
      "Restart the computer. If it keeps happening, the service may not be installed."),
     (("unknownmethod", "unknowninterface", "no such interface", "unknownobject",
       "no such object"),
-     "The {svc} service answered in a way Cassini does not understand",
+     "{svc} answered in a way Cassini does not understand",
      "It may be a different version from the one Cassini expects. Updating the system usually fixes this."),
     (("noreply", "timeout", "timed out", "did not reply"),
-     "The {svc} service took too long to answer",
+     "{svc} took too long to answer",
      "Try again in a moment."),
     (("alreadyinuse", "busy", "in use"),
      "Something else is using it right now",
      "Close other apps that might be using it, then try again."),
     (("no such file", "not found", "command not found", "not installed"),
-     "Something this needs is not installed",
+     "{svc} is not installed",
      "Updating the system usually brings it back."),
     (("connection refused", "could not connect", "network is unreachable",
       "temporary failure in name resolution", "could not resolve"),
@@ -223,11 +235,15 @@ _ERRORS = (
 def explain_error(raw: str, service: str = "the system") -> tuple[str, str]:
     """(what happened, what to do) for a raw error, in plain words.
 
+    ``service`` is a noun phrase a sentence can start with: "the fingerprint
+    service", "the update tool".
+
     The raw message itself belongs in Details, not here."""
     low = str(raw or "").lower()
     for needles, what, todo in _ERRORS:
         if any(n in low for n in needles):
-            return what.format(svc=service), todo
+            what = what.format(svc=service)
+            return what[:1].upper() + what[1:], todo
     return (f"Something went wrong while asking {service}",
             "Try again. If it keeps happening, the technical message under "
             "For experts can help someone work out why.")

@@ -45,6 +45,8 @@ import logging
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Details, Summary, explain_error, settings_row
+from shani_cassini.widgets import reserve_leading_column
 
 logger = logging.getLogger(__name__)
 
@@ -119,9 +121,18 @@ class AudioTab(Gtk.Box):
         guide = Adw.PreferencesGroup(title="What this page does not do")
         guide.add(_row("Volumes and default devices", DOES_NOT_NOTE))
 
-        for group in (self._server, self._devices_group, self._outputs_group,
-                      self._inputs_group, self._programs_group, guide):
-            page.append(group)
+        self._plain = Summary(
+            "Sound", "Where sound plays, and which microphone apps record from.")
+        self._plain.add_action("Check Again", self.load)
+        page.append(self._plain)
+        page.append(settings_row("sound", "Change the volume or the device",
+                                 "Settings › Sound"))
+        page.append(self._outputs_group)
+        page.append(self._inputs_group)
+        self._details = Details()
+        for group in (self._server, self._devices_group, self._programs_group, guide):
+            self._details.append(group)
+        page.append(self._details)
 
         self.load()
 
@@ -148,6 +159,7 @@ class AudioTab(Gtk.Box):
                       self._inputs_group, self._programs_group):
             self._clear(group)
 
+        self._plain_verdict(payload)
         if not payload.get("ok"):
             self._row_server.set_subtitle(payload["problem"])
             for group in (self._devices_group, self._outputs_group,
@@ -181,6 +193,31 @@ class AudioTab(Gtk.Box):
                       _row(_esc(node["name"] or f"node {node['id']}"),
                            _esc(node["flags"])))
 
+    def _plain_verdict(self, payload: dict) -> None:
+        if not payload.get("ok"):
+            what, todo = explain_error(payload.get("problem") or "", "the sound service")
+            self._plain.set_state("warning", what, todo)
+            return
+        sinks = payload.get("audio_sinks") or []
+        sources = payload.get("audio_sources") or []
+        if not sinks:
+            self._plain.set_state(
+                "warning", "Nothing can play sound",
+                "No speakers or headphones were found. Plug some in, then press "
+                "Check Again.")
+            return
+
+        def default(nodes):
+            for n in nodes:
+                if n.get("default"):
+                    return n.get("name") or ""
+            return (nodes[0].get("name") or "") if nodes else ""
+        out, mic = default(sinks), default(sources)
+        detail = f"Playing through {out}." if out else ""
+        detail += (f" Recording from {mic}." if mic
+                   else " No microphone was found.")
+        self._plain.set_state("ok", "Sound is working", detail.strip())
+
     def _render_endpoints(self, group, nodes: list, empty: str) -> None:
         if not nodes:
             group.set_description(empty)
@@ -210,4 +247,7 @@ def _node_row(node: dict) -> Adw.ActionRow:
         row.add_prefix(img)
         row.set_subtitle(_esc(
             (node["flags"] + " · " if node["flags"] else "") + "Default"))
+    else:
+        # the default carries an icon; keep the other titles in its column
+        reserve_leading_column(row)
     return row

@@ -50,6 +50,7 @@ JOURNAL_PERSISTENT_DIR = "/var/log/journal"
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Details, Summary
 
 logger = logging.getLogger(__name__)
 
@@ -234,8 +235,36 @@ class JournalTab(Gtk.Box):
         guide = Adw.PreferencesGroup(title="What this page does not do")
         guide.add(_row("Vacuuming or rotating", DOES_NOT_NOTE))
 
-        for group in (self._summary, self._boots_group, self._search,
-                      self._messages, guide):
+        # Plain words first: what the log is, whether it survives a restart,
+        # and one click to see recent problems - no typing needed.
+        self._browsing = False
+        self._plain = Summary(
+            "System Log",
+            "A record of what the system and your apps have reported. Useful when "
+            "something went wrong.")
+        if ss.journal_persistent():
+            self._plain.set_state("ok", "The log is kept across restarts",
+                                  "Messages from earlier sessions can still be read.")
+        else:
+            self._plain.set_state("warning", "The log is lost at every restart",
+                                  "Only messages since this computer last started "
+                                  "can be read.")
+        show = Adw.PreferencesGroup(title="Show Recent Messages")
+        for label, index, what in (("Errors", 5, "Problems only"),
+                                   ("Warnings", 4, "Warnings and problems"),
+                                   ("Everything", 0, "Every recent message")):
+            row = Adw.ActionRow(title=label, subtitle=what)
+            btn = Gtk.Button(label="Show", valign=Gtk.Align.CENTER)
+            btn.connect("clicked", lambda _b, i=index: self.browse(i))
+            row.add_suffix(btn)
+            row.set_activatable_widget(btn)
+            show.add(row)
+        self._search.set_description("Or type a word to look for in recent messages.")
+        self._details = Details(subtitle="Disk usage, size limit, earlier starts and commands")
+        self._details.add_row("How search works", SEARCH_NOTE)
+        for group in (self._summary, self._boots_group, guide):
+            self._details.append(group)
+        for group in (self._plain, show, self._search, self._messages, self._details):
             page.append(group)
         # Hidden until a search has entries to count: before one, the group
         # would be a heading over nothing, and "no chart" is not a finding the
@@ -280,9 +309,10 @@ class JournalTab(Gtk.Box):
         list gone, not two million entries.
         """
         query = self._entry.get_text().strip()
-        if not query:
+        if not query and not self._browsing:
             self._clear_messages("Type something to search for")
             return
+        self._browsing = False
         if self._search_busy:
             return
         self._search_busy = True
@@ -321,6 +351,16 @@ class JournalTab(Gtk.Box):
             self._render_messages(entries, query)
 
         ss.run_json_lines(argv, done)
+
+    def browse(self, level_index: int) -> None:
+        """Show the recent messages at a priority, with nothing typed: the
+        clickable path to what a search box would otherwise ask for."""
+        self._entry.set_text("")
+        self._browsing = True
+        if self._priority.get_selected() != level_index:
+            self._priority.set_selected(level_index)    # its handler searches
+        else:
+            self.search()
 
     def _on_query_changed(self, entry) -> None:
         self._btn_search.set_sensitive(bool(entry.get_text().strip()))
@@ -385,12 +425,15 @@ class JournalTab(Gtk.Box):
         self._messages.set_description(MESSAGES_NOTE)
         if not entries:
             self._messages.set_description(
-                f"Nothing in the selected boots matches “{query}”.")
+                f"Nothing in the selected boots matches “{_esc(query)}”." if query
+                else "No recent messages at this level - nothing to worry about.")
             return
+        n = len(entries)
         self._messages.set_description(
-            f"{len(entries)} entr{'' if len(entries) == 1 else 'ies'} "
-            f"matching “{query}” in the last {LIMIT} journal entries, "
-            f"newest last.")
+            f"{n} entr{'' if n == 1 else 'ies'} "
+            f"matching “{_esc(query)}” in the last {LIMIT} journal entries, "
+            f"newest last." if query else
+            f"The {n} most recent message{'s' * (n != 1)} at this level, newest last.")
         for entry in entries:
             title, subtitle = entry_line(entry)
             self._add(self._messages, _row(title, subtitle))

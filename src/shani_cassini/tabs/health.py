@@ -10,6 +10,7 @@ import time
 from gi.repository import Adw, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Details, Summary, explain_error
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,18 @@ class HealthTab(Gtk.Box):
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         self._toasts.set_child(page)
 
+        # Plain words first: is anything wrong, and the one check to run.
+        self._plain = Summary(
+            "Health",
+            "Checks whether this computer is working as it should. Nothing is "
+            "changed.")
+        self._plain.set_state("busy", "Looking for problems since start-up…")
+        self._btn_plain_run = self._plain.add_action(
+            "Run Full Check", lambda: self._run("verify"), suggested=True)
+        self._plain_errors: int | None = None
+        self._plain_crashes: int | None = None
+        page.append(self._plain)
+
         run = Adw.PreferencesGroup(title="Checks",
                                    description="Each check needs your password once; nothing is changed.")
         self._run_rows = {}
@@ -100,14 +113,15 @@ class HealthTab(Gtk.Box):
             # Measured: `alloc=738x0`. `tabs/updates.py` sets it False on
             # purpose because it reveals on a later state change; here the state
             # is already known at build time, so it is revealed at once.
-            missing = Adw.Banner(
-                title="shani-health is not installed — it ships with every "
-                      "Shanios image, so the checks below cannot run.",
-                revealed=True,
-            )
-            page.append(missing)
+            # The summary at the top says this in plain words (it used to be
+            # an Adw.Banner here, below the checks it disabled).
             for _r, _s, b in self._run_rows.values():
                 b.set_sensitive(False)
+            self._btn_plain_run.set_sensitive(False)
+            self._plain.set_state(
+                "warning", "The health checks are not installed",
+                "They come with every Shanios system. Updating the system usually "
+                "brings them back.")
             return
 
         # systemd's own records, no password: this boot's errors, crashes
@@ -115,8 +129,11 @@ class HealthTab(Gtk.Box):
                                              description="Error messages logged since the system started")
         self._crashes = Adw.PreferencesGroup(title="Recent Crashes",
                                              description="Programs that crashed in the last 7 days")
-        page.append(self._journal)
-        page.append(self._crashes)
+        # The raw log lines and crashed programs are for experts; the summary
+        # above counts them in plain words.
+        self._details = Details(subtitle="Error messages and crashed programs, as logged")
+        self._details.append(self._journal)
+        self._details.append(self._crashes)
         ss.boot_errors(self._on_journal)
         ss.crashes(self._on_crashes)
 
@@ -126,10 +143,35 @@ class HealthTab(Gtk.Box):
         self._empty.add_css_class("compact")
         self._results.append(self._empty)
         page.append(self._results)
+        page.append(self._details)
+
+    def _plain_verdict(self) -> None:
+        """Both reads in: say in plain words whether anything went wrong."""
+        if self._plain_errors is None or self._plain_crashes is None:
+            return
+        e, c = self._plain_errors, self._plain_crashes
+        if e < 0:
+            self._plain.set_state("info", "Could not read this computer's log",
+                                  "Run the full check instead.")
+        elif not e and not c:
+            self._plain.set_state("ok", "No problems since the computer started",
+                                  "Nothing to do. Run the full check for a deeper look.")
+        else:
+            bits = []
+            if e:
+                bits.append(f"{e} error message{'s' * (e != 1)} since start-up")
+            if c:
+                bits.append(f"{c} program crash{'es' * (c != 1)} this week")
+            self._plain.set_state(
+                "warning", " and ".join(bits).capitalize(),
+                "Most are harmless. If something is not working, run the full "
+                "check; the messages themselves are under For experts.")
 
     def _on_journal(self, items, err) -> None:
         if items is None:
             self._journal.add(Adw.ActionRow(title="The journal could not be read", subtitle=GLibMarkupSafe(err)))
+            self._plain_errors = -1
+            self._plain_verdict()
             return
         # same message repeated (a flapping device, a retry loop): one row
         seen: dict[tuple, list] = {}
@@ -140,6 +182,8 @@ class HealthTab(Gtk.Box):
                 msg = bytes(msg).decode(errors="replace")
             key = (who, str(msg))
             seen.setdefault(key, []).append(e)
+        self._plain_errors = len(seen)
+        self._plain_verdict()
         if not seen:
             row = Adw.ActionRow(title="No errors since this boot")
             img = Gtk.Image.new_from_icon_name("object-select-symbolic"); img.add_css_class("success")
@@ -157,6 +201,8 @@ class HealthTab(Gtk.Box):
             self._journal.add(row)
 
     def _on_crashes(self, items, err) -> None:
+        self._plain_crashes = len(items or [])
+        self._plain_verdict()
         if not items:  # None (no coredumpctl / no dumps: it exits 1) or []
             row = Adw.ActionRow(title="No crashes recorded")
             img = Gtk.Image.new_from_icon_name("object-select-symbolic"); img.add_css_class("success")
@@ -181,7 +227,8 @@ class HealthTab(Gtk.Box):
         def done(res, err):
             spin.stop(); spin.set_visible(False); btn.set_sensitive(True)
             if res is None:
-                self._toasts.add_toast(Adw.Toast(title=err or "The check did not run"))
+                what, _todo = explain_error(err or "", "the health check")
+                self._toasts.add_toast(Adw.Toast(title=GLibMarkupSafe(what)))
                 return
             self._show(mode, res, time.monotonic() - t0)
 

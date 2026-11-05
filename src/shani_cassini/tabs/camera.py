@@ -48,6 +48,7 @@ from typing import Callable, Optional
 from gi.repository import Adw, Gio, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Details, Summary, settings_row
 
 logger = logging.getLogger(__name__)
 
@@ -482,24 +483,36 @@ class CameraTab(Gtk.Box):
         GLib.idle_add(self.load)
 
     def _build(self) -> None:
+        self._plain = Summary(
+            "Camera",
+            "The cameras this computer has, and whether apps can use them. "
+            "Cassini never turns a camera on.")
+        self._plain_rows: list[Adw.ActionRow] = []
+        self._page.append(self._plain)
+        self._page.append(settings_row("privacy", "Choose which apps may use the camera",
+                                       "Settings › Privacy"))
+
+        details = Details()
+        self._details = details
         self._summary = Adw.PreferencesGroup(
             title="Camera", description=SUMMARY_NOTE)
         self._row_state = _row("Status", "Reading…")
         self._summary.add(self._row_state)
-        self._page.append(self._summary)
+        details.append(self._summary)
 
         self._devices = Adw.PreferencesGroup(
             title="Devices the kernel found", description=DEVICES_NOTE)
-        self._page.append(self._devices)
+        details.append(self._devices)
 
         self._pw = Adw.PreferencesGroup(
             title="What PipeWire publishes", description=PIPEWIRE_NOTE)
-        self._page.append(self._pw)
+        details.append(self._pw)
 
-        self._page.append(Adw.PreferencesGroup(
+        details.append(Adw.PreferencesGroup(
             title="What is not shown", description=CAPABILITY_NOTE))
-        self._page.append(Adw.PreferencesGroup(
+        details.append(Adw.PreferencesGroup(
             title="Where this comes from", description=SOURCES_NOTE))
+        self._page.append(details)
         self._device_rows: list[Adw.ActionRow] = []
         self._pw_rows: list[Adw.ActionRow] = []
 
@@ -515,6 +528,7 @@ class CameraTab(Gtk.Box):
         pw_error = payload.get("pipewire_error") or ""
 
         self._row_state.set_subtitle(_plain(self._verdict(payload)))
+        self._plain_verdict(payload)
 
         self._clear(self._device_rows, self._devices)
         if nodes:
@@ -551,6 +565,43 @@ class CameraTab(Gtk.Box):
                     sub = (f"{node['node']} - not published as a camera; its "
                            f"role is {node.get('role') or 'unset'}. {label}")
                 self._add_pw(_row(node["node"], sub))
+
+    def _plain_verdict(self, payload: dict) -> None:
+        nodes = payload.get("nodes") or []
+        captures = set(payload.get("capture_nodes") or [])
+        for row in self._plain_rows:
+            self._plain.remove(row)
+        self._plain_rows = []
+        if payload.get("sysfs_problem"):
+            self._plain.set_state("info", "Could not check for cameras",
+                                  "Restarting the computer usually fixes this.")
+            return
+        if not nodes:
+            self._plain.set_state(
+                "info", "No camera found",
+                "This computer has no camera, or it is switched off. Some laptops "
+                "have a key or a slider that turns the camera off.")
+            return
+        cams = [n for n in nodes if n["node"] in captures]
+        if cams:
+            n = len(cams)
+            self._plain.set_state(
+                "ok", "Your camera is ready" if n == 1 else f"{n} cameras are ready",
+                "Apps ask for your permission before they use it.")
+            for node in cams:
+                row = self._plain.add_row(node.get("name") or "Camera")
+                self._plain.set_row(row, "ok", "Apps can use it")
+                self._plain_rows.append(row)
+        elif payload.get("pipewire_error"):
+            self._plain.set_state(
+                "info", "A camera may be present",
+                "Cassini could not check whether apps can use it. Try it in a "
+                "video-call or camera app.")
+        else:
+            self._plain.set_state(
+                "warning", "No camera that apps can use",
+                "The computer found video hardware, but none of it works as a "
+                "camera for apps. Restarting usually fixes this.")
 
     def _verdict(self, payload: dict) -> str:
         """The one line that says which of the four states this machine is in."""

@@ -38,6 +38,7 @@ import logging
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import charts, system_status as ss
+from shani_cassini.plain import Details, Summary, explain_error
 
 logger = logging.getLogger(__name__)
 
@@ -120,8 +121,22 @@ class FirmwareTab(Gtk.Box):
         guide = Adw.PreferencesGroup(title="What this page does not do")
         guide.add(_row("Installing firmware", INSTALL_NOTE))
 
+        # Plain words first; the device list, microcode and the terminal steps
+        # are under For experts.
+        self._plain = Summary(
+            "Firmware",
+            "Firmware is the software built into your hardware, such as the "
+            "computer's BIOS. Its makers sometimes release fixes for it.")
+        self._plain.set_state("info", "Not checked yet",
+                              "Checking asks the hardware makers over the internet.")
+        self._btn_plain_check = self._plain.add_action(
+            "Check for Updates", self.check_updates, suggested=True)
+        self._plain_rows: list[Adw.ActionRow] = []
+        page.append(self._plain)
+        self._details = Details()
         for group in (self._devices, self._updates, self._microcode, guide):
-            page.append(group)
+            self._details.append(group)
+        page.append(self._details)
 
         self._render_microcode()
         self.load_devices()
@@ -162,6 +177,9 @@ class FirmwareTab(Gtk.Box):
         self._updates_busy = True
         self._btn_check.set_sensitive(False)
         self._btn_check.set_label("Checking…")
+        self._btn_plain_check.set_sensitive(False)
+        self._plain.set_state("busy", "Checking for firmware updates…",
+                              "Asking the hardware makers over the internet.")
         self._row_updates.set_subtitle("Asking the Linux Vendor Firmware "
                                        "Service…")
 
@@ -169,6 +187,7 @@ class FirmwareTab(Gtk.Box):
             self._updates_busy = False
             self._btn_check.set_sensitive(True)
             self._btn_check.set_label("Check")
+            self._btn_plain_check.set_sensitive(True)
             self._render_updates(payload)
 
         ss.firmware_updates(done)
@@ -256,7 +275,36 @@ class FirmwareTab(Gtk.Box):
                                  if sub else f"serial {device['serial']}")
             self._add(self._devices, row)
 
+    def _plain_updates(self, payload: dict) -> None:
+        for row in self._plain_rows:
+            self._plain.remove(row)
+        self._plain_rows = []
+        if not payload.get("ok"):
+            what, todo = explain_error(payload.get("problem") or "",
+                                       "the firmware service")
+            self._plain.set_state("warning", "Could not check for firmware updates",
+                                  f"{what}. {todo}")
+            return
+        updates = payload["updates"]
+        if not updates:
+            self._plain.set_state("ok", "Your firmware is up to date", "Nothing to do.")
+            return
+        n = len(updates)
+        self._plain.set_state(
+            "warning", f"{n} firmware update{'s' * (n != 1)} available",
+            "Cassini does not install firmware; the steps are under For experts. "
+            "If your disk unlocks by itself at start-up, it will ask for its "
+            "password once afterwards - set up automatic unlock again on the "
+            "Encryption page.")
+        for update in updates:
+            row = self._plain.add_row(update["name"] or "A device")
+            self._plain.set_row(row, "warning",
+                                f"New version {update['version']}" if update["version"]
+                                else "A new version is available")
+            self._plain_rows.append(row)
+
     def _render_updates(self, payload: dict) -> None:
+        self._plain_updates(payload)
         self._clear(self._updates)
         if not payload.get("ok"):
             self._row_updates.set_subtitle(payload["problem"])

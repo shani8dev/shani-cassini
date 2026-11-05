@@ -112,7 +112,14 @@ class OverviewTab(Gtk.Box):
 
     def _on_status(self, st, err) -> None:
         if st is None:
-            self._subtitle.set_label(err or "Could not read the system state")
+            # Plain words here; the raw message is one click away on Updates.
+            # system_status already words most failures for a person; a bare
+            # "<tool> is not installed" is the one it hands over as is.
+            plain = err or "Could not read the system state"
+            if plain.endswith("is not installed"):
+                plain = "Could not read this system's version"
+            self._subtitle.set_label(plain)
+            self._subtitle.set_tooltip_text(err or None)
             for k in ("channel", "slot"):
                 self._rows[k].set_subtitle("Unavailable")
             return
