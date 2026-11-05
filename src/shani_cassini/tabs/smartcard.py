@@ -35,6 +35,7 @@ from collections.abc import Callable
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Details, Summary, explain_error, lead
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +148,16 @@ class SmartcardTab(Gtk.Box):
         self._icons: dict[Adw.ActionRow, Gtk.Image] = {}
 
         self._build()
+        # Plain words first: can a card sign you in here. The PAM module, its
+        # mappers and the commands are under For experts.
+        self._plain = Summary("Smartcard",
+                              "Sign in by putting a smartcard in a card reader.")
+        lead(self._page, self._plain,
+             Details(subtitle="pam_pkcs11, its mappers, card-to-account mappings and commands"))
+        self._pkcs11: dict = {}
+        self._mine: list = []
+        self._readers: list | None = []
+        self._readers_err = ""
         self.refresh()
 
     # ------------------------------------------------------------- building
@@ -206,6 +217,7 @@ class SmartcardTab(Gtk.Box):
     # ------------------------------------------------------------------ data
     def refresh(self) -> None:
         state = ss.pam_pkcs11_state()
+        self._pkcs11 = state
         self._on_pkcs11(state)
         self._match_group = self._rebuild(
             self._match_group, lambda: self._match_group_new(state.get("problems") or []))
@@ -248,6 +260,7 @@ class SmartcardTab(Gtk.Box):
         their own.
         """
         mine = [row for row in rows if row.get("module") == SMARTCARD_MODULE]
+        self._mine = mine
         g = Adw.PreferencesGroup(
             title="Smartcard status",
             description="The smartcard login paths this system's own PAM "
@@ -271,6 +284,8 @@ class SmartcardTab(Gtk.Box):
         """pcsc-lite's answer, with its three cases kept apart: a daemon that
         did not answer (readers is None) is not a machine with no reader."""
         self._btn_refresh.set_sensitive(True)
+        self._readers, self._readers_err = readers, err
+        self._plain_verdict()
         if readers is None:
             self._set(self._row_readers, "Card readers",
                       _esc(err or "pcsc_scan did not answer"), "error")
@@ -282,6 +297,25 @@ class SmartcardTab(Gtk.Box):
         self._set(self._row_readers, "Card readers", "\n".join(
             f"{_esc(r.get('nr', ''))} — {_esc(str(r.get('text', '')).strip())}"
             for r in readers), "ok")
+
+    def _plain_verdict(self) -> None:
+        if not self._pkcs11.get("installed"):
+            self._plain.set_state("info", "Smartcard sign-in is not available",
+                                  "The part that reads a card at sign-in is not installed. "
+                                  "Nothing to do unless you use a smartcard.")
+        elif not self._mine:
+            self._plain.set_state("info", "Smartcard sign-in is not switched on",
+                                  "No sign-in screen asks for a card. Nothing to do unless "
+                                  "you use a smartcard.")
+        elif self._readers is None:
+            what, todo = explain_error(self._readers_err, "the card reader service")
+            self._plain.set_state("warning", what, todo)
+        elif not self._readers:
+            self._plain.set_state("info", "No card reader is connected",
+                                  "Plug in a card reader to sign in with a card.")
+        else:
+            self._plain.set_state("ok", "Smartcard sign-in is ready",
+                                  "Put your card in the reader when the sign-in screen asks.")
 
     # ------------------------------------------------------ 2. how it matches
     def _match_group_new(self, problems: list) -> Adw.PreferencesGroup:

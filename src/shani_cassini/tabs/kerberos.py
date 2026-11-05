@@ -30,6 +30,7 @@ from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
 from shani_cassini.widgets import reserve_leading_column
+from shani_cassini.plain import Summary, lead
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +152,12 @@ class KerberosTab(Gtk.Box):
         self._include_rows: list[Adw.ActionRow] = []
 
         self._build()
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary(
+            "Kerberos",
+            "Sign in with an account from your organisation's network, such as a "
+            "company or university login.")
+        lead(self._page, self._plain)
         self.refresh()
         ss.hostnamectl(self._on_host)
 
@@ -216,10 +223,68 @@ class KerberosTab(Gtk.Box):
         the page can reach the writer."""
         entry = Adw.EntryRow(title=title, show_apply_button=True)
         entry.connect("apply", lambda *_: self._save(key))
+        # Choices before typing: picking one fills the field, and the apply
+        # button still has to be pressed to save it.
+        menu = Gtk.MenuButton(icon_name="view-more-symbolic", valign=Gtk.Align.CENTER,
+                              has_frame=False, tooltip_text="Choose a value")
+        menu.update_property([Gtk.AccessibleProperty.LABEL], [f"Choose a {title.lower()}"])
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_top=6,
+                      margin_bottom=6, margin_start=6, margin_end=6)
+        menu.set_popover(Gtk.Popover(child=box))
+        menu.connect("notify::active", lambda m, _p: m.get_active()
+                     and self._fill_choices(key, entry, box, m))
+        entry.add_suffix(menu)
         group.add(entry)
         self._entries[key] = entry
         self._labels[key] = title
         return entry
+
+    def _choices(self, key: str) -> list[tuple[str, str]]:
+        """(value, what it means) offered for a setting. The realm is only
+        ever this machine's own domain, upper-cased as Kerberos writes it - a
+        realm from nowhere would be a guess."""
+        if key == "default_realm":
+            return [(self._domain.upper(), "This computer's own network domain")] \
+                if self._domain else []
+        if key == "default_ccache_name":
+            return [("KEYRING:persistent:%{uid}", "Kept in the kernel's keyring (usual)"),
+                    ("KCM:", "Kept by the KCM service"),
+                    ("FILE:/tmp/krb5cc_%{uid}", "Kept in a file")]
+        return []
+
+    def _fill_choices(self, key: str, entry: Adw.EntryRow, box: Gtk.Box,
+                      menu: Gtk.MenuButton) -> None:
+        child = box.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            box.remove(child)
+            child = nxt
+        choices = self._choices(key)
+        if not choices:
+            box.append(Gtk.Label(label="Nothing to suggest - type it in", margin_top=6,
+                                 margin_bottom=6, margin_start=6, margin_end=6))
+        for value, what in choices:
+            b = Gtk.Button(has_frame=False, tooltip_text=what)
+            b.set_child(Gtk.Label(label=f"{value}  ·  {what}", xalign=0))
+            b.connect("clicked", lambda _b, v=value: (menu.popdown(), entry.set_text(v)))
+            box.append(b)
+
+    def _plain_verdict(self, module: dict | None) -> None:
+        realm = str(self._conf.get("default_realm") or "")
+        if module is None or module.get("state") == "unavailable":
+            self._plain.set_state("info", "Kerberos sign-in is not available",
+                                  "The part that checks a network login is not installed. "
+                                  "Nothing to do unless your organisation uses Kerberos.")
+        elif not self._stacks:
+            self._plain.set_state("info", "Kerberos is not used to sign in",
+                                  "Nothing to do unless your organisation uses Kerberos.")
+        elif realm:
+            self._plain.set_state("ok", "Network sign-in is on",
+                                  f"Accounts from {realm} can sign in here.")
+        else:
+            self._plain.set_state("warning", "Network sign-in is on, but no network is named",
+                                  "Choose the default realm below, or ask whoever runs "
+                                  "your network for it.")
 
     # ------------------------------------------------------------------ data
     def refresh(self) -> None:
@@ -235,6 +300,7 @@ class KerberosTab(Gtk.Box):
         hardware-auth report already says), which login stacks load it, whether
         the file is there, and what in it could not be read."""
         module = next((r for r in hardware if r.get("module") == MODULE), None)
+        self._plain_verdict(module)
         if module is None:
             self._set(self._row_module, "pam-krb5", f"{MODULE} is not installed", "error")
         else:

@@ -169,7 +169,12 @@ def buttons(page):
 
 
 def groups(page):
-    return [w for w in walk(page) if isinstance(w, Adw.PreferencesGroup)]
+    """The page's own groups: not the plain Summary on top, nor the frame of
+    the For experts expander."""
+    from shani_cassini.plain import Details, Summary
+    return [w for w in walk(page) if isinstance(w, Adw.PreferencesGroup)
+            and not isinstance(w, Summary)
+            and not isinstance(w.get_parent(), Details)]
 
 
 def group_titled(page, needle):
@@ -217,7 +222,8 @@ def test_the_content_lives_under_a_toast_overlay(keys):
 
 def test_the_page_has_the_four_groups_it_promises(keys):
     tab = sk.SshKeysTab()
-    assert [g.get_title() for g in groups(tab)] == ["Status", "Keys", "From a Terminal",
+    # Keys stays in view under the plain summary; the rest is under For experts.
+    assert [g.get_title() for g in groups(tab)] == ["Keys", "Status", "From a Terminal",
                                                     "Authorized keys (chart)"], \
         f"the page's groups are {[g.get_title() for g in groups(tab)]}"
 

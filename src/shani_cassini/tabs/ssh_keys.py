@@ -72,6 +72,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # type: ignore
 from shani_cassini import config_io
 from shani_cassini.config_io import ConfigRefused, Document, Line, Staged
 from shani_cassini.widgets import reserve_leading_column
+from shani_cassini.plain import Details, Summary, explain_error, lead
 
 logger = logging.getLogger(__name__)
 
@@ -544,6 +545,15 @@ class SshKeysTab(Gtk.Box):
         self._chart_group = Adw.PreferencesGroup(title="Authorized keys (chart)")
         self._page.append(self._chart_group)
         self._chart: Gtk.Widget | None = None
+        # Plain words first; the key list stays in view because adding and
+        # removing a key is what a person comes here for. Modes, the chart and
+        # the commands are under For experts.
+        self._plain = Summary(
+            "SSH Keys",
+            "The keys that may sign in to this computer from another one, over SSH.")
+        lead(self._page, self._plain,
+             Details(subtitle="File permissions, fingerprints and commands"),
+             keep=(self._keys_group,))
         self.refresh()
 
     # ---------------------------------------------------------------- building
@@ -628,6 +638,7 @@ class SshKeysTab(Gtk.Box):
         there is an empty one, not a fault."""
         group = self._status_group
         exists = file_mode is not None
+        self._plain_verdict(entries, problem, _risk(file_mode, dir_mode) if not problem else "")
         row = _row("File", self._path if exists else
                    f"{self._path} — not created yet, so sshd finds no keys here",
                    *STATE_ICONS["ok" if exists else "inactive"])
@@ -685,6 +696,25 @@ class SshKeysTab(Gtk.Box):
         # A read that failed (no keys file, ssh-keygen absent) drew nothing:
         # hide the heading rather than leave it over an empty group.
         self._chart_group.set_visible(self._chart is not None)
+
+    def _plain_verdict(self, entries: list, problem: str, risk: str) -> None:
+        n = len(entries)
+        if problem:
+            what, todo = explain_error(problem, "your key file")
+            self._plain.set_state("error", what, todo)
+        elif risk:
+            self._plain.set_state(
+                "error", "Your key file is not private",
+                "Other people on this computer could change who can sign in, so SSH "
+                "refuses to use it. The details are under For experts.")
+        elif n:
+            self._plain.set_state(
+                "ok", f"{n} key{'s' * (n != 1)} can sign in to this computer",
+                "Each one below can open a session as you over SSH. Remove any you "
+                "do not recognise.")
+        else:
+            self._plain.set_state("info", "No key can sign in to this computer",
+                                  "Nothing to do unless you use SSH.")
 
     # ------------------------------------------------------------- 2. the keys
     def _render_keys(self, entries: list[KeyEntry], unreadable: list[int],
@@ -809,12 +839,17 @@ class SshKeysTab(Gtk.Box):
                       "clipboard - but a private key must never be pasted here, "
                       "and this page never asks for one")
         pasted.add_suffix(paste)
+        # A choice before typing: the public key files on this machine.
+        choose = Gtk.Button(label="Choose…", valign=Gtk.Align.CENTER)
+        choose.connect("clicked", lambda *_: self._choose_key_file(key))
+        chosen = _row("From a file", "A .pub file, such as one copied from your other computer")
+        chosen.add_suffix(choose)
         note = _row("", NOTE_IDLE)
 
         d = Adw.AlertDialog(heading="Add a public key", body=ADD_BODY)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         grp = Adw.PreferencesGroup()
-        for row in (key, comment, pasted, note):
+        for row in (chosen, pasted, key, comment, note):
             grp.add(row)
         box.append(grp)
         d.set_extra_child(box)
@@ -836,6 +871,36 @@ class SshKeysTab(Gtk.Box):
             _rendered(key.get_text(), comment.get_text())))
         check()
         return d
+
+    def _choose_key_file(self, entry: Adw.EntryRow) -> None:
+        """Fill the entry from a public key file the person picks.
+
+        Only *.pub is offered, and whatever is read still goes through
+        _why_not, so a private key picked by hand is refused, not saved."""
+        dialog = Gtk.FileDialog(title="Choose a public key")
+        flt = Gtk.FileFilter(name="Public keys")
+        flt.add_pattern("*.pub")
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(flt)
+        dialog.set_filters(filters)
+        ssh_dir = os.path.expanduser("~/.ssh")
+        if os.path.isdir(ssh_dir):
+            dialog.set_initial_folder(Gio.File.new_for_path(ssh_dir))
+
+        def picked(d: Gtk.FileDialog, result: Gio.AsyncResult) -> None:
+            try:
+                f = d.open_finish(result)
+            except GLib.Error:
+                return  # dismissed
+            try:
+                text = open(f.get_path(), encoding="utf-8", errors="replace").read(16384)
+            except OSError as exc:
+                self._toast(explain_error(str(exc), "that file")[0])
+                return
+            entry.set_text(text.strip())
+
+        root = self.get_root()
+        dialog.open(root if isinstance(root, Gtk.Window) else None, None, picked)
 
     def _paste(self, entry: Adw.EntryRow) -> None:
         """Read the clipboard into the entry.

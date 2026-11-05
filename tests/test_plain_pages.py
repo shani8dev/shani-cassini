@@ -243,3 +243,64 @@ def test_maintenance_leads_with_free_space_and_puts_commands_under_experts():
     assert headline(tab) in ("Nothing needs cleaning", "Your disk is getting full")
     details = [w for w in walk(tab) if isinstance(w, Details)]
     assert details and tab._out_group.get_ancestor(Details) is details[0]
+
+
+# --- Sign-in pages -----------------------------------------------------------
+
+def test_sign_in_pages_lead_with_a_summary_and_fold_the_pam_detail():
+    from shani_cassini.tabs.security_keys import SecurityKeysTab
+    from shani_cassini.tabs.smartcard import SmartcardTab
+    from shani_cassini.tabs.totp import TotpTab
+    for cls in (SmartcardTab, SecurityKeysTab, TotpTab):
+        tab = cls()
+        assert first_group(tab) is summary_of(tab), cls.__name__
+        assert [w for w in walk(tab) if isinstance(w, Details)], cls.__name__
+        assert spin(lambda: summary_of(tab).state != "busy"), cls.__name__
+        for leak in ("pam_", ".so", "/etc/"):
+            assert leak not in headline(tab) + detail(tab), (cls.__name__, leak)
+
+
+@pytest.mark.parametrize("installed,mine,readers,expect", [
+    (False, [], [], "not available"),
+    (True, [], [], "not switched on"),
+    (True, [{"module": "pam_pkcs11.so"}], [], "No card reader"),
+    (True, [{"module": "pam_pkcs11.so"}], [{"nr": "0", "text": "r"}], "ready"),
+])
+def test_smartcard_verdict(installed, mine, readers, expect):
+    from shani_cassini.tabs.smartcard import SmartcardTab
+    tab = SmartcardTab()
+    tab._pkcs11, tab._mine, tab._readers = {"installed": installed}, mine, readers
+    tab._plain_verdict()
+    assert expect in headline(tab)
+
+
+def test_smartcard_reader_error_goes_through_explain_error():
+    from shani_cassini.tabs.smartcard import SmartcardTab
+    tab = SmartcardTab()
+    tab._pkcs11, tab._mine = {"installed": True}, [{"module": "pam_pkcs11.so"}]
+    tab._on_readers(None, "SCardEstablishContext: Service not available. timed out")
+    assert headline(tab) == "The card reader service took too long to answer"
+
+
+def test_ssh_keys_verdict_counts_the_keys_on_screen(tmp_path, monkeypatch):
+    from shani_cassini.tabs import ssh_keys as sk
+    f = tmp_path / ".ssh" / "authorized_keys"
+    f.parent.mkdir(mode=0o700)
+    f.write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl a@b\n")
+    f.chmod(0o600)
+    monkeypatch.setattr(sk, "authorized_keys_path", lambda: str(f))
+    tab = sk.SshKeysTab()
+    assert headline(tab) == "1 key can sign in to this computer"
+    f.chmod(0o666)
+    tab.refresh()
+    assert headline(tab) == "Your key file is not private", "control: a risky mode"
+
+
+def test_kerberos_offers_a_realm_from_this_machines_domain_not_a_guess():
+    from shani_cassini.tabs.kerberos import KerberosTab
+    tab = KerberosTab()
+    tab._domain = ""
+    assert tab._choices("default_realm") == [], "no domain, no suggestion"
+    tab._domain = "corp.example.org"
+    assert tab._choices("default_realm")[0][0] == "CORP.EXAMPLE.ORG"
+    assert any(v.startswith("KEYRING:") for v, _w in tab._choices("default_ccache_name"))

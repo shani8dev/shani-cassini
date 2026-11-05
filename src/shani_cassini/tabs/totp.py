@@ -93,6 +93,7 @@ from typing import Callable, Final, Optional
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Details, Summary, lead
 
 logger = logging.getLogger(__name__)
 
@@ -652,6 +653,13 @@ class TotpTab(Gtk.Box):
         self._page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         self.append(self._page)
         self._build()
+        # Plain words first: does any sign-in ask for a one-time code. The
+        # token files, PAM services and commands are under For experts.
+        self._plain = Summary(
+            "One-Time Codes",
+            "A six-digit code from an app on your phone, asked for at sign-in.")
+        lead(self._page, self._plain,
+             Details(subtitle="pam_oath, token files, login stacks and commands"))
         GLib.idle_add(self.load)
 
     def _build(self) -> None:
@@ -696,6 +704,26 @@ class TotpTab(Gtk.Box):
         self._render_stacks(payload)
         self._render_tokens(payload)
         self._render_files(payload)
+        self._plain_verdict(payload)
+
+    def _plain_verdict(self, payload: dict) -> None:
+        tokens = payload.get("tokens") or []
+        if not payload.get("stacks_scanned"):
+            self._plain.set_state("info", "Could not check the sign-in settings",
+                                  "Restarting the computer usually fixes this.")
+        elif not payload.get("stacks"):
+            self._plain.set_state(
+                "info" if not tokens else "warning",
+                "No sign-in asks for a one-time code",
+                "Nothing to do." if not tokens else
+                f"{len(tokens)} code app{'s are' if len(tokens) != 1 else ' is'} set up, "
+                "but no sign-in checks them, so they protect nothing.")
+        elif tokens:
+            self._plain.set_state("ok", "Sign-in asks for a one-time code",
+                                  f"{len(tokens)} account{'s' * (len(tokens) != 1)} set up.")
+        else:
+            self._plain.set_state("warning", "Sign-in asks for a code, but no account has one",
+                                  "Nobody can complete that sign-in until a code app is set up.")
 
     def _render_tool(self, payload: dict) -> None:
         if not payload.get("tool"):

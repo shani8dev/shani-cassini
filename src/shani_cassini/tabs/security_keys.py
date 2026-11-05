@@ -44,6 +44,7 @@ from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import charts, system_status as ss
 from shani_cassini.widgets import find_named, reserve_leading_column
+from shani_cassini.plain import Details, Summary, lead
 
 logger = logging.getLogger(__name__)
 
@@ -299,6 +300,13 @@ class SecurityKeysTab(Gtk.Box):
         self._u2f = _u2f_target()
         self._yubico = _yubico_target()
         self._build()
+        # Plain words first: can a security key sign you in. pam_u2f's and
+        # pam_yubico's settings are under For experts.
+        self._plain = Summary("Security Keys",
+                              "Sign in by touching a USB security key, such as a YubiKey.")
+        lead(self._page, self._plain,
+             Details(subtitle="pam_u2f and pam_yubico settings, files and flags"))
+        self._keys_count = 0
         self.refresh()
 
     # ---------------------------------------------------------------- building
@@ -445,6 +453,23 @@ class SecurityKeysTab(Gtk.Box):
         self._u2f = _u2f_target()
         self._render_u2f(ss.u2f_config(), auth)
         self._render_yubico(ss.pam_yubico_config(), auth)
+        self._plain_verdict(_hardware_row(auth, FIDO2_MODULE))
+
+    def _plain_verdict(self, fido: dict) -> None:
+        state = fido.get("state")
+        n = self._keys_count
+        if state == "ok":
+            self._plain.set_state(
+                "ok" if n else "info", "Security key sign-in is on",
+                f"{n} key{'s' * (n != 1)} can sign you in." if n else
+                "No key is registered yet, so none can sign you in. Registering one "
+                "is under For experts.")
+        elif state == "inactive":
+            self._plain.set_state("info", "Security keys are not used to sign in",
+                                  "Nothing to do unless you have a security key.")
+        else:
+            self._plain.set_state("info", "Security key sign-in is not available",
+                                  "The part that reads a key at sign-in is not installed.")
 
     def _render_u2f(self, conf: dict, auth: list) -> None:
         """The FIDO2 group. An absent file is the module on its built-in defaults, so
@@ -476,12 +501,14 @@ class SecurityKeysTab(Gtk.Box):
 
     def _render_keys(self, authfile: str) -> None:
         """How many keys are registered - the count, never the ids."""
+        self._keys_count = 0
         if not authfile:
             self._row_keys.set_subtitle(f"No authfile is set, so the module reads its own "
                                         f"default, {U2F_AUTHFILE_DEFAULT}")
             return
         path = os.path.expanduser(authfile)
         count = _key_count(path)
+        self._keys_count = count
         self._row_keys.set_subtitle(
             f"{count} key{'s' * (count != 1)} registered in {path}" if count else
             f"{path} - not created yet, so nothing is registered with it")
