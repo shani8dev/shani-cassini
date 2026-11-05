@@ -119,7 +119,7 @@ class TestNotebook:
             ]),
             ('Security', [
                 ('Boot & Disk', ['Secure Boot', 'Encryption', 'Userspace Encryption', 'Kernel Lockdown', 'Boot Entries']),
-                ('Sign-in', ['Fingerprint', 'Smartcard', 'Security Keys', 'TOTP Tokens', 'SSH Keys', 'Kerberos']),
+                ('Sign-in', ['Fingerprint & Face', 'Smartcard', 'Security Keys', 'TOTP Tokens', 'SSH Keys', 'Kerberos']),
                 ('Confinement & Audit', ['LSM', 'Audit']),
                 ('Passwords', ['Password Policy']),
                 ('Privileges', ['Privileges']),

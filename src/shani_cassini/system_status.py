@@ -1743,6 +1743,17 @@ EDITION_LOGIN = {
                "ships /usr/lib/pam.d/kde-fingerprint for the lock screen, which must be enabled "
                "with: kwriteconfig6 --file kscreenlockerrc --group Authenticators "
                "--key Fingerprint true"),
+    # The niri edition signs in through greetd. Verified against the files it
+    # ships: /etc/pam.d/shani-greetd tries the face first (linux-hello), then a
+    # fingerprint when one is asked for - Enter on an empty password at the
+    # sign-in screen - and /etc/pam.d/shani-lock-biometric gives the lock
+    # screen face and fingerprint alongside the password.
+    "niri": ("Works at the sign-in screen and the lock screen",
+             "Sign-in uses greetd with /etc/pam.d/shani-greetd: the face first, then a "
+             "fingerprint when one is asked for (press Enter on an empty password at the "
+             "sign-in screen). The lock screen uses /etc/pam.d/shani-lock-biometric for face "
+             "and fingerprint, alongside the password. Fingers and the face are set up in "
+             "Settings - Account - Sign in faster."),
     "cosmic": ("Not available on this edition",
                "cosmic-greeter ships no PAM fingerprint service, so an enrolled finger cannot "
                "unlock this session. The finger stays enrolled for the other things fprintd does."),
@@ -2191,9 +2202,6 @@ _LOGIN_MODULES = (
 # reported as unavailable on purpose: a silent omission reads as "nobody has
 # ever heard of face login", which is its own kind of wrong.
 _NO_PAM_MODULE = (
-    ("Face / webcam recognition", "howdy",
-     "exists only as an unmaintained AUR package; its last tagged release was "
-     "in 2020, and it is wired into no login screen"),
     ("Iris (eye) recognition", None,
      "no maintained Linux implementation with a PAM module exists"),
     ("Voice / speaker recognition", "pam_voiceprint",
@@ -2202,6 +2210,45 @@ _NO_PAM_MODULE = (
     ("Retinal, palm, vein, gait, keystroke", None,
      "research-only; no PAM implementation exists for any of these"),
 )
+
+
+# Face sign-in ships: linux-hello, which needs an infrared camera. Its daemon
+# is linux-hello.service and its PAM module pam_linux_hello.so. Shanios wires
+# both biometrics into two PAM services of its own (niri edition), which no
+# gdm-* or kde-* table entry covers, so they are scanned for each module.
+FACE_MODULE = "pam_linux_hello.so"
+FACE_UNIT = "linux-hello.service"
+FINGERPRINT_MODULE = "pam_fprintd.so"
+_UNIT_DIRS = ("/usr/lib/systemd/system", "/etc/systemd/system", "/lib/systemd/system")
+_SHANI_BIOMETRIC_SERVICES = (
+    ("/etc/pam.d/shani-greetd", "the sign-in screen"),
+    ("/etc/pam.d/shani-lock-biometric", "the lock screen"),
+)
+_BIOMETRIC_KINDS = ((FACE_MODULE, "Face"), (FINGERPRINT_MODULE, "Fingerprint"))
+
+
+def face_installed() -> bool:
+    """linux-hello on this machine at all: its PAM module or its unit."""
+    return _pam_module_installed(FACE_MODULE) or any(
+        os.path.exists(os.path.join(d, FACE_UNIT)) for d in _UNIT_DIRS)
+
+
+def face_status(done: Callable[[dict, str], None]) -> None:
+    """done({"installed", "service", "stacks"}, err) for face sign-in.
+
+    ``service`` is what `systemctl is-active linux-hello.service` printed
+    ("active", "inactive", "failed", ...) or "" when it could not be asked;
+    ``stacks`` names the PAM services that load pam_linux_hello.so."""
+    state = {"installed": face_installed(), "service": "",
+             "stacks": pam_stacks_loading(FACE_MODULE)}
+    if not state["installed"]:
+        GLib.idle_add(done, state, "")
+        return
+
+    def on_text(out, err):
+        state["service"] = (out or "").strip().splitlines()[0] if (out or "").strip() else ""
+        done(state, "" if out else err)
+    run_text(["systemctl", "is-active", FACE_UNIT], on_text)
 
 
 def _pam_module_installed(module: str) -> bool:
@@ -2332,6 +2379,23 @@ def hardware_auth_status() -> list:
             rows.append({"title": title, "module": module, "state": "unavailable",
                          "detail": f"{service} needs {module}, which this image "
                                    f"does not ship — this method cannot succeed"})
+
+    for path, where in _SHANI_BIOMETRIC_SERVICES:
+        if not os.path.exists(path):
+            continue
+        service = os.path.basename(path)
+        text = _read_text(path)
+        for module, kind in _BIOMETRIC_KINDS:
+            if not _pam_service_loading(text, module):
+                continue
+            title = f"{kind} at {where}"
+            if _pam_module_installed(module):
+                rows.append({"title": title, "module": module, "state": "ok",
+                             "detail": f"{service} — {module} present"})
+            else:
+                rows.append({"title": title, "module": module, "state": "unavailable",
+                             "detail": f"{service} needs {module}, which is not "
+                                       f"installed — this method cannot succeed"})
 
     for title, module, note in _LOGIN_MODULES:
         if not _pam_module_installed(module):

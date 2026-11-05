@@ -242,8 +242,8 @@ SECTIONS = [
              "What the firmware will boot, and where the slot is really decided"),
         ]),
         ("Sign-in", [
-            (BiometricsTab, "biometrics", "Fingerprint", "fingerprint-symbolic",
-             "Fingers fprintd has stored, and which readers are attached"),
+            (BiometricsTab, "biometrics", "Fingerprint & Face", "fingerprint-symbolic",
+             "Sign in with your fingerprint or your face"),
             (SmartcardTab, "smartcard", "Smartcard", "system-users-symbolic",
              "Readers, cards, and the subject mappings pam_pkcs11 reads"),
             (SecurityKeysTab, "securitykeys", "Security Keys", "media-flash-symbolic",

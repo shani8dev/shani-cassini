@@ -1347,7 +1347,9 @@ def test_biometrics_page_without_fprintd_still_reports_the_other_methods(monkeyp
     # Smartcard, security keys and Kerberos each got a page, so they are
     # filtered out here rather than shown twice and left to drift apart.
     titles = _group_titles(tab._auth_group)
-    assert "Face / webcam recognition" in titles, titles
+    # Face sign-in ships now (linux-hello), so it is this page's own business
+    # and never filed under "other ways"; iris still has no PAM module at all.
+    assert not any("Face" in t for t in titles), titles
     assert "Iris (eye) recognition" in titles, titles
     for gone in ("Smartcard (PIV) login", "Security key (FIDO2/U2F) login",
                  "Kerberos login"):
@@ -1509,7 +1511,7 @@ def test_the_fingerprint_login_row_is_not_filed_under_other_sign_in_methods(
     # and is nowhere near the "other methods" group
     assert not any("Fingerprint" in t for t in other_titles), other_titles
     # the methods that genuinely have nowhere else to go are still there
-    assert any("Face" in t for t in other_titles), other_titles
+    assert any("Iris" in t for t in other_titles), other_titles
 
 
 def test_the_finger_picker_offers_only_fingers_that_are_not_enrolled_yet(
@@ -2028,14 +2030,14 @@ def test_module_installed_but_offered_by_nothing_is_inactive(tmp_path, monkeypat
 
 
 def test_modalities_with_no_pam_module_are_never_reported_as_working(monkeypatch):
-    """Face, iris and voice have no PAM module on Linux. If one of these ever
+    """Iris and voice have no PAM module on Linux (face does: linux-hello). If one of these ever
     reports "ok" the table is lying to the user about their hardware."""
     import shani_cassini.system_status as ss
     monkeypatch.setattr(ss, "_PAM_SEC_DIRS", ())
     monkeypatch.setattr(ss, "_PAM_LOGIN_SERVICES", ())
 
     rows = _rows_by_title(ss.hardware_auth_status())
-    for title in ("Face / webcam recognition", "Iris (eye) recognition",
+    for title in ("Iris (eye) recognition",
                   "Voice / speaker recognition",
                   "Retinal, palm, vein, gait, keystroke"):
         assert rows[title]["state"] == "unavailable", title

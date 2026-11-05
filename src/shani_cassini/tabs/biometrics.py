@@ -31,11 +31,25 @@ import shutil
 
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
-from shani_cassini.shell_bridge import in_shani_shell, open_shell_settings
+from shani_cassini.shell_bridge import in_shani_shell
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Details, Summary, explain_error, settings_row
 from shani_cassini.widgets import reserve_leading_column
 
 logger = logging.getLogger(__name__)
+
+# What a fingerprint or face can unlock, per edition, in plain words. The
+# technical answer (which PAM file) is EDITION_LOGIN, shown under For experts.
+EDITION_PLAIN = {
+    "niri": ("At the sign-in screen and the lock screen. At sign-in your face is "
+             "tried first; to use a finger, press Enter without typing a password.",
+             "ok"),
+    "gnome": ("At the sign-in screen and the lock screen.", "ok"),
+    "plasma": ("At the lock screen only, once it is switched on in the lock screen's "
+               "settings. The sign-in screen always asks for your password.", "warning"),
+    "cosmic": ("Not on this edition - its sign-in screen does not support it yet.",
+               "warning"),
+}
 
 # How long one enrollment may run before the page stops it. A person who walks
 # away must not leave the reader claimed: a claimed reader is unusable by
@@ -64,6 +78,9 @@ PAGE_BACKED_MODULES = frozenset({"pam_pkcs11.so", "pam_u2f.so", "pam_yubico.so",
 # the fingerprint page, so the PAM service that makes a finger usable at login
 # is this page's own business and not one of the "other ways to sign in".
 FINGERPRINT_MODULE = "pam_fprintd.so"
+# Face sign-in (linux-hello) is this page's business too: its PAM rows go to
+# the same group as the fingerprint's.
+OWN_MODULES = frozenset({FINGERPRINT_MODULE, ss.FACE_MODULE})
 
 
 def _row(title: str, subtitle: str = "", icon: str | None = None,
@@ -137,6 +154,76 @@ class BiometricsTab(Gtk.Box):
 
     # ------------------------------------------------------------- building
     def _build(self) -> None:
+        # 1. What the page is for, and where things stand, in plain words.
+        self._summary = Summary(
+            "Fingerprint and Face Sign-in",
+            "Sign in by touching the fingerprint reader or looking at the camera, "
+            "instead of typing your password.")
+        self._btn_retry = self._summary.add_action("Check Again", self.refresh)
+        self._btn_retry.set_visible(False)
+        self._row_face = _row("Face sign-in")
+        self._set(self._row_face, "Face sign-in", "Checking…", None)
+        self._summary.add(self._row_face)
+        self._page.append(self._summary)
+
+        # Inside shani-shell, fingers and the face are set up in the desktop's
+        # own Settings (Account > Sign in faster) - Cassini repeats no desktop
+        # setting. Everywhere else this page enrols fingers itself.
+        self._in_shell = in_shani_shell()
+        self._settings = settings_row(
+            "account", "Set up your fingerprint and face",
+            "Settings › Account › Sign in faster")
+        self._page.append(self._settings)
+
+        self._fingers_group = self._fingers_group_new(None)
+        self._page.append(self._fingers_group)
+
+        add = Adw.PreferencesGroup(
+            title="Add a Fingerprint",
+            description="Choose a finger, press Add, then touch the reader each time "
+                        "it asks. Your password is asked for once.")
+        # EnrollStart takes one of fprintd's ten finger names and rejects
+        # anything else ("any" included), so this offers exactly those. Which
+        # of the ten narrows to the ones fprintd has not stored yet, refilled
+        # from _on_status.
+        self._picker = Adw.ComboRow(
+            title="Finger", model=Gtk.StringList.new([_finger_label(f) for f in self._offered]))
+        if "right-index-finger" in self._offered:
+            self._picker.set_selected(self._offered.index("right-index-finger"))
+        add.add(self._picker)
+        self._row_enroll = _row("Add this finger", "Needs a reader")
+        self._btn_enroll = Gtk.Button(label="Add…", valign=Gtk.Align.CENTER, sensitive=False)
+        self._btn_enroll.add_css_class("suggested-action")
+        self._btn_enroll.connect("clicked", lambda *_: self._start_enroll())
+        self._btn_cancel = Gtk.Button(label="Cancel", valign=Gtk.Align.CENTER, visible=False)
+        self._btn_cancel.add_css_class("destructive-action")
+        self._btn_cancel.connect("clicked", lambda *_: self.cancel_enroll())
+        self._row_enroll.add_suffix(self._btn_cancel)
+        self._row_enroll.add_suffix(self._btn_enroll)
+        add.add(self._row_enroll)
+        self._progress = Gtk.ProgressBar(valign=Gtk.Align.CENTER, visible=False,
+                                         show_text=True)
+        add.add(self._progress)
+        self._add_group = add
+        self._page.append(add)
+        if self._in_shell:
+            add.set_visible(False)
+
+        # 2. Where it works, in plain words. The PAM wiring behind each answer
+        #    is under For experts.
+        where = Adw.PreferencesGroup(title="Where You Can Use It")
+        self._row_where = _row("This computer")
+        self._set(self._row_where, "This computer", "Checking…", None)
+        where.add(self._row_where)
+        where.add(_row("Admin passwords",
+                       "Commands that need administrator rights (sudo) always ask "
+                       "for your password. That is on purpose.",
+                       "dialog-information-symbolic"))
+        self._page.append(where)
+
+        # 3. Everything technical, folded away.
+        details = Details()
+        self._details = details
         reader = Adw.PreferencesGroup(
             title="Fingerprint reader",
             description="Read by fprintd (net.reactivated.fprint) on this system's own bus. "
@@ -150,70 +237,38 @@ class BiometricsTab(Gtk.Box):
         self._btn_refresh.connect("clicked", lambda *_: self.refresh())
         self._row_fingers.add_suffix(self._btn_refresh)
         reader.add(self._row_fingers)
-        self._page.append(reader)
+        details.append(reader)
 
-        self._fingers_group = self._fingers_group_new(None)
-        self._page.append(self._fingers_group)
+        face = Adw.PreferencesGroup(
+            title="Face (linux-hello)",
+            description=f"linux-hello recognises a face with an infrared camera. Its daemon "
+                        f"is {ss.FACE_UNIT} and its PAM module {ss.FACE_MODULE}.")
+        self._row_face_service = _row(ss.FACE_UNIT, "Asking it…")
+        face.add(self._row_face_service)
+        self._row_face_pam = _row(ss.FACE_MODULE, "Reading…")
+        face.add(self._row_face_pam)
+        details.append(face)
 
-        add = Adw.PreferencesGroup(
-            title="Add a Fingerprint",
-            description="fprintd claims the reader for you, so nothing else can use it until "
-                        "this finishes. It asks for your password once, then it waits for the "
-                        "scans.")
-        # EnrollStart takes one of fprintd's ten finger names and rejects
-        # anything else ("any" included), so this offers exactly those. Which
-        # of the ten narrows to the ones fprintd has not stored yet, refilled
-        # from _on_status.
-        self._picker = Adw.ComboRow(
-            title="Finger", model=Gtk.StringList.new([_finger_label(f) for f in self._offered]))
-        if "right-index-finger" in self._offered:
-            self._picker.set_selected(self._offered.index("right-index-finger"))
-        add.add(self._picker)
-        self._row_enroll = _row("Enroll", "Needs a reader")
-        self._btn_enroll = Gtk.Button(label="Enroll…", valign=Gtk.Align.CENTER, sensitive=False)
-        self._btn_enroll.add_css_class("suggested-action")
-        self._btn_enroll.connect("clicked", lambda *_: self._start_enroll())
-        self._btn_cancel = Gtk.Button(label="Cancel", valign=Gtk.Align.CENTER, visible=False)
-        self._btn_cancel.add_css_class("destructive-action")
-        self._btn_cancel.connect("clicked", lambda *_: self.cancel_enroll())
-        self._row_enroll.add_suffix(self._btn_cancel)
-        self._row_enroll.add_suffix(self._btn_enroll)
-        add.add(self._row_enroll)
-        self._progress = Gtk.ProgressBar(valign=Gtk.Align.CENTER, visible=False,
-                                         show_text=True)
-        add.add(self._progress)
-        self._page.append(add)
-        # Inside shani-shell, adding and removing fingers is the desktop's own
-        # Settings (Your account) - Cassini repeats no desktop setting. What this
-        # page adds stays: the reader, where PAM asks for a finger, other ways in.
-        self._in_shell = in_shani_shell()
-        if self._in_shell:
-            add.set_visible(False)
-            moved = Adw.PreferencesGroup(title="Add or Remove Fingerprints")
-            row = _row("In Settings", "Your account → Fingerprints")
-            btn = Gtk.Button(label="Open Settings", valign=Gtk.Align.CENTER)
-            btn.connect("clicked", lambda *_: open_shell_settings("account"))
-            row.add_suffix(btn)
-            moved.add(row)
-            self._page.append(moved)
-
-        where = Adw.PreferencesGroup(
+        wiring = Adw.PreferencesGroup(
             title="Where a Fingerprint Works",
-            description="The PAM service that makes an enrolled finger usable ships with the "
-                        "display manager, not with fprintd, so this differs per edition.")
-        self._row_edition = _row("This edition", "Reading it…")
-        # Reserve the leading column - the rows beside it carry icons.
-        reserve_leading_column(self._row_edition)
-        where.add(self._row_edition)
+            description="The PAM service that makes an enrolled finger or face usable ships "
+                        "with the display manager, not with fprintd, so this differs per "
+                        "edition.")
+        self._row_edition = _row("This edition")
+        # A status icon from the start - the rows beside it carry icons. (It
+        # used to reserve an empty column AND get an icon from _set, which drew
+        # this one title a column further in than its neighbours.)
+        self._set(self._row_edition, "This edition", "Reading it…", None)
+        wiring.add(self._row_edition)
         head, detail = ss.SUDO_NEVER
-        where.add(_row(head, detail, "dialog-information-symbolic"))
+        wiring.add(_row(head, detail, "dialog-information-symbolic"))
         # An inner group so the PAM rows can be refilled on every refresh
         # without taking "This edition" and the sudo note out with them:
         # _clear_group takes every row, which is right for a group that holds
         # nothing else and wrong for one that does.
         self._where_pam = Adw.PreferencesGroup()
-        where.add(self._where_pam)
-        self._page.append(where)
+        wiring.add(self._where_pam)
+        details.append(wiring)
 
         cli = Adw.PreferencesGroup(
             title="From a Terminal",
@@ -242,13 +297,42 @@ class BiometricsTab(Gtk.Box):
                 # them. The list must not change shape with the machine.
                 reserve_leading_column(r)
             cli.add(r)
-        self._page.append(cli)
+        details.append(cli)
 
         # Other hardware-auth paths, reported from the image's own PAM config
         # rather than assumed. A login method whose module is missing is called
         # out explicitly instead of being quietly absent from this page.
         self._auth_group = Adw.PreferencesGroup(title="Other ways to sign in", visible=False)
-        self._page.append(self._auth_group)
+        details.append(self._auth_group)
+        self._page.append(details)
+
+    def _on_face(self, state: dict, err: str) -> None:
+        """Face sign-in in plain words, and linux-hello's own answer under
+        For experts."""
+        stacks = state.get("stacks") or []
+        service = state.get("service") or ""
+        if not state.get("installed"):
+            self._set(self._row_face, "Face sign-in",
+                      "Not available on this computer - it needs linux-hello and an "
+                      "infrared camera", None)
+            self._row_face_service.set_subtitle("Not installed")
+            self._row_face_pam.set_subtitle("Not installed")
+            return
+        self._row_face_service.set_subtitle(_esc(service or err or "systemctl did not answer"))
+        self._row_face_pam.set_subtitle(
+            _esc("Loaded by " + ", ".join(stacks)) if stacks
+            else "Installed, but no sign-in service loads it")
+        if service == "failed":
+            self._set(self._row_face, "Face sign-in",
+                      "The face recognition service stopped working. Restart the "
+                      "computer; if it keeps happening, see For experts.", "warning")
+        elif not stacks:
+            self._set(self._row_face, "Face sign-in",
+                      "Installed, but not switched on for signing in on this edition", None)
+        else:
+            how = ("Set up your face in Settings › Account › Sign in faster"
+                   if self._in_shell else "Look at the camera when you sign in")
+            self._set(self._row_face, "Face sign-in", f"Available. {how}.", "ok")
 
     def _on_hardware_auth(self, rows: list) -> None:
         """The sign-in methods that have no page of their own.
@@ -266,9 +350,9 @@ class BiometricsTab(Gtk.Box):
         filing its login wiring under "other" put the one row that is about
         this page under a heading saying it was about something else.
         """
-        mine = [r for r in rows if r.get("module") == FINGERPRINT_MODULE]
+        mine = [r for r in rows if r.get("module") in OWN_MODULES]
         theirs = [r for r in rows
-                  if r.get("module") != FINGERPRINT_MODULE
+                  if r.get("module") not in OWN_MODULES
                   and r.get("module") not in PAGE_BACKED_MODULES]
         _clear_group(self._where_pam)
         for row in mine:
@@ -313,6 +397,7 @@ class BiometricsTab(Gtk.Box):
     # ------------------------------------------------------------------ data
     def refresh(self) -> None:
         self._on_hardware_auth(ss.hardware_auth_status())
+        ss.face_status(self._on_face)
         self._btn_refresh.set_sensitive(False)
         ss.fprintd_status(self._on_status, timeout_s=5.0)
 
@@ -327,6 +412,14 @@ class BiometricsTab(Gtk.Box):
             else:
                 self._set(self._row_daemon, "fprintd", _esc(err or "fprintd did not answer"),
                           "error")
+            if not ss.fprintd_installed():
+                self._summary.set_state(
+                    "error", "Fingerprint support is not installed",
+                    "The fprintd service is missing. Updating the system brings it back.")
+            else:
+                what, todo = explain_error(err, "fingerprint")
+                self._summary.set_state("warning", what, todo)
+            self._btn_retry.set_visible(True)
             self._set(self._row_device, "Reader", "Not known - fprintd did not answer", None)
             self._set(self._row_fingers, "Enrolled fingers", "Not known - fprintd did not answer",
                       None)
@@ -335,9 +428,15 @@ class BiometricsTab(Gtk.Box):
             return
 
         self._status = status
+        self._btn_retry.set_visible(False)
         self._set(self._row_daemon, "fprintd", "Running", "ok")
 
         if not status["device_present"]:
+            self._summary.set_state(
+                "info", "No fingerprint reader found",
+                "This computer does not seem to have one. If you plug one in, "
+                "press Check Again.")
+            self._btn_retry.set_visible(True)
             self._set(self._row_device, "Reader", "No reader found - attach one and refresh",
                       "warning")
             self._set(self._row_fingers, "Enrolled fingers", "Not known - no reader to ask",
@@ -359,6 +458,16 @@ class BiometricsTab(Gtk.Box):
         self._set(self._row_fingers, "Enrolled fingers",
                   f"{enrolled} enrolled" if enrolled else "None - add one below to use a fingerprint",
                   "ok" if enrolled else None)
+        if enrolled:
+            self._summary.set_state(
+                "ok", "Your fingerprint reader is ready",
+                f"{enrolled} finger{'s' * (enrolled != 1)} saved. Touch the reader "
+                f"when you sign in.")
+        else:
+            self._summary.set_state(
+                "info", "Your fingerprint reader has no fingerprints yet",
+                "Set one up in Settings to sign in with your finger." if self._in_shell
+                else "Add one below to sign in with your finger.")
         self._refill_picker(fingers)
         self._set_enrollable(bool(self._offered))
         if not self._offered:
@@ -408,6 +517,9 @@ class BiometricsTab(Gtk.Box):
         running desktop."""
         def got(st, err):
             if st is None:
+                self._set(self._row_where, "This computer",
+                          "Not known - Cassini could not tell which edition of Shanios "
+                          "this is", "unknown")
                 self._set(self._row_edition, "This edition",
                           "Not known - Shanios's own status could not be read, so what a "
                           "fingerprint can unlock here is not known", "unknown")
@@ -417,6 +529,9 @@ class BiometricsTab(Gtk.Box):
             title = f"This edition: {_esc(profile)}" if profile else "This edition"
             self._set(self._row_edition, title, f"{head}. {detail}",
                       "ok" if profile.lower() in ss.EDITION_LOGIN else "unknown")
+            plain, state = EDITION_PLAIN.get(profile.lower(), (
+                "Not known for this edition", "unknown"))
+            self._set(self._row_where, "This computer", plain, state)
         ss.deploy_status(got)
 
     # ------------------------------------------------------------ enrolling

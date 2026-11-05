@@ -44,6 +44,7 @@ import logging
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Details, Summary, settings_row
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +138,21 @@ class DnsTab(Gtk.Box):
         GLib.idle_add(self.load)
 
     def _build(self) -> None:
+        # What the page is for and whether lookups work, in plain words. The
+        # resolver plumbing below is all under For experts.
+        self._plain = Summary(
+            "Name Lookups (DNS)",
+            "How this computer turns names like example.com into the addresses it "
+            "connects to. Nothing on this page changes anything.")
+        self._row_private = self._plain.add_row("Private lookups", "Checking…")
+        self._row_tracking = self._plain.add_row("Tracking by address", "Checking…")
+        self._page.append(self._plain)
+        self._page.append(settings_row(
+            "network", "Choose which DNS servers a connection uses",
+            "Settings › Network, in the connection's own settings"))
+
+        details = Details()
+        self._details = details
         self._summary = Adw.PreferencesGroup(title="DNS", description=SUMMARY_NOTE)
         self._row_active = _row("Answering", "Reading…")
         self._summary.add(self._row_active)
@@ -146,19 +162,19 @@ class DnsTab(Gtk.Box):
         self._summary.add(self._row_global)
         self._row_port53 = _row("Listening on port 53", "Reading…")
         self._summary.add(self._row_port53)
-        self._page.append(self._summary)
+        details.append(self._summary)
 
         self._stub_group = Adw.PreferencesGroup(
             title="The stub resolver", description=STUB_NOTE)
-        self._page.append(self._stub_group)
+        details.append(self._stub_group)
 
         self._parallel_group = Adw.PreferencesGroup(
             title="What DNS= in resolved.conf does", description=PARALLEL_NOTE)
-        self._page.append(self._parallel_group)
+        details.append(self._parallel_group)
 
         self._conflict_group = Adw.PreferencesGroup(
             title="The other three resolvers", description=CONFLICT_NOTE)
-        self._page.append(self._conflict_group)
+        details.append(self._conflict_group)
 
         self._encrypted = Adw.PreferencesGroup(
             title="Encrypted DNS", description=ENCRYPTED_NOTE)
@@ -168,7 +184,7 @@ class DnsTab(Gtk.Box):
         self._encrypted.add(self._row_enc_transport)
         self._row_enc_point = _row("Is it being used?", "Reading…")
         self._encrypted.add(self._row_enc_point)
-        self._page.append(self._encrypted)
+        details.append(self._encrypted)
 
         self._privacy = Adw.PreferencesGroup(
             title="IPv6 address privacy", description=PRIVACY_NOTE)
@@ -176,10 +192,11 @@ class DnsTab(Gtk.Box):
         self._privacy.add(self._row_privacy_verdict)
         self._row_privacy_config = _row("Configured (use_tempaddr)", "Reading…")
         self._privacy.add(self._row_privacy_config)
-        self._page.append(self._privacy)
+        details.append(self._privacy)
 
-        self._page.append(Adw.PreferencesGroup(
+        details.append(Adw.PreferencesGroup(
             title="Reading it yourself", description=READ_NOTE))
+        self._page.append(details)
 
         self._resolvers: list[Adw.ActionRow] = []
         self._privacy_rows: list[Adw.ActionRow] = []
@@ -206,6 +223,7 @@ class DnsTab(Gtk.Box):
           exists to avoid, so it says it could not tell.
         """
         addrs = state.get("addresses") or []
+        self._plain_privacy(state, addrs)
 
         if not state.get("if_inet6_readable"):
             # Never "Nothing to worry about". The reader did not get to look.
@@ -293,6 +311,25 @@ class DnsTab(Gtk.Box):
             self._row_privacy_config.set_subtitle(
                 explained.get(all_v, all_v))
 
+    def _plain_privacy(self, state: dict, addrs: list) -> None:
+        set_ = self._plain.set_row
+        row = self._row_tracking
+        if not state.get("if_inet6_readable"):
+            set_(row, "info", "Could not be checked on this computer")
+        elif not addrs:
+            set_(row, "ok", "Nothing to worry about - this connection has no IPv6 address")
+        elif any(a.get("eui64") for a in addrs):
+            set_(row, "warning",
+                 "Your address is built from your network card, so websites can "
+                 "recognise this computer on any network it joins")
+        elif any(a.get("temporary") for a in addrs):
+            set_(row, "ok",
+                 "Nothing to do - your address changes regularly, so websites cannot "
+                 "follow this computer by it")
+        else:
+            set_(row, "info",
+                 "Websites can recognise this computer while it stays on this network")
+
     def _clear_privacy(self) -> None:
         for row in self._privacy_rows:
             self._privacy.remove(row)
@@ -301,7 +338,21 @@ class DnsTab(Gtk.Box):
     def _on_dnscrypt(self, state: dict, err: str) -> None:
         if not state.get("installed"):
             self._encrypted.set_visible(False)
+            self._plain.set_row(self._row_private, "info",
+                                "Off - lookups are sent unencrypted, as on most computers")
             return
+        running = state.get("service") in ("active", "activating")
+        if running and state.get("points_at_proxy") is True:
+            self._plain.set_row(self._row_private, "ok",
+                                "On - your lookups are encrypted, so your network cannot "
+                                "read them")
+        elif state.get("service") == "failed":
+            self._plain.set_row(self._row_private, "warning",
+                                "The encrypted lookup service failed to start. Lookups "
+                                "still work, unencrypted.")
+        else:
+            self._plain.set_row(self._row_private, "info",
+                                "Off - lookups are sent unencrypted, as on most computers")
         self._encrypted.set_visible(True)
         service = state.get("service")
         # Compared as strings, not `service is False`: the reader normalises
@@ -342,12 +393,37 @@ class DnsTab(Gtk.Box):
             self._conflict_group.remove(row)
         self._resolvers = []
 
+    def _plain_state(self, state: dict, active: list, owner: str) -> None:
+        """The one-line verdict: do lookups work, and is there anything to do."""
+        local = [a for a in active if a != "dnscrypt-proxy"]
+        if state.get("resolv_conf_missing"):
+            self._plain.set_state(
+                "error", "Name lookups are not set up",
+                "Websites will not open by name. Reconnecting to your network, or "
+                "restarting the computer, usually fixes this.")
+        elif len(local) > 1:
+            self._plain.set_state(
+                "warning", "Two lookup services are running at once",
+                f"{' and '.join(local)} both answer, which can make websites fail to "
+                f"open now and then. Turning one of them off fixes it.")
+        elif active or owner:
+            self._plain.set_state(
+                "ok", "Name lookups are working",
+                "Nothing to do. Your network's DNS servers answer this computer's "
+                "lookups.")
+        else:
+            self._plain.set_state(
+                "error", "Nothing is answering name lookups",
+                "Websites will not open by name. Reconnecting to your network, or "
+                "restarting the computer, usually fixes this.")
+
     def _on_state(self, state: dict, err: str) -> None:
         resolvers = state.get("resolvers") or []
         active = [r["label"] for r in resolvers
                   if r.get("service") in ("active", "activating")]
         owner = state.get("resolv_conf_owner") or ""
         listeners = state.get("listeners_53") or []
+        self._plain_state(state, active, owner)
         if active:
             self._row_active.set_subtitle(
                 f"{' and '.join(active)}" +
