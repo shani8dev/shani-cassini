@@ -45,6 +45,7 @@ import logging
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Summary, explain_error
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,14 @@ class CronTab(Gtk.Box):
         guide.add(read_only)
         self._permanent.append(read_only)
 
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary(
+            "Cron",
+            "An older way to run jobs on a schedule. Shanios uses Background Tasks "
+            "instead; this page shows what is left.")
+        self.append(self._plain)
+        self._running: bool | None = None
+        self._user_jobs = 0
         for group in (service, mine, system, guide):
             self.append(group)
 
@@ -162,8 +171,23 @@ class CronTab(Gtk.Box):
         ss.cron_service_status(self._on_service)
         ss.user_crontab(self._on_user)
 
+    def _plain_verdict(self, error: str = "") -> None:
+        if self._running is None and error:
+            what, todo = explain_error(error, "cron")
+            self._plain.set_state("info", what, todo)
+        elif self._user_jobs and self._running is False:
+            self._plain.set_state("warning", "Your cron jobs will not run",
+                                  "The cron service is not running. Background Tasks "
+                                  "is the usual way on Shanios.")
+        elif self._user_jobs:
+            self._plain.set_state("ok", "Your cron jobs will run", "Nothing to do.")
+        else:
+            self._plain.set_state("ok", "You have no cron jobs", "Nothing to do.")
+
     def _on_service(self, running: bool | None, error: str) -> None:
         self._pending -= 1
+        self._running = running
+        self._plain_verdict(error)
         if running is True:
             self._row_service.set_subtitle("Active - your jobs will run")
         elif running is False:
@@ -177,6 +201,9 @@ class CronTab(Gtk.Box):
 
     def _on_user(self, lines: list[str], error: str) -> None:
         self._pending -= 1
+        self._user_jobs = sum(1 for ln in lines
+                              if ln.strip() and not ln.lstrip().startswith("#"))
+        self._plain_verdict()
         if error and not lines:
             self._row_user.set_subtitle(error)
         elif not lines:

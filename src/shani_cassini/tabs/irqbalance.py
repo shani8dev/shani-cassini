@@ -104,6 +104,7 @@ from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import config_edit as ce
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Summary, lead
 
 logger = logging.getLogger(__name__)
 
@@ -640,6 +641,12 @@ class IrqBalanceTab(Gtk.Box):
         self._toast = self._toasts
         self.append(self._toasts)
         self._build()
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary(
+            "Interrupt Balancing",
+            "Spreads the work of answering your hardware across the processor's "
+            "cores. It looks after itself.")
+        lead(self._page, self._plain)
         GLib.idle_add(self.load)
 
     def _build(self) -> None:
@@ -815,7 +822,26 @@ class IrqBalanceTab(Gtk.Box):
         rows.append(row)
         return row
 
+    def _plain_verdict(self, payload: dict) -> None:
+        enabled, active = payload.get("enabled"), payload.get("active")
+        if enabled is None and active is None:
+            self._plain.set_state("info", "Could not tell whether it is running",
+                                  "Nothing to do; the computer works without it.")
+        elif enabled == "not-found":
+            self._plain.set_state("info", "Not installed",
+                                  "Nothing to do; the computer works without it.")
+        elif active == "failed":
+            self._plain.set_state("warning", "It stopped with an error",
+                                  "The computer still works. Restarting it usually fixes this.")
+        elif active == "active":
+            self._plain.set_state("ok", "On", "Nothing to do.")
+        else:
+            self._plain.set_state("info", "Not running",
+                                  "That is normal on a computer with one processor core "
+                                  "or in a container. Nothing to do.")
+
     def _on_state(self, payload: dict, err: str) -> None:
+        self._plain_verdict(payload)
         self._row_state.set_subtitle(_plain(self._verdict(payload)))
         self._render_daemon(payload)
         self._render_config(payload)

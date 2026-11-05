@@ -325,10 +325,12 @@ def row_titled(tab: Gtk.Widget, title: str) -> Adw.ActionRow:
 
 
 def group_titles(tab: Gtk.Widget) -> list[str]:
+    """The page's own groups, so not the plain Summary on top."""
+    from shani_cassini.plain import Summary
     out: list[str] = []
 
     def descend(widget: Gtk.Widget) -> None:
-        if isinstance(widget, Adw.PreferencesGroup):
+        if isinstance(widget, Adw.PreferencesGroup) and not isinstance(widget, Summary):
             out.append(widget.get_title() or "")
         child = widget.get_first_child()
         while child is not None:

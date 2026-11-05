@@ -58,6 +58,7 @@ from typing import Final
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Summary, explain_error, lead
 
 logger = logging.getLogger(__name__)
 
@@ -378,6 +379,12 @@ class PersistenceTab(Gtk.Box):
         for group in (self._root_group, self._boot_group, self._remember_group,
                       self._mount_group, self._subvol_group):
             self._page.append(group)
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary(
+            "What Is Kept",
+            "The system itself is replaced by each update. Your files, settings and "
+            "apps are kept apart from it, so an update never touches them.")
+        lead(self._page, self._plain)
         self.refresh()
 
     # ------------------------------------------------------------------ data
@@ -440,8 +447,22 @@ class PersistenceTab(Gtk.Box):
         group.add(row)
         self._added.append((group, row))
 
+    def _plain_verdict(self) -> None:
+        if self._slot is None:
+            self._plain.set_state("busy", "Checking…")
+        elif self._slot["res"] is None:
+            what, todo = explain_error(self._slot["err"], "the update tool")
+            self._plain.set_state("info", what, todo)
+        else:
+            slot = str(self._slot["res"].get("booted_slot") or "")
+            self._plain.set_state(
+                "ok", "Your files and settings are kept across updates",
+                (f"This computer is running the {slot} copy of the system. " if slot else "")
+                + "Nothing to do.")
+
     def _render(self) -> None:
         global SERVICE_STATE_ROWS
+        self._plain_verdict()
         self._clear()
         self._render_slot()
         self._render_mounts()

@@ -48,6 +48,7 @@ from typing import Final
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Summary, explain_error
 
 logger = logging.getLogger(__name__)
 
@@ -268,6 +269,14 @@ class ModulesTab(Gtk.Box):
         entry.add_suffix(self._add)
         entry.connect("changed", self._on_entry_changed)
         self._blacklist.add(entry)
+        # A choice before typing: the modules loaded right now. Picking one
+        # fills the field above; Add still has to be pressed.
+        self._pick_model = Gtk.StringList()
+        self._pick = Adw.ComboRow(title="Or choose a loaded module",
+                                  model=self._pick_model, enable_search=True)
+        self._pick.connect("notify::selected", self._on_pick)
+        self._picking = False
+        self._blacklist.add(self._pick)
 
         self._status_row = Adw.ActionRow(title="Last change")
         self._status_row.set_subtitle_selectable(True)
@@ -278,6 +287,12 @@ class ModulesTab(Gtk.Box):
         guide.add(_row("Loading or unloading", DOES_NOT_NOTE))
         guide.add(_row("Parameters", PARAMS_NOTE))
 
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary(
+            "Kernel Modules",
+            "Drivers loaded into the core of the system. Nothing here usually needs "
+            "changing.")
+        self.append(self._plain)
         self.append(top)
         self.append(self._blacklist)
         self.append(guide)
@@ -447,9 +462,30 @@ class ModulesTab(Gtk.Box):
         """
         def done(modules: list, error: str) -> None:
             self._summary.set_subtitle(error if error else str(len(modules)))
+            if error:
+                what, todo = explain_error(error, "the module list")
+                self._plain.set_state("info", what, todo)
+            else:
+                self._plain.set_state("ok", f"{len(modules)} drivers are loaded",
+                                      "Nothing to do.")
+            self._fill_pick(modules)
             self._render_modules(modules)
 
         ss.loaded_modules(done)
+
+    def _fill_pick(self, modules: list) -> None:
+        self._picking = True
+        names = sorted({str(m.get("name") or "") for m in modules} - {""})
+        self._pick_model.splice(0, self._pick_model.get_n_items(), ["—"] + names)
+        self._pick.set_selected(0)
+        self._picking = False
+
+    def _on_pick(self, combo, _pspec) -> None:
+        if self._picking or combo.get_selected() in (0, Gtk.INVALID_LIST_POSITION):
+            return
+        item = combo.get_selected_item()
+        if item is not None:
+            self._entry.set_text(item.get_string())
 
     def _render_modules(self, modules: list) -> None:
         """One row per module, with its parameters as child rows *of that row's

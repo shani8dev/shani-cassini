@@ -48,6 +48,7 @@ from typing import Callable, Final, Optional
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Summary, explain_error, lead
 
 logger = logging.getLogger(__name__)
 
@@ -533,6 +534,11 @@ class RaidTab(Gtk.Box):
         self._page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         self.append(self._page)
         self._build()
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary("Software RAID",
+                              "Several disks working as one, so that one can fail "
+                              "without losing your files. Most computers do not use it.")
+        lead(self._page, self._plain)
         GLib.idle_add(self.load)
 
     def _build(self) -> None:
@@ -562,9 +568,29 @@ class RaidTab(Gtk.Box):
             self._array_box.remove(child)
             child = nxt
 
+    def _plain_verdict(self, state: dict, err: str) -> None:
+        arrays = state.get("arrays") or []
+        if state.get("mdstat_error") or (err and not arrays):
+            what, todo = explain_error(err or state.get("mdstat_error") or "",
+                                       "the RAID status")
+            self._plain.set_state("info", what, todo)
+        elif not arrays:
+            self._plain.set_state("ok", "This computer does not use RAID", "Nothing to do.")
+        elif any(degraded(a) for a in arrays):
+            names = ", ".join(a["name"] for a in arrays if degraded(a))
+            self._plain.set_state(
+                "error", "A disk in your RAID has failed or is missing",
+                f"{names} is still working, but one more failure loses data. Back up "
+                "your files, then replace the disk.")
+        else:
+            n = len(arrays)
+            self._plain.set_state("ok", f"Your RAID {'array is' if n == 1 else 'arrays are'} healthy",
+                                  "Every disk is working. Nothing to do.")
+
     def _on_state(self, state: dict, err: str) -> None:
         arrays = state.get("arrays") or []
         personalities = state.get("personalities") or []
+        self._plain_verdict(state, err)
 
         if state.get("mdstat_error") or (err and not arrays):
             self._row_arrays.set_subtitle(err or state.get("mdstat_error") or "")

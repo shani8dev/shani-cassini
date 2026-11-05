@@ -415,3 +415,74 @@ def test_firmware_terminal_command_is_only_under_for_experts(monkeypatch):
     _fw, tab = _firmware_with_updates(monkeypatch)
     summary_text = headline(tab) + detail(tab)
     assert "fwupdmgr" not in summary_text and "sudo" not in summary_text
+
+
+# --- Expert pages: lead in plain words, keep their detail ---------------------
+
+def test_memory_page_reads_meminfo_and_says_when_it_is_nearly_full(tmp_path):
+    from shani_cassini.tabs import memory_state as ms
+    f = tmp_path / "meminfo"
+    f.write_text("MemTotal:       16000000 kB\nMemAvailable:    1000000 kB\n")
+    tab = ms.MemoryStateTab()
+    tab.render(ms.meminfo(str(f)))
+    assert headline(tab) == "Memory is nearly full"
+    f.write_text("MemTotal:       16000000 kB\nMemAvailable:    9000000 kB\n")
+    tab.render(ms.meminfo(str(f)))
+    assert headline(tab) == "15 GB of memory", "control: plenty free"
+    tab.render(ms.meminfo(str(tmp_path / "absent")))
+    assert headline(tab) == "Could not read the memory figures"
+
+
+def test_lvm_page_counts_volumes_from_sysfs_without_root(tmp_path):
+    from shani_cassini.tabs import lvm_state as lv
+    for i, (uuid, name) in enumerate((("LVM-abc", "vg-root"), ("CRYPT-LUKS2-x", "luks"))):
+        d = tmp_path / f"dm-{i}" / "dm"
+        d.mkdir(parents=True)
+        (d / "uuid").write_text(uuid + "\n")
+        (d / "name").write_text(name + "\n")
+    assert lv.logical_volumes(str(tmp_path)) == ["vg-root"], "a LUKS mapping is not a volume"
+
+
+@pytest.mark.parametrize("module,cls", [
+    ("attachment", "AttachmentTab"), ("voice_access", "VoiceAccessTab"),
+    ("event_triggers", "EventTriggersTab"), ("network_monitor", "NetworkMonitorTab"),
+])
+def test_tool_pages_say_what_is_installed_from_a_real_check(module, cls):
+    import importlib
+    mod = importlib.import_module(f"shani_cassini.tabs.{module}")
+    tab = getattr(mod, cls)()
+    tab.render({})
+    assert summary_of(tab).state == "info", "nothing installed is not a pass"
+    tab.render({tool: True for tool, _w in mod.TOOLS})
+    assert summary_of(tab).state == "ok"
+
+
+@pytest.mark.parametrize("module,cls", [
+    ("raid", "RaidTab"), ("persistence", "PersistenceTab"), ("modules", "ModulesTab"),
+    ("irqbalance", "IrqBalanceTab"), ("printers", "PrintersTab"), ("timers", "TimersTab"),
+    ("cron", "CronTab"), ("kerberos", "KerberosTab"),
+])
+def test_expert_pages_lead_with_a_plain_summary(module, cls):
+    import importlib
+    tab = getattr(importlib.import_module(f"shani_cassini.tabs.{module}"), cls)()
+    assert first_group(tab) is summary_of(tab), cls
+    assert spin(lambda: summary_of(tab).state != "busy"), (cls, headline(tab))
+
+
+def test_raid_says_a_degraded_array_in_plain_words():
+    from shani_cassini.tabs import raid
+    tab = raid.RaidTab()
+    arr = {"name": "md0", "counts": (2, 1), "letters": "U_"}
+    assert raid.degraded(arr)
+    tab._plain_verdict({"arrays": [arr]}, "")
+    assert headline(tab) == "A disk in your RAID has failed or is missing"
+    tab._plain_verdict({"arrays": [dict(arr, counts=(2, 2), letters="UU")]}, "")
+    assert headline(tab) == "Your RAID array is healthy", "control"
+
+
+def test_modules_offers_the_loaded_modules_before_typing():
+    from shani_cassini.tabs.modules import ModulesTab
+    tab = ModulesTab()
+    tab._fill_pick([{"name": "kvm_intel"}, {"name": "snd"}])
+    tab._pick.set_selected(1)
+    assert tab._entry.get_text() == "kvm_intel"

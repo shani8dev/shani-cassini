@@ -103,6 +103,7 @@ from typing import Callable, Final, Optional
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Details, Summary, lead, settings_row
 
 logger = logging.getLogger(__name__)
 
@@ -619,7 +620,44 @@ class PrintersTab(Gtk.Box):
         self._page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         self.append(self._page)
         self._build()
+        # Plain words first; CUPS's queues, options and files are under For
+        # experts. Inside shani-shell, adding a printer is its Settings' job.
+        self._plain = Summary("Printers", "The printers this computer can print to.")
+        lead(self._page, self._plain,
+             Details(subtitle="CUPS queues, scanners, options and files"))
+        self._page.insert_child_after(
+            settings_row("printers", "Add or remove a printer", "Settings › Printers"),
+            self._plain)
         GLib.idle_add(self.load)
+
+    def _plain_verdict(self, payload: dict) -> None:
+        sched = payload.get("scheduler")
+        printers = payload.get("printers") or []
+        if sched is None and not payload.get("cups_installed", True):
+            self._plain.set_state("info", "Printing is not installed",
+                                  "Updating the system usually brings it back.")
+        elif sched == "not running":
+            self._plain.set_state("warning", "The printing service did not answer",
+                                  "Restarting the computer usually fixes this.")
+        elif sched == "running" and not printers:
+            self._plain.set_state("info", "No printer is set up",
+                                  "Add one in your desktop's printer settings. Most "
+                                  "network printers are found by themselves.")
+        elif sched == "running":
+            # Names in the sentence, not rows of their own: the queue rows
+            # under For experts already carry each name as a title.
+            paused = [str(p.get("name") or "") for p in printers
+                      if p.get("enabled") is False or p.get("accepting") is False]
+            n = len(printers)
+            said = ", ".join(str(p.get("name") or "") for p in printers[:6]) + \
+                (" and more" if n > 6 else "") + "."
+            if paused:
+                said += f" Paused: {', '.join(paused)}."
+            self._plain.set_state("warning" if paused else "ok",
+                                  f"{n} printer{'s' * (n != 1)} set up", said)
+        else:
+            self._plain.set_state("info", "Could not tell whether printing works",
+                                  "The details are under For experts.")
 
     def _build(self) -> None:
         self._summary = Adw.PreferencesGroup(
@@ -684,6 +722,7 @@ class PrintersTab(Gtk.Box):
     def _on_state(self, payload: dict, err: str) -> None:
         sched = payload.get("scheduler")
         printers = payload.get("printers") or []
+        self._plain_verdict(payload)
 
         if sched is None and not payload.get("cups_installed", True):
             title = "CUPS is not installed"

@@ -1044,9 +1044,14 @@ class TestEveryRowHasText:
         _drain(tab, {"scheduler": "running", "printers": [],
                      "tools": [], "files": []})
         found = []
+        from shani_cassini.plain import Details, Summary
 
         def walk(node):
-            if isinstance(node, Adw.PreferencesGroup):
+            # The page's own groups: not the plain Summary, the For experts
+            # frame, or the Settings hand-over (hidden outside shani-shell).
+            if isinstance(node, Adw.PreferencesGroup) and not isinstance(
+                    node, Summary) and not isinstance(node.get_parent(), Details) \
+                    and node.get_visible():
                 found.append((node.get_title(), node.get_description() or ""))
             child = node.get_first_child()
             while child is not None:

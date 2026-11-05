@@ -77,6 +77,7 @@ from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
 from shani_cassini.widgets import find_named
+from shani_cassini.plain import Summary, explain_error, lead
 
 logger = logging.getLogger(__name__)
 
@@ -352,6 +353,13 @@ class TimersTab(Gtk.Box):
 
         for group in (self._timers_group, self._cron_group):
             self._page.append(group)
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary(
+            "Background Tasks",
+            "Jobs the system runs on a schedule, such as cleaning up or checking "
+            "for updates.")
+        lead(self._page, self._plain)
+        self._permanent.append(self._plain.status)
         self.refresh()
 
     def _clear(self) -> None:
@@ -485,7 +493,30 @@ class TimersTab(Gtk.Box):
             row.set_subtitle(self._subtitle(self._timer(unit), self._now()))
 
     # --------------------------------------------------------------- rendering
+    def _plain_verdict(self) -> None:
+        if "timers" in self._errors:
+            what, todo = explain_error(self._errors["timers"], "the service manager")
+            self._plain.set_state("info", what, todo)
+            return
+        if self._timers is None:
+            self._plain.set_state("busy", "Checking…")
+            return
+        if not self._timers:
+            self._plain.set_state("info", "No scheduled task", "Nothing to do.")
+            return
+        failed = [str(t.get("unit") or "").removesuffix(".timer") for t in self._timers
+                  if self._icon_state(str(t.get("unit") or "")) == "failed"]
+        n = len(self._timers)
+        if failed:
+            self._plain.set_state(
+                "warning", f"{len(failed)} scheduled task{'s' * (len(failed) != 1)} failed",
+                ", ".join(failed[:3]) + ". Each one's state is below.")
+        else:
+            self._plain.set_state("ok", f"{n} task{'s' * (n != 1)} run on a schedule",
+                                  "None has failed. Nothing to do.")
+
     def _render(self) -> None:
+        self._plain_verdict()
         self._clear()
         self._render_timers()
         self._render_cron()
