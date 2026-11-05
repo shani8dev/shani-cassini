@@ -13,12 +13,16 @@ network-bound, slow, and behind a button. The devices list therefore loads with
 the page and the updates list does not; a page that fetched both on open would
 make a settings panel take as long as a firmware update check.
 
-**This page installs nothing.** `fwupdmgr install` writes to flash, may require a
-reboot, and — the reason it is called out rather than merely left off — **it
-changes PCR 0**, which invalidates a TPM2-sealed LUKS key. That is the same
-consequence the Encryption page warns about, and a user who updates firmware
-from a terminal and then cannot unlock their disk has been failed by two tools
-that each behaved correctly. The bottom group says so, in the same terms.
+**Installing is one button, behind a confirmation that names the cost.**
+`fwupdmgr update` writes to flash, may need a restart, and **it changes PCR 0**,
+which invalidates a TPM2-sealed LUKS key. That is the same consequence the
+Encryption page warns about, so the confirmation says it before anything is
+written: a user who updates firmware and then cannot unlock their disk has
+been failed by two tools that each behaved correctly. It runs `fwupdmgr update
+--assume-yes --no-reboot-check` (`FWUPD_INSTALL`): fwupd asks polkit itself,
+over D-Bus, so the desktop's own password dialog appears and no pkexec is
+involved; `--no-reboot-check` because restarting is the person's call, which
+the summary then asks them to make. The command stays under For experts.
 
 **A device with no `updatable` flag is shown as not updatable, not hidden.**
 `Internal SPI Controller`, `KEK CA` and `Option ROM UEFI CA` all appear in a
@@ -63,9 +67,12 @@ UPDATES_NOTE = (
     "What the Linux Vendor Firmware Service is offering. Checked only when you "
     "ask, because it reaches out to the network."
 )
+# What Install Updates runs. fwupd authorises it over D-Bus through polkit.
+FWUPD_INSTALL = ["fwupdmgr", "update", "--assume-yes", "--no-reboot-check"]
+
 INSTALL_NOTE = (
-    "This page installs nothing.\n"
-    "In a terminal:  sudo fwupdmgr update\n\n"
+    "Install Updates runs:  " + " ".join(FWUPD_INSTALL) + "\n"
+    "In a terminal:  fwupdmgr update\n\n"
     "Important: a firmware update changes the machine's TPM2 PCR 0. If this "
     "system disk is set up for automatic unlock, that key stops matching "
     "afterwards and the disk asks for its passphrase again — re-run Set Up on "
@@ -118,8 +125,18 @@ class FirmwareTab(Gtk.Box):
         self._row_microcode = _row("Revision", "Reading\u2026")
         self._microcode.add(self._row_microcode)
 
-        guide = Adw.PreferencesGroup(title="What this page does not do")
-        guide.add(_row("Installing firmware", INSTALL_NOTE))
+        guide = Adw.PreferencesGroup(title="Installing firmware")
+        guide.add(_row("What Install Updates does", INSTALL_NOTE))
+        self._install_log = Gtk.TextBuffer()
+        self._install_group = Adw.PreferencesGroup(title="Last install", visible=False)
+        tv = Gtk.TextView(buffer=self._install_log, editable=False, monospace=True,
+                          wrap_mode=Gtk.WrapMode.WORD_CHAR, top_margin=10, bottom_margin=10,
+                          left_margin=12, right_margin=12)
+        tv.add_css_class("card")
+        self._install_group.add(Gtk.ScrolledWindow(child=tv, min_content_height=160,
+                                                   max_content_height=320,
+                                                   hscrollbar_policy=Gtk.PolicyType.NEVER))
+        self._installing = False
 
         # Plain words first; the device list, microcode and the terminal steps
         # are under For experts.
@@ -131,10 +148,14 @@ class FirmwareTab(Gtk.Box):
                               "Checking asks the hardware makers over the internet.")
         self._btn_plain_check = self._plain.add_action(
             "Check for Updates", self.check_updates, suggested=True)
+        self._btn_install = self._plain.add_action(
+            "Install Updates…", self._confirm_install, suggested=True)
+        self._btn_install.set_visible(False)
         self._plain_rows: list[Adw.ActionRow] = []
         page.append(self._plain)
         self._details = Details()
-        for group in (self._devices, self._updates, self._microcode, guide):
+        for group in (self._devices, self._updates, self._microcode, guide,
+                      self._install_group):
             self._details.append(group)
         page.append(self._details)
 
@@ -279,6 +300,8 @@ class FirmwareTab(Gtk.Box):
         for row in self._plain_rows:
             self._plain.remove(row)
         self._plain_rows = []
+        self._btn_install.set_visible(False)
+        self._btn_plain_check.set_visible(True)
         if not payload.get("ok"):
             what, todo = explain_error(payload.get("problem") or "",
                                        "the firmware service")
@@ -290,9 +313,11 @@ class FirmwareTab(Gtk.Box):
             self._plain.set_state("ok", "Your firmware is up to date", "Nothing to do.")
             return
         n = len(updates)
+        self._btn_install.set_visible(True)
+        self._btn_plain_check.set_visible(False)
         self._plain.set_state(
             "warning", f"{n} firmware update{'s' * (n != 1)} available",
-            "Cassini does not install firmware; the steps are under For experts. "
+            "Install them when you have a moment; the computer may need to restart. "
             "If your disk unlocks by itself at start-up, it will ask for its "
             "password once afterwards - set up automatic unlock again on the "
             "Encryption page.")
@@ -302,6 +327,63 @@ class FirmwareTab(Gtk.Box):
                                 f"New version {update['version']}" if update["version"]
                                 else "A new version is available")
             self._plain_rows.append(row)
+
+    # ------------------------------------------------------------- installing
+    def _confirm_install(self) -> None:
+        d = Adw.AlertDialog(
+            heading="Install firmware updates?",
+            body="Keep the computer plugged in, and do not turn it off while this "
+                 "runs. Some firmware is written when the computer restarts.\n\n"
+                 "If your disk unlocks by itself at start-up, it will ask for its "
+                 "password once afterwards. Have it ready, then set up automatic "
+                 "unlock again on the Encryption page.")
+        d.add_response("cancel", "Cancel")
+        d.add_response("install", "Install")
+        d.set_response_appearance("install", Adw.ResponseAppearance.SUGGESTED)
+        d.set_default_response("cancel")
+        d.set_close_response("cancel")
+        d.connect("response", lambda _d, r: r == "install" and self.install_updates())
+        self._dialog = d
+        root = self.get_root()
+        d.present(root if isinstance(root, Gtk.Widget) else None)
+
+    def install_updates(self) -> None:
+        """fwupdmgr update, streamed. fwupd asks polkit for the password."""
+        if self._installing:
+            return
+        self._installing = True
+        for b in (self._btn_install, self._btn_plain_check, self._btn_check):
+            b.set_sensitive(False)
+        self._plain.set_state("busy", "Installing firmware updates…",
+                              "Keep the computer plugged in and turned on.")
+        self._install_log.set_text("")
+        self._install_group.set_visible(True)
+        last: list[str] = []
+
+        def line(text: str) -> None:
+            if text.strip():
+                last[:] = [text.strip()]
+            self._install_log.insert(self._install_log.get_end_iter(), text + "\n")
+
+        def done(rc: int) -> None:
+            self._installing = False
+            for b in (self._btn_install, self._btn_plain_check, self._btn_check):
+                b.set_sensitive(True)
+            if rc == 0:
+                self._btn_install.set_visible(False)
+                self._btn_plain_check.set_visible(True)
+                self._plain.set_state(
+                    "ok", "Firmware updated",
+                    "Restart the computer when you are ready; some firmware is "
+                    "written during the restart.")
+                return
+            what, todo = explain_error(last[0] if last else "", "the firmware updater")
+            self._plain.set_state("error", f"The update did not finish: {what}", todo)
+
+        # A spawn failure is reported through line() and done(127) by
+        # run_streaming itself.
+        ss.run_streaming(ss.inhibited(list(FWUPD_INSTALL), "Installing firmware"),
+                         line, done)
 
     def _render_updates(self, payload: dict) -> None:
         self._plain_updates(payload)

@@ -352,3 +352,66 @@ def test_nfs_sharing_keeps_the_shares_in_view():
     assert first_group(tab) is summary_of(tab)
     assert tab._shares_group.get_ancestor(Details) is None
     assert tab._status_group.get_ancestor(Details) is not None
+
+
+# --- Audio -------------------------------------------------------------------
+
+@pytest.mark.parametrize("flags,said", [
+    ("vol: 1.00", "Volume 100%"),
+    ("vol: 0.43 MUTED", "Volume 43%, muted"),
+    ("vol: 1.50", "Volume 150% (boosted)"),
+    ("MUTED", "Muted"),
+    ("", ""),
+    ("vol: x", "vol: x"),          # not a number: kept as it came
+])
+def test_audio_says_volume_in_plain_words(flags, said):
+    from shani_cassini.tabs.audio import flags_words
+    assert flags_words(flags) == said
+
+
+# --- Firmware ----------------------------------------------------------------
+
+def _firmware_with_updates(monkeypatch):
+    from shani_cassini.tabs import firmware as fw
+    monkeypatch.setattr(ss, "firmware_devices", lambda done: done(
+        {"ok": True, "devices": []}, ""))
+    monkeypatch.setattr(ss, "firmware_updates", lambda done: done(
+        {"ok": True, "updates": [{"name": "System Firmware", "version": "1.2",
+                                  "release": "", "severity": ""}]}, ""))
+    tab = fw.FirmwareTab()
+    assert not tab._btn_install.get_visible(), "nothing offered before a check"
+    tab.check_updates()
+    return fw, tab
+
+
+def test_firmware_offers_install_as_a_button_and_runs_fwupd(monkeypatch):
+    fw, tab = _firmware_with_updates(monkeypatch)
+    assert tab._btn_install.get_visible()
+    ran = []
+
+    def run(argv, line, done):
+        ran.append(argv)
+        line("Successfully installed firmware")
+        done(0)
+
+    monkeypatch.setattr(ss, "run_streaming", run)
+    tab.install_updates()
+    assert ran and ran[0][-len(fw.FWUPD_INSTALL):] == fw.FWUPD_INSTALL
+    assert "pkexec" not in ran[0], "fwupd asks polkit itself"
+    assert headline(tab) == "Firmware updated"
+    assert not tab._btn_install.get_visible()
+
+
+def test_firmware_install_failure_is_explained(monkeypatch):
+    _fw, tab = _firmware_with_updates(monkeypatch)
+    monkeypatch.setattr(ss, "run_streaming", lambda argv, line, done: (
+        line("Failed to install: Request dismissed"), done(1)))
+    tab.install_updates()
+    assert headline(tab) == "The update did not finish: Permission was not given"
+    assert tab._btn_install.get_visible(), "still on offer to try again"
+
+
+def test_firmware_terminal_command_is_only_under_for_experts(monkeypatch):
+    _fw, tab = _firmware_with_updates(monkeypatch)
+    summary_text = headline(tab) + detail(tab)
+    assert "fwupdmgr" not in summary_text and "sudo" not in summary_text

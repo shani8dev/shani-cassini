@@ -607,8 +607,12 @@ def test_the_audio_page_shows_which_output_is_in_use(tmp_path, monkeypatch) -> N
     tab = audio_mod.AudioTab()
     spin(lambda: "Speaker" in all_text(tab))
     assert row_named(tab, "PipeWire").get_subtitle() == "pipewire-0"
-    outputs = [r.get_subtitle() for r in walk(tab) if "Default" in (r.get_subtitle() or "")]
+    # Said in plain words since the plain-language pass: "In use", and the
+    # volume as a percentage rather than wpctl's "vol: 1.00".
+    outputs = [r.get_subtitle() for r in walk(tab) if "In use" in (r.get_subtitle() or "")]
     assert outputs, all_text(tab)
+    assert "Volume 100% · In use" in outputs, outputs
+    assert "vol:" not in " ".join(outputs), outputs
 
 
 def test_the_audio_page_sets_no_volumes() -> None:

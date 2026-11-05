@@ -58,10 +58,10 @@ DEVICES_NOTE = (
     "or the driver for it is not loaded."
 )
 OUTPUTS_NOTE = (
-    "Where sound can go. The one marked Default is where it is going now."
+    "Where sound can go. The one marked In use is where it is going now."
 )
 INPUTS_NOTE = (
-    "Where sound can come from. The one marked Default is what a call or a "
+    "Where sound can come from. The one marked In use is what a call or a "
     "recording would use."
 )
 PROGRAMS_NOTE = (
@@ -238,15 +238,45 @@ class AudioTab(Gtk.Box):
         self._added.append((group, row))
 
 
+def flags_words(flags: str) -> str:
+    """wpctl's flags in plain words: "vol: 0.43 MUTED" -> "Volume 43%, muted".
+
+    wpctl prints the volume as a linear factor, 1.00 being full; above 1.00 is
+    software amplification and is said as such. Anything else wpctl adds is
+    kept as it came rather than guessed at."""
+    words = []
+    rest = []
+    tokens = str(flags or "").replace(",", " ").split()
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok.rstrip(":").lower() == "vol" and i + 1 < len(tokens):
+            try:
+                pct = round(float(tokens[i + 1]) * 100)
+            except ValueError:
+                rest.append(tok)
+                i += 1
+                continue
+            words.append(f"Volume {pct}%" + (" (boosted)" if pct > 100 else ""))
+            i += 2
+            continue
+        if tok.upper() == "MUTED":
+            words.append("muted" if words else "Muted")
+        else:
+            rest.append(tok)
+        i += 1
+    return ", ".join(words + ([" ".join(rest)] if rest else []))
+
+
 def _node_row(node: dict) -> Adw.ActionRow:
     """One endpoint, with the default marked rather than described in prose."""
+    said = flags_words(node["flags"])
     row = _row(_esc(node["name"] or f"node {node['id']}"),
-               _esc(node["flags"] or f"node {node['id']}"))
+               _esc(said or f"node {node['id']}"))
     if node.get("default"):
         img = Gtk.Image.new_from_icon_name("audio-volume-high-symbolic")
         row.add_prefix(img)
-        row.set_subtitle(_esc(
-            (node["flags"] + " · " if node["flags"] else "") + "Default"))
+        row.set_subtitle(_esc((said + " · " if said else "") + "In use"))
     else:
         # the default carries an icon; keep the other titles in its column
         reserve_leading_column(row)
