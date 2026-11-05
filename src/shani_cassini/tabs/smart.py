@@ -55,6 +55,7 @@ import shutil
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Details, Summary
 
 logger = logging.getLogger(__name__)
 
@@ -286,8 +287,17 @@ class SmartTab(Gtk.Box):
         self._groups = (self._notice_group, self._disks_group,
                         self._health_group, self._attr_group, self._log_group,
                         self._chart_group)
+        # Plain words first; every smartctl read is under For experts.
+        self._plain = Summary(
+            "Disk Health",
+            "Whether your disks are wearing out. A failing disk can lose your files.")
+        self._page.append(self._plain)
+        self._details = Details(subtitle="Schedule, smartctl readings and attributes")
+        self._page.remove(self._sched)
+        self._details.append(self._sched)
         for group in self._groups:
-            self._page.append(group)
+            self._details.append(group)
+        self._page.append(self._details)
         self.refresh()
 
     # ------------------------------------------------------------------ data
@@ -447,7 +457,49 @@ class SmartTab(Gtk.Box):
         self._added.append((group, row))
 
     # --------------------------------------------------------------- rendering
+    def _plain_verdict(self) -> None:
+        if self._missing_tool:
+            self._plain.set_state("info", "Disk health cannot be checked here",
+                                  "The disk checking tool is not installed.")
+            return
+        if self._scan_error:
+            self._plain.set_state("info", "Could not list the disks",
+                                  "Restarting the computer usually fixes this.")
+            return
+        if not self._devices:
+            self._plain.set_state("info", "No disk to check",
+                                  "This can happen in a virtual machine. Nothing to do.")
+            return
+        verdicts, refused = [], 0
+        for d in self._devices:
+            if d.get("health_error"):
+                refused += 1
+                continue
+            st = (d.get("health") or {}).get("smart_status")
+            if isinstance(st, dict):
+                v = st.get("passed", st.get("pass"))
+                if isinstance(v, bool):
+                    verdicts.append(v)
+        if verdicts and not all(verdicts):
+            self._plain.set_state(
+                "error", "A disk is failing",
+                "Back up your files now, then replace the disk. Which disk is "
+                "named under For experts.")
+        elif verdicts and len(verdicts) == len(self._devices):
+            n = len(verdicts)
+            self._plain.set_state("ok", "Your disks are healthy" if n > 1
+                                  else "Your disk is healthy", "Nothing to do.")
+        elif refused:
+            self._plain.set_state(
+                "info", "Not checked yet",
+                "Reading a disk's health needs your password. Press Refresh under "
+                "For experts to try again.")
+        else:
+            self._plain.set_state("busy", "Checking your disks…",
+                                  "Your password may be asked for.")
+
     def _render(self) -> None:
+        self._plain_verdict()
         for w in self._chart_added:
             self._chart_group.remove(w)
         self._chart_added = []

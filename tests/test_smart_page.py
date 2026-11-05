@@ -500,8 +500,9 @@ def test_no_disk_found_says_so_and_invents_no_path(tmp_path, monkeypatch) -> Non
     # invented when smartctl found nothing. The row count is a secondary guard
     # against a fabricated per-disk row, and it moved from 2 to 3 when the page
     # gained a permanent "Test schedule" row (smartd), which is about whether
-    # anything tests these disks rather than about any disk.
-    assert len(walk(tab)) <= 3, rows(tab)
+    # anything tests these disks rather than about any disk - and from 3 to 5
+    # with the plain-language summary row and the For experts header row.
+    assert len(walk(tab)) <= 5, rows(tab)
 
 
 def test_a_refused_authorization_is_reported_as_it_arrived(tmp_path, monkeypatch) -> None:
@@ -594,8 +595,10 @@ def test_repeated_refresh_neither_duplicates_rows_nor_crashes(tmp_path, monkeypa
     # refills them: the notice row, and the "Test schedule" row this page gained
     # for smartd (whether anything is scheduled to test these disks - a
     # different question from reading them, and one the page could not answer).
-    # Two untracked rows, not one, since that group was added.
-    assert len(tab._added) == first - 2, (len(tab._added), first)
+    # Two untracked rows, not one, since that group was added - and two more
+    # since the plain-language pass: the summary's status row and the
+    # For experts expander's own header row, both built once.
+    assert len(tab._added) == first - 4, (len(tab._added), first)
 
 
 def test_the_page_says_it_only_reads_and_why_it_asks_for_authorisation(tmp_path, monkeypatch) -> None:
@@ -615,7 +618,9 @@ def test_the_page_offers_no_way_to_run_a_self_test(tmp_path, monkeypatch) -> Non
     buttons, stack = [], [tab]
     while stack:
         w = stack.pop()
-        if isinstance(w, (Gtk.Button, Gtk.Switch, Gtk.Entry)):
+        # (the For experts expander's own enable switch is never shown)
+        if isinstance(w, (Gtk.Button, Gtk.Switch, Gtk.Entry)) and \
+                not (isinstance(w, Gtk.Switch) and not w.get_visible()):
             buttons.append(w)
         c = w.get_first_child()
         while c is not None:

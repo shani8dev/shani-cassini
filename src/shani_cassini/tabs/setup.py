@@ -70,6 +70,7 @@ import logging
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Details, Summary, settings_row
 
 logger = logging.getLogger(__name__)
 
@@ -157,13 +158,25 @@ class SetupTab(Gtk.Box):
 
     # ── Construction ─────────────────────────────────────────────────────────
     def _build(self) -> None:
+        # Plain words first: is this account set up, and the one fix.
+        self._plain = Summary(
+            "Your Account",
+            "Checks that your account has everything a new account starts with.")
+        self._btn_plain_fix = self._plain.add_action(
+            "Add Missing Files", lambda: self._provision(None), suggested=True)
+        self._btn_plain_fix.set_visible(False)
+        self._page.append(self._plain)
+        self._page.append(settings_row("users", "Add or change user accounts",
+                                       "Settings › Users"))
+        self._details = Details(subtitle="Accounts, the first-boot wizard, system apps and commands")
+
         self._summary = Adw.PreferencesGroup(title="This account",
                                             description=SUMMARY_NOTE)
         self._row_account = _row("Signed in as", "Reading…")
         self._row_skel = _row("Home defaults", "Reading…")
         self._summary.add(self._row_account)
         self._summary.add(self._row_skel)
-        self._page.append(self._summary)
+        self._details.append(self._summary)
 
         self._accounts = Adw.PreferencesGroup(title="Accounts on this machine",
                                               description=ACCOUNTS_NOTE)
@@ -171,11 +184,11 @@ class SetupTab(Gtk.Box):
         self._row_wizard = _row("First-boot wizard", "Reading…")
         self._accounts.add(self._row_accounts)
         self._accounts.add(self._row_wizard)
-        self._page.append(self._accounts)
+        self._details.append(self._accounts)
 
         self._wizard_group = Adw.PreferencesGroup(
             title="Recovering from a reset", description=WIZARD_NOTE)
-        self._page.append(self._wizard_group)
+        self._details.append(self._wizard_group)
 
         self._apps_group = Adw.PreferencesGroup(title="System applications",
                                                 description=APPS_NOTE)
@@ -184,7 +197,7 @@ class SetupTab(Gtk.Box):
         self._apps_group.add(self._row_apps)
         self._apps_group.add(self._row_manifest)
         self._apps_group.add(_row("What this means", MANIFEST_NOTE))
-        self._page.append(self._apps_group)
+        self._details.append(self._apps_group)
 
         self._actions = Adw.PreferencesGroup(
             title="Re-provision",
@@ -195,7 +208,7 @@ class SetupTab(Gtk.Box):
         self._btn_provision.set_sensitive(False)
         self._btn_provision.connect("clicked", self._provision)
         self._actions.add(self._btn_provision)
-        self._page.append(self._actions)
+        self._details.append(self._actions)
 
         self._out_group = Adw.PreferencesGroup(title="Output")
         self._out_scroll = Gtk.ScrolledWindow(min_content_height=140,
@@ -204,11 +217,12 @@ class SetupTab(Gtk.Box):
         self._out_scroll.set_child(self._out)
         self._out_group.add(self._out_scroll)
         self._out_group.set_visible(False)
-        self._page.append(self._out_group)
+        self._page.append(self._out_group)  # progress stays in view
 
         self._commands = Adw.PreferencesGroup(title="Commands")
         self._commands.add(_row("By hand", COMMANDS_NOTE))
-        self._page.append(self._commands)
+        self._details.append(self._commands)
+        self._page.append(self._details)
 
     # ── Reading ──────────────────────────────────────────────────────────────
     def load(self) -> bool:
@@ -230,6 +244,7 @@ class SetupTab(Gtk.Box):
         self._row_account.set_subtitle(
             f"{user} — {payload.get('home')}" if user else "This process has no /etc/passwd entry")
 
+        self._plain_skel(total, missing)
         if total is None:
             self._row_skel.set_subtitle(err or "Could not compare against /etc/skel")
             self._btn_provision.set_sensitive(False)
@@ -251,6 +266,22 @@ class SetupTab(Gtk.Box):
         # Offered only when there is something to fix. A button that always
         # works is a button that will be pressed for nothing.
         self._btn_provision.set_sensitive(bool(missing) and not self._busy)
+
+    def _plain_skel(self, total, missing) -> None:
+        if total is None or missing is None:
+            self._plain.set_state("info", "Could not check your account",
+                                  "Nothing seems wrong; this check just could not run.")
+            self._btn_plain_fix.set_visible(False)
+        elif not missing:
+            self._plain.set_state("ok", "Your account is set up", "Nothing to do.")
+            self._btn_plain_fix.set_visible(False)
+        else:
+            n = len(missing)
+            self._plain.set_state(
+                "warning", f"{n} starter file{'s' * (n != 1)} missing from your home folder",
+                "Adding them never changes a file you have edited.")
+            self._btn_plain_fix.set_visible(True)
+            self._btn_plain_fix.set_sensitive(not self._busy)
 
     def _on_accounts(self, payload: dict, err: str) -> None:
         readable = payload.get("passwd_readable")
@@ -319,6 +350,7 @@ class SetupTab(Gtk.Box):
             return
         self._busy = True
         self._btn_provision.set_sensitive(False)
+        self._btn_plain_fix.set_sensitive(False)
         self._out_group.set_visible(True)
         self._out.set_text("Re-provisioning…\n")
 
@@ -330,6 +362,7 @@ class SetupTab(Gtk.Box):
         def done(rc: int) -> None:
             self._busy = False
             self._btn_provision.set_sensitive(True)
+            self._btn_plain_fix.set_sensitive(True)
             message = ("Authorization was cancelled" if rc in (126, 127)
                        else "Re-provisioned" if rc == 0
                        else "Re-provisioning did not complete")
