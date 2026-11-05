@@ -3,6 +3,9 @@
 
 Usage: render_ui.py <page-id|main|overview> <out.png> <width> <height> [theme]
 
+Set CASSINI_RENDER_EXPAND=1 to open every expander row (the folded
+"For experts" sections) before the capture.
+
 `--list pages` prints every registered page id and exits.
 """
 
@@ -354,6 +357,12 @@ def on_activate(app):
 
     def capture():
         try:
+            # CASSINI_RENDER_EXPAND=1 opens every expander row first, so the
+            # folded "For experts" sections can be photographed too.
+            if os.environ.get("CASSINI_RENDER_EXPAND"):
+                for node in _walk(app._main_window, []):
+                    if isinstance(node, Adw.ExpanderRow):
+                        node.set_expanded(True)
             # **Wait for the window to stop growing before capturing.**
             #
             # A page whose reads take a while (printers runs several) can still
