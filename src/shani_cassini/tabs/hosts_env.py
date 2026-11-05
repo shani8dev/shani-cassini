@@ -40,6 +40,7 @@ from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import config_io
 from shani_cassini.config_io import ConfigRefused, Document, Line, Staged
+from shani_cassini.plain import Summary, explain_error, lead
 
 logger = logging.getLogger(__name__)
 
@@ -168,17 +169,40 @@ class HostsEnvTab(Gtk.Box):
         self._build()
 
     def _build(self) -> None:
-        self._page.append(self._hosts_card())
+        self._hosts_group = self._hosts_card()
+        self._page.append(self._hosts_group)
         self._page.append(self._env_card())
         self._page.append(self._how_to_edit_card())
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary(
+            "Hosts & Environment",
+            "Names this computer looks up by itself before asking the internet, and "
+            "settings every app starts with.")
+        lead(self._page, self._plain)
+        self._plain_verdict()
+
+    def _plain_verdict(self) -> None:
+        mine = [e for e in self._entries if not e["system"]]
+        on = [e for e in mine if e["enabled"]]
+        if mine:
+            self._plain.set_state("info", f"{len(on)} name{'s' * (len(on) != 1)} of your own in use",
+                                  ", ".join(e["names"] for e in on[:3])
+                                  + ("." if on else "None is switched on."))
+        else:
+            self._plain.set_state("ok", "Only the system's own names",
+                                  "Every other name is looked up on the internet as "
+                                  "usual. Nothing to do.")
 
     def _refresh_hosts(self) -> None:
-        """Re-read /etc/hosts and rebuild the card."""
-        # Remove old hosts card (first child)
-        child = self._page.get_first_child()
-        if child:
-            self._page.remove(child)
-        self._page.prepend(self._hosts_card())
+        """Re-read /etc/hosts and rebuild the card.
+
+        By reference, not "the first child": the page now leads with a
+        summary, and removing whatever came first would remove that."""
+        new = self._hosts_card()
+        self._page.insert_child_after(new, self._hosts_group)
+        self._page.remove(self._hosts_group)
+        self._hosts_group = new
+        self._plain_verdict()
 
     def _hosts_card(self) -> Adw.PreferencesGroup:
         group = Adw.PreferencesGroup()
@@ -225,12 +249,17 @@ class HostsEnvTab(Gtk.Box):
         ip_entry = Gtk.Entry()
         ip_entry.set_placeholder_text("IP address")
         ip_entry.set_hexpand(True)
+        # A choice before typing: the address that means "this computer",
+        # which is what a name is most often pointed at (or blocked with).
+        here = Gtk.Button(label="This computer", tooltip_text="Use 127.0.0.1")
+        here.connect("clicked", lambda *_: ip_entry.set_text("127.0.0.1"))
         name_entry = Gtk.Entry()
         name_entry.set_placeholder_text("hostname")
         name_entry.set_hexpand(True)
         add_btn = Gtk.Button(label="Add")
         add_btn.add_css_class("suggested-action")
         add_btn.connect("clicked", self._on_add, ip_entry, name_entry)
+        add_box.append(here)
         add_box.append(ip_entry)
         add_box.append(name_entry)
         add_box.append(add_btn)
@@ -258,6 +287,8 @@ class HostsEnvTab(Gtk.Box):
         if not ip or not name:
             return
         if not _looks_like_ip(ip):
+            self._toasts.add_toast(Adw.Toast.new(
+                "That is not an IP address. Choose This computer, or type one like 192.168.1.10"))
             return
         self._entries.append({
             "ip": ip, "names": name, "comment": "", "enabled": True,
@@ -282,10 +313,13 @@ class HostsEnvTab(Gtk.Box):
                 self._toasts.add_toast(toast)
             else:
                 msg = proc.stderr.strip() or "save failed"
-                toast = Adw.Toast.new(f"Could not save: {msg}")
+                what, _todo = explain_error(msg, "the save helper")
+                toast = Adw.Toast.new(f"Could not save: {what}")
                 self._toasts.add_toast(toast)
+                logger.info("hosts save refused: %s", msg)
         except (subprocess.TimeoutExpired, OSError) as exc:
-            toast = Adw.Toast.new(f"Could not save: {exc}")
+            what, _todo = explain_error(str(exc), "the save helper")
+            toast = Adw.Toast.new(f"Could not save: {what}")
             self._toasts.add_toast(toast)
         self._refresh_hosts()
 

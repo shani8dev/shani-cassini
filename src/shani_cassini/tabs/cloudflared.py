@@ -47,6 +47,7 @@ from pathlib import Path
 from gi.repository import Adw, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Summary, lead
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,23 @@ class CloudflaredTab(Gtk.Box):
         self._page.append(self._install_card())
         self._page.append(self._config_card())
         self._page.append(self._how_to_edit_card())
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary(
+            "Cloudflare Tunnel",
+            "Lets people reach a website on this computer through Cloudflare, without "
+            "opening your router. Nothing to do unless you use it.")
+        lead(self._page, self._plain)
+        installed = shutil.which(CLOUDFLARED) is not None
+        configured = USER_CONFIG.is_file() or SYSTEM_CONFIG.is_file()
+        if not installed and not configured:
+            self._plain.set_state("info", "Not installed", "Nothing to do.")
+        elif not configured:
+            self._plain.set_state("info", "Installed, but no tunnel is set up", "Nothing to do.")
+        elif not installed:
+            self._plain.set_state("warning", "A tunnel is set up, but the program is missing",
+                                  "The tunnel cannot run until cloudflared is installed again.")
+        else:
+            self._plain.set_state("ok", "A tunnel is set up", "Its details are below.")
 
     def _install_card(self) -> Adw.PreferencesGroup:
         group = Adw.PreferencesGroup()

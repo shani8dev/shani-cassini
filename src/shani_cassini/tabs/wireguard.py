@@ -41,6 +41,7 @@ from typing import Final
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Summary, explain_error
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +103,13 @@ class WireGuardTab(Gtk.Box):
         self._toasts.set_child(page)
         self.append(self._toasts)
 
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary(
+            "WireGuard VPN",
+            "Private tunnels between your own computers. Nothing to do unless you "
+            "set one up.")
+        page.append(self._plain)
+
         self._group = Adw.PreferencesGroup(
             title="WireGuard Interfaces",
             description=("Each interface named in /etc/wireguard, and whether "
@@ -135,6 +143,7 @@ class WireGuardTab(Gtk.Box):
 
         ifaces = valid_ifaces()
         if not ifaces:
+            self._plain.set_state("info", "No tunnel is set up", "Nothing to do.")
             # The subtitle is Pango markup, so the literal <name> a CLI help
             # text would carry has to be escaped: unescaped, `<name>` parses
             # as an unknown element and the row's label is where the markup
@@ -149,6 +158,7 @@ class WireGuardTab(Gtk.Box):
             self._rows.append(row)
             return False
 
+        states: list[str] = []
         for iface in ifaces:
             unit = unit_for(iface)
             active = self._unit_state(unit)
@@ -167,6 +177,16 @@ class WireGuardTab(Gtk.Box):
 
             self._group.add(row)
             self._rows.append(row)
+            states.append(active)
+        failed = states.count("failed")
+        up = states.count("active")
+        if failed:
+            self._plain.set_state("warning", f"{failed} tunnel{'s' * (failed != 1)} stopped with an error",
+                                  "Switch it off and on again below; if that fails, its "
+                                  "settings file may have a mistake.")
+        else:
+            self._plain.set_state("ok" if up else "info",
+                                  f"{up} of {len(states)} tunnel{'s' * (len(states) != 1)} on", "")
         return False
 
     def _unit_state(self, unit: str) -> str:
@@ -223,8 +243,10 @@ class WireGuardTab(Gtk.Box):
             elif code == 127:
                 message = "Not authorised, so nothing changed"
             else:
-                message = " ".join(
-                    line for line in err.splitlines() if line.strip())[-240:]
+                raw = " ".join(line for line in err.splitlines() if line.strip())
+                logger.info("systemctl %s: %s", code, raw)
+                message = "Could not change the tunnel: " + explain_error(
+                    raw, "the service manager")[0]
             toast = Adw.Toast(title=GLib.markup_escape_text(
                 message or f"systemctl exited {code}"))
             self._toasts.add_toast(toast)

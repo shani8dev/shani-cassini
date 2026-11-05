@@ -36,6 +36,7 @@ from __future__ import annotations
 import logging
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Summary, explain_error, lead
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,12 @@ class InboundAccessTab(Gtk.Box):
         self._toasts.set_child(self._page)
         self.append(self._toasts)
         self._build()
+        # Plain words first; the mechanisms and their switches stay in view.
+        self._plain = Summary(
+            "Reaching This Computer",
+            "Whether other computers can connect to this one, for remote desktop, "
+            "file access or a terminal.")
+        lead(self._page, self._plain)
         GLib.idle_add(self.load)
 
     def _build(self) -> None:
@@ -120,6 +127,17 @@ class InboundAccessTab(Gtk.Box):
         rows = [r for r in (state.get("rows") or []) if r.get("installed")]
         active = [r for r in rows
                   if r.get("service") in ("active", "activating")]
+        if err and not rows:
+            what, todo = explain_error(err, "the service manager")
+            self._plain.set_state("info", what, todo)
+        elif active:
+            self._plain.set_state(
+                "warning", "Other computers can connect to this one",
+                "Through " + ", ".join(r["label"] for r in active)
+                + ". Turn off anything below you did not mean to switch on.")
+        else:
+            self._plain.set_state("ok", "Nothing can connect to this computer",
+                                  "Nothing is switched on. Nothing to do.")
 
         if active:
             names = ", ".join(r["label"] for r in active)

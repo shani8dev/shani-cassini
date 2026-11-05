@@ -75,6 +75,7 @@ from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import config_io
 from shani_cassini.config_io import ConfigRefused, Document, Line, Staged
+from shani_cassini.plain import Summary, explain_error, lead
 
 logger = logging.getLogger(__name__)
 
@@ -501,6 +502,12 @@ class RemoteAccessTab(Gtk.Box):
         for group in (self._status_group, self._settings_group,
                       self._kept_group, self._terminal_group):
             self._page.append(group)
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary(
+            "Remote Terminal (SSH)",
+            "How other computers may sign in to this one over SSH. These settings "
+            "only matter while SSH is switched on.")
+        lead(self._page, self._plain)
         self.refresh()
 
     # ---------------------------------------------------------------- building
@@ -581,12 +588,33 @@ class RemoteAccessTab(Gtk.Box):
         self._added.append((group, row))
 
     # ------------------------------------------------------------- 1. the status
+    def _plain_verdict(self, settings: list[Setting], problem: str) -> None:
+        if problem:
+            what, todo = explain_error(problem, "the SSH settings")
+            self._plain.set_state("error", what, todo)
+            return
+        said = {s.keyword.lower(): s.value.lower() for s in settings}
+        risky = []
+        if said.get("permitrootlogin") == "yes":
+            risky.append("the administrator account can sign in directly")
+        if said.get("passwordauthentication") == "yes":
+            risky.append("a password alone is enough")
+        if risky:
+            self._plain.set_state("warning", "Signing in remotely is less safe than it could be",
+                                  "Here " + " and ".join(risky) + ". Keys are safer.")
+        elif settings:
+            self._plain.set_state("ok", f"{len(settings)} setting{'s' * (len(settings) != 1)} "
+                                  "of your own", "None of them weakens sign-in.")
+        else:
+            self._plain.set_state("ok", "SSH uses its usual settings", "Nothing to do.")
+
     def _render_status(self, settings: list[Setting], problem: str) -> None:
         """Where the settings live, the mode and owner the file really has, what
         this file does not promise, and the helper's own words about the last
         save."""
         group = self._status_group
         on_disk = self._on_disk()
+        self._plain_verdict(settings, problem)
         row = _row("Drop-in", SSHD_DROPIN,
                    *STATE_ICONS["ok" if on_disk else "inactive"])
         refresh = Gtk.Button(label="Refresh", valign=Gtk.Align.CENTER)

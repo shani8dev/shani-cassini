@@ -486,3 +486,34 @@ def test_modules_offers_the_loaded_modules_before_typing():
     tab._fill_pick([{"name": "kvm_intel"}, {"name": "snd"}])
     tab._pick.set_selected(1)
     assert tab._entry.get_text() == "kvm_intel"
+
+
+@pytest.mark.parametrize("module,cls", [
+    ("hosts_env", "HostsEnvTab"), ("caddy", "CaddyTab"), ("cloudflared", "CloudflaredTab"),
+    ("inbound_access", "InboundAccessTab"), ("remote_access", "RemoteAccessTab"),
+    ("wireguard", "WireGuardTab"),
+])
+def test_network_expert_pages_lead_with_a_plain_summary(module, cls):
+    import importlib
+    tab = getattr(importlib.import_module(f"shani_cassini.tabs.{module}"), cls)()
+    assert first_group(tab) is summary_of(tab), cls
+    assert spin(lambda: summary_of(tab).state != "busy"), (cls, headline(tab))
+
+
+def test_hosts_refresh_replaces_the_hosts_card_not_the_summary():
+    """_refresh_hosts used to drop "the first child", which is now the summary."""
+    from shani_cassini.tabs.hosts_env import HostsEnvTab
+    tab = HostsEnvTab()
+    old = tab._hosts_group
+    tab._refresh_hosts()
+    assert first_group(tab) is summary_of(tab)
+    assert tab._hosts_group is not old and old.get_parent() is None
+
+
+def test_ssh_settings_that_weaken_sign_in_are_named():
+    from shani_cassini.tabs.remote_access import RemoteAccessTab, Setting
+    tab = RemoteAccessTab()
+    tab._plain_verdict([Setting(0, "PasswordAuthentication", "yes", "")], "")
+    assert "less safe" in headline(tab) and "password alone" in detail(tab)
+    tab._plain_verdict([Setting(0, "PasswordAuthentication", "no", "")], "")
+    assert summary_of(tab).state == "ok", "control"

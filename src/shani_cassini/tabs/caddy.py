@@ -51,6 +51,7 @@ from pathlib import Path
 from gi.repository import Adw, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Summary, explain_error, lead
 
 logger = logging.getLogger(__name__)
 
@@ -81,9 +82,29 @@ class CaddyTab(Gtk.Box):
         self._build()
 
     def _build(self) -> None:
+        self._verdict = ("busy", "")
         self._page.append(self._file_card())
         self._page.append(self._sites_card())
         self._page.append(self._how_to_edit_card())
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary(
+            "Caddy Web Server",
+            "Serves websites from this computer. Nothing to do unless you host one.")
+        lead(self._page, self._plain)
+        kind, msg = self._verdict
+        if kind == "nofile":
+            self._plain.set_state("info", "No website is set up", "Nothing to do.")
+        elif kind == "absent":
+            self._plain.set_state("info", "The web server is not installed",
+                                  "Nothing to do unless you host a website.")
+        elif kind == "valid":
+            self._plain.set_state("ok", "The website settings are correct", "")
+        elif kind == "invalid":
+            self._plain.set_state("error", "The website settings have a mistake",
+                                  "Caddy will not start with them. Its own message is below.")
+        else:
+            what, todo = explain_error(msg, "the web server")
+            self._plain.set_state("warning", what, todo)
 
     def _file_card(self) -> Adw.PreferencesGroup:
         group = Adw.PreferencesGroup()
@@ -94,6 +115,7 @@ class CaddyTab(Gtk.Box):
         )
         path = Path(CADDYFILE)
         if not path.is_file():
+            self._verdict = ("nofile", "")
             row = _row(
                 "No Caddyfile",
                 f"{CADDYFILE} does not exist. Caddy with no file refuses to "
@@ -118,6 +140,7 @@ class CaddyTab(Gtk.Box):
         # Validate with caddy's own validator. This is read-only: it parses
         # and reports, it does not start or reload anything.
         if shutil.which(CADDY) is None:
+            self._verdict = ("absent", "")
             row = _row(
                 "caddy is not installed",
                 "Nothing to validate against. Install the caddy package, "
@@ -132,10 +155,12 @@ class CaddyTab(Gtk.Box):
                 capture_output=True, text=True, timeout=30,
             )
         except (subprocess.TimeoutExpired, OSError) as exc:
+            self._verdict = ("error", str(exc))
             row = _row("Validation did not complete", str(exc))
             group.add(row)
             return group
 
+        self._verdict = ("valid" if result.returncode == 0 else "invalid", "")
         if result.returncode == 0:
             row = _row("Valid", "caddy agrees with the file")
             row.add_css_class("success")
