@@ -27,6 +27,7 @@ import pwd
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Summary, explain_error
 
 # group -> what membership gives, in a person's words
 GROUPS: dict[str, str] = {
@@ -81,6 +82,11 @@ class GroupsTab(Gtk.Box):
         self._toasts.set_child(self._page)
         self._groups: list[Adw.PreferencesGroup] = []
         self._busy = False
+        self._plain = Summary(
+            "Groups",
+            "Switch features on for each person: sharing folders, running virtual "
+            "machines, using devices plugged into a serial port.")
+        self._page.append(self._plain)
         self.refresh()
 
     def refresh(self) -> None:
@@ -89,6 +95,13 @@ class GroupsTab(Gtk.Box):
         self._groups = []
         people = regular_people()
         members = memberships()
+        n = sum(1 for name in GROUPS if name in members)
+        if n:
+            self._plain.set_state("info", f"{n} feature{'s' * (n != 1)} can be switched on per person",
+                                  "A change takes effect the next time that person signs in.")
+        else:
+            self._plain.set_state("info", "No feature here applies to this computer",
+                                  "Nothing to do.")
         if not members:
             g = Adw.PreferencesGroup(title="No feature groups",
                                      description="None of the groups this page knows exist on this machine.")
@@ -123,6 +136,6 @@ class GroupsTab(Gtk.Box):
             ok = not err
             self._toasts.add_toast(Adw.Toast(title=GLib.markup_escape_text(
                 (f"{user} {'joined' if want else 'left'} {group} - from the next sign-in") if ok
-                else (err.strip().splitlines() or ["Not changed"])[-1])))
+                else f"Not changed: {explain_error(err, 'the account tool')[0]}")))
             self.refresh()
         ss.run_text(gpasswd_argv(user, group, want), done)

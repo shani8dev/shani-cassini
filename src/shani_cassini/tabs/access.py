@@ -67,6 +67,7 @@ from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import config_io
 from shani_cassini.config_io import ConfigRefused, Document, Line, Staged
+from shani_cassini.plain import Summary, explain_error, lead
 
 logger = logging.getLogger(__name__)
 
@@ -476,6 +477,12 @@ class AccessTab(Gtk.Box):
         for group in (self._status_group, self._grants_group,
                       self._directives_group, self._terminal_group):
             self._page.append(group)
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary(
+            "Passwordless Admin",
+            "Accounts allowed to make system changes from a terminal without "
+            "typing a password. Usually there are none.")
+        lead(self._page, self._plain)
         self.refresh()
 
     # ---------------------------------------------------------------- building
@@ -556,6 +563,17 @@ class AccessTab(Gtk.Box):
         the helper's own words about the last save."""
         group = self._status_group
         on_disk = self._on_disk()
+        if problem:
+            what, todo = explain_error(problem, "the admin rules")
+            self._plain.set_state("error", what, todo)
+        elif grants:
+            names = ", ".join(dict.fromkeys(g.who for g in grants))
+            self._plain.set_state("warning", "Some accounts skip the password",
+                                  f"{names} can make any system change without typing a "
+                                  "password. Remove a rule below if that was not meant.")
+        else:
+            self._plain.set_state("ok", "Every account is asked for a password",
+                                  "Nothing to do.")
         row = _row("Drop-in", SUDOERS_DROPIN,
                    *STATE_ICONS["ok" if on_disk else "inactive"])
         refresh = Gtk.Button(label="Refresh", valign=Gtk.Align.CENTER)
@@ -703,6 +721,20 @@ class AccessTab(Gtk.Box):
         """One rule, with Save disabled until the principal is one this page
         writes, and the line it would become shown before anything is."""
         who = Adw.EntryRow(title="Account or group")
+        # Choices before typing: the people on this machine, and the
+        # administrators' group.
+        menu = Gtk.MenuButton(icon_name="system-users-symbolic", valign=Gtk.Align.CENTER,
+                              has_frame=False, tooltip_text="Choose an account")
+        menu.update_property([Gtk.AccessibleProperty.LABEL], ["Choose an account"])
+        box_c = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_top=6,
+                        margin_bottom=6, margin_start=6, margin_end=6)
+        from shani_cassini.tabs.smb import human_users
+        for value, label in [(u, u) for u in human_users()] + [("%wheel", "Administrators (%wheel)")]:
+            b = Gtk.Button(label=label, has_frame=False)
+            b.connect("clicked", lambda _b, v=value: (menu.popdown(), who.set_text(v)))
+            box_c.append(b)
+        menu.set_popover(Gtk.Popover(child=box_c))
+        who.add_suffix(menu)
         preview = _row("Line to be written", _esc(TEMPLATE.format(who="…")))
         note = _row("", NOTE_IDLE)
 

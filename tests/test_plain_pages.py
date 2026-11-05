@@ -517,3 +517,26 @@ def test_ssh_settings_that_weaken_sign_in_are_named():
     assert "less safe" in headline(tab) and "password alone" in detail(tab)
     tab._plain_verdict([Setting(0, "PasswordAuthentication", "no", "")], "")
     assert summary_of(tab).state == "ok", "control"
+
+
+@pytest.mark.parametrize("module,cls", [
+    ("sbctl", "SbctlTab"), ("boot_entries", "BootEntriesTab"),
+    ("password_policy", "PasswordPolicyTab"), ("privileges", "PrivilegesTab"),
+    ("userspace_crypto", "UserspaceCryptoTab"), ("lsm", "LsmTab"), ("audit", "AuditTab"),
+    ("access", "AccessTab"), ("groups", "GroupsTab"), ("directory", "DirectoryTab"),
+])
+def test_security_expert_pages_lead_with_a_plain_summary(module, cls, monkeypatch):
+    import importlib
+    # Directory asks shani-health through pkexec; never prompt in a test.
+    monkeypatch.setattr(ss, "run_json", lambda argv, done: done(None, "not authorized"))
+    tab = getattr(importlib.import_module(f"shani_cassini.tabs.{module}"), cls)()
+    assert first_group(tab) is summary_of(tab), cls
+
+
+def test_passwordless_admin_names_who_skips_the_password():
+    from shani_cassini.tabs.access import AccessTab, Grant
+    tab = AccessTab()
+    tab._render_status([Grant(0, "alice", "ALL", ("NOPASSWD",), "ALL", "")], "")
+    assert headline(tab) == "Some accounts skip the password" and "alice" in detail(tab)
+    tab._render_status([], "")
+    assert headline(tab) == "Every account is asked for a password", "control"

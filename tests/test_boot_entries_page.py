@@ -211,11 +211,15 @@ def _pump(seconds: float = 0.4) -> None:
 
 
 def _walk(widget):
-    """Every ActionRow and every group description in the tree, as text."""
+    """Every ActionRow and every group description in the tree, as text -
+    the page's own, so not the plain Summary on top."""
+    from shani_cassini.plain import Summary
     rows, groups = [], []
     stack = [widget]
     while stack:
         node = stack.pop()
+        if isinstance(node, Summary):
+            continue
         if isinstance(node, Adw.ActionRow):
             rows.append((node.get_title() or "", node.get_subtitle() or ""))
         elif isinstance(node, Adw.PreferencesGroup):

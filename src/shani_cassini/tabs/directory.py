@@ -58,6 +58,7 @@ from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
 from shani_cassini.widgets import reserve_leading_column
+from shani_cassini.plain import Summary, explain_error, lead
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +255,13 @@ class DirectoryTab(Gtk.Box):
         for group in (self._sssd_group, self._slapd_group, self._nsswitch_group,
                       self._config_group):
             self._page.append(group)
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary(
+            "Network Accounts",
+            "Whether people can sign in here with an account from an organisation's "
+            "directory, rather than one made on this computer.")
+        lead(self._page, self._plain)
+        self._permanent.append(self._plain.status)
         self.refresh()
 
     # ----------------------------------------------------------------- widgets
@@ -349,7 +357,30 @@ class DirectoryTab(Gtk.Box):
         ss.run_json(argv, done)
 
     # --------------------------------------------------------------- rendering
+    def _plain_verdict(self) -> None:
+        if self._tool_missing:
+            self._plain.set_state("info", "This cannot be checked here",
+                                  "The checking tool is not installed. Nothing to do.")
+            return
+        if self._pending or not self._reports:
+            self._plain.set_state("busy", "Checking…", "Your password may be asked for.")
+            return
+        failed = [e["err"] for e in self._reports.values() if e["res"] is None]
+        if failed and len(failed) == len(self._reports):
+            what, todo = explain_error(failed[0], "the health check")
+            self._plain.set_state("info", what, todo)
+            return
+        sssd = next((c for e in self._reports.values() if e["res"] is not None
+                     for c in [_check_for(e["res"], SSSD)] if c), None)
+        if sssd and str(sssd.get("status")) == "ok":
+            self._plain.set_state("ok", "Network accounts can sign in here",
+                                  "The details are below.")
+        else:
+            self._plain.set_state("info", "Only accounts made on this computer sign in",
+                                  "Nothing to do unless you join an organisation's network.")
+
     def _render(self) -> None:
+        self._plain_verdict()
         self._clear()
         self._row_reports.set_subtitle(REPORTS_PENDING if self._pending
                                        else REPORTS_NOTE)

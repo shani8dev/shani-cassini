@@ -59,6 +59,7 @@ from typing import Callable, Final, Optional
 from gi.repository import Adw, GLib, Gtk  # noqa: F401  (Gtk.Box is the page base)
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Summary, explain_error, lead
 
 logger = logging.getLogger(__name__)
 
@@ -334,6 +335,10 @@ class BootEntriesTab(Gtk.Box):
         self._page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         self.append(self._page)
         self._build()
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary('Boot Entries',
+                              "What the computer's firmware offers to start. Shanios chooses its own system copy after that, so these rarely matter.")
+        lead(self._page, self._plain)
         GLib.idle_add(self.load)
 
     def _build(self) -> None:
@@ -379,6 +384,23 @@ class BootEntriesTab(Gtk.Box):
     def _on_state(self, payload: dict, err: str) -> None:
         problem = payload.get("problem")
         entries = payload.get("entries") or []
+        if problem == "not-installed":
+            self._plain.set_state("info", "The boot menu cannot be read here",
+                                  "The tool for it is not installed. Nothing to do.")
+        elif problem == "no-efi-vars":
+            self._plain.set_state("info", "This computer has no firmware boot menu to read",
+                                  "That is normal in a virtual machine or a container.")
+        elif problem == "read-failed":
+            what, todo = explain_error(payload.get("error") or "", "the firmware")
+            self._plain.set_state("warning", what, todo)
+        elif not entries:
+            self._plain.set_state("warning", "The firmware lists nothing to start",
+                                  "The computer may not start without a USB stick. "
+                                  "The details are below.")
+        else:
+            self._plain.set_state("ok", f"The firmware offers {len(entries)} "
+                                  f"thing{'s' * (len(entries) != 1)} to start",
+                                  "Nothing to do.")
         self._clear(self._selection, self._selection_rows)
         self._clear(self._entries, self._entry_rows)
 

@@ -45,6 +45,7 @@ from typing import Final
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Summary
 
 logger = logging.getLogger(__name__)
 
@@ -330,6 +331,12 @@ class AuditTab(Gtk.Box):
         self._row_search.add_suffix(self._btn_search)
         self._events_group.add(self._row_search)
 
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary(
+            "Audit Log",
+            "A detailed record of security events, kept for checking afterwards. Most "
+            "computers do not need it.")
+        page.append(self._plain)
         for group in (self._daemon_group, self._events_group):
             page.append(group)
         self.refresh()
@@ -369,6 +376,7 @@ class AuditTab(Gtk.Box):
             # page that exists to report one.
             _mark_daemon_severity(row, word)
             self._daemon_state[name] = word
+            self._plain_verdict()
             # An answer arriving after a search already resolved its empty case
             # would leave that verdict standing on evidence that did not exist
             # yet, so the events group is re-resolved now that there is a fact
@@ -477,6 +485,22 @@ class AuditTab(Gtk.Box):
         """The records this page will render: the tail, because ausearch answers
         oldest first and the newest records are what a log is read for."""
         return self._records[-MAX_EVENTS:]
+
+    def _plain_verdict(self) -> None:
+        enabled = self._daemon_state.get("enabled")
+        active = self._daemon_state.get("active")
+        if enabled == "not-found":
+            self._plain.set_state("info", "The audit log is not installed",
+                                  "Nothing to do unless you need one.")
+        elif active in ("active", "activating"):
+            self._plain.set_state("ok", "Security events are being recorded",
+                                  "Search them below.")
+        elif active == "failed":
+            self._plain.set_state("warning", "The audit log stopped with an error",
+                                  "Restarting the computer usually fixes this.")
+        elif active is not None:
+            self._plain.set_state("info", "Security events are not being recorded",
+                                  "Nothing to do unless you need an audit trail.")
 
     def _render(self) -> None:
         for row in self._added:

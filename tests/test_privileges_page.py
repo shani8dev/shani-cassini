@@ -2169,8 +2169,13 @@ class TestRendering:
 
 
 class TestTheIcons:
-    ICONS = (privileges_mod.ICON_PASSWORD, privileges_mod.ICON_OK,
-             privileges_mod.ICON_WARN, privileges_mod.ICON_ERROR)
+    # Plus the plain Summary's verdict icons (plain.STATE_ICONS), so the
+    # theme check below verifies those too.
+    from shani_cassini.plain import STATE_ICONS as _PLAIN_ICONS
+    ICONS = tuple(dict.fromkeys(
+        (privileges_mod.ICON_PASSWORD, privileges_mod.ICON_OK,
+         privileges_mod.ICON_WARN, privileges_mod.ICON_ERROR)
+        + tuple(icon for icon, _css in _PLAIN_ICONS.values())))
 
     def test_the_icons_exist_in_the_adwaita_theme(self):
         """Forced, not inherited.

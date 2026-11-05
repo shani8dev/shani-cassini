@@ -314,7 +314,12 @@ def buttons(page):
 
 
 def groups(page):
-    return [w for w in walk(page) if isinstance(w, Adw.PreferencesGroup)]
+    """The page's own groups: not the plain Summary on top, nor the frame of
+    a For experts expander."""
+    from shani_cassini.plain import Details, Summary
+    return [w for w in walk(page) if isinstance(w, Adw.PreferencesGroup)
+            and not isinstance(w, Summary)
+            and not isinstance(w.get_parent(), Details)]
 
 
 def group_titled(page, needle):

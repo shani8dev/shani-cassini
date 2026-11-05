@@ -74,6 +74,7 @@ from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
 from shani_cassini.widgets import reserve_leading_column
+from shani_cassini.plain import Summary, lead
 
 logger = logging.getLogger(__name__)
 
@@ -397,6 +398,13 @@ class LsmTab(Gtk.Box):
         for group in (self._lsm_group, self._aa_group, self._aa_profiles_group,
                       self._audit_group, self._ro_group):
             self._page.append(group)
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary(
+            "App Confinement",
+            "Rules that keep each program to what it needs, so a misbehaving one "
+            "cannot reach the rest of the system.")
+        lead(self._page, self._plain)
+        self._permanent.append(self._plain.status)
         self.refresh()
 
     def _read_only_rows(self) -> list[Adw.ActionRow]:
@@ -549,7 +557,26 @@ class LsmTab(Gtk.Box):
         ss.run_stream_tool(argv, entry["lines"].append, finished)
 
     # --------------------------------------------------------------- rendering
+    def _plain_verdict(self) -> None:
+        if self._lsm_error:
+            self._plain.set_state("info", "Could not tell which protections are on",
+                                  "Nothing to do.")
+            return
+        if not self._lsm:
+            self._plain.set_state("busy", "Checking…")
+            return
+        on = [name for key, name in (("apparmor", "AppArmor"), ("selinux", "SELinux"),
+                                     ("landlock", "Landlock"))
+              if key in self._lsm.split(",")]
+        if on:
+            self._plain.set_state("ok", "Programs are kept to what they need",
+                                  "On: " + ", ".join(on) + ". Nothing to do.")
+        else:
+            self._plain.set_state("warning", "No confinement is switched on",
+                                  "Programs are limited only by ordinary file permissions.")
+
     def _render(self) -> None:
+        self._plain_verdict()
         self._clear()
         self._render_lsm()
         self._render_apparmor()

@@ -233,6 +233,7 @@ from typing import Callable, Final, Optional
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Summary, lead
 
 logger = logging.getLogger(__name__)
 
@@ -1082,6 +1083,10 @@ class PrivilegesTab(Gtk.Box):
         self.append(self._page)
         self._aggregate_error = ""
         self._build()
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary('Administrators',
+                              'Who may make changes to the whole system after entering their password.')
+        lead(self._page, self._plain)
         GLib.idle_add(self.load)
 
     def _build(self) -> None:
@@ -1164,7 +1169,21 @@ class PrivilegesTab(Gtk.Box):
         # hands over the joined list, and a page that accepts a second argument
         # and never reads it is a page with a hole where a diagnostic should be.
         self._aggregate_error = err or ""
-        self._set_status(*self._verdict(payload))
+        title, _detail = self._verdict(payload)
+        groups = sorted({g for f in loaded_files(payload.get("rules_dirs") or [])
+                         for g in (f.get("admin_groups") or [])})
+        if title == "polkit is not installed":
+            self._plain.set_state("warning", "Nothing is checking who may change the system",
+                                  "A part the system relies on is missing. Updating the "
+                                  "system usually brings it back.")
+        elif groups:
+            self._plain.set_state("ok", "Members of " + ", ".join(groups) + " are administrators",
+                                  "They are asked for their own password before a system "
+                                  "change.")
+        else:
+            self._plain.set_state("info", "The usual rules apply",
+                                  "The details of who counts as an administrator are below.")
+        self._set_status(title, _detail)
         self._render_daemon(payload)
         self._render_rules(payload)
         self._render_format(payload)

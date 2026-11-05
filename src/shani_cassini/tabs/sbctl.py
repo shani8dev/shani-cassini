@@ -133,6 +133,7 @@ from typing import Callable, Final, Optional
 from gi.repository import Adw, GLib, Gtk  # noqa: F401  (Gtk.Box is the page base)
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Summary, lead
 
 logger = logging.getLogger(__name__)
 
@@ -504,6 +505,10 @@ class SbctlTab(Gtk.Box):
         self._page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         self.append(self._page)
         self._build()
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary('Kernel Lockdown',
+                              "Stops even the administrator from changing the running system's core, so malware cannot hide there.")
+        lead(self._page, self._plain)
         GLib.idle_add(self.load)
 
     def _build(self) -> None:
@@ -539,7 +544,21 @@ class SbctlTab(Gtk.Box):
         lockdown_state(self._on_state)
         return False
 
+    def _plain_verdict(self, payload: dict) -> None:
+        mode = (payload.get("lockdown") or {}).get("mode") or ""
+        if payload.get("lockdown_problem") or not mode:
+            self._plain.set_state("info", "This system does not offer lockdown",
+                                  "Nothing to do.")
+        elif mode == "none":
+            self._plain.set_state("info", "Kernel lockdown is off",
+                                  "That is the usual setting. Nothing to do.")
+        else:
+            self._plain.set_state("ok", "Kernel lockdown is on",
+                                  "The running system's core cannot be changed, even "
+                                  "by an administrator.")
+
     def _on_state(self, payload: dict, err: str) -> None:
+        self._plain_verdict(payload)
         self._row_state.set_title(_plain(self._verdict(payload)))
         self._row_state.set_subtitle(_plain(self._verdict_detail(payload)))
 

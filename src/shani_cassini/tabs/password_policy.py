@@ -125,6 +125,7 @@ from typing import Callable, Final, Optional
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Summary, explain_error, lead
 
 logger = logging.getLogger(__name__)
 
@@ -714,6 +715,10 @@ class PasswordPolicyTab(Gtk.Box):
         self._page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         self.append(self._page)
         self._build()
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary('Password Rules',
+                              'Whether a new password has to be long or hard to guess.')
+        lead(self._page, self._plain)
         GLib.idle_add(self.load)
 
     def _build(self) -> None:
@@ -762,6 +767,19 @@ class PasswordPolicyTab(Gtk.Box):
         conf = payload.get("conf") or {}
         stacks = payload.get("stacks") or []
         scanned = payload.get("stacks_scanned") or 0
+        if state == "no-policy":
+            self._plain.set_state("info", "Passwords are not checked",
+                                  "Any password is accepted, however short.")
+        elif state == "unreadable":
+            what, todo = explain_error(payload.get("error") or "", "the password settings")
+            self._plain.set_state("info", what, todo)
+        elif state == "unwired":
+            self._plain.set_state("warning", "Password rules are written down but not used",
+                                  "A weak password is still accepted when one is changed.")
+        else:
+            self._plain.set_state("ok", "New passwords are checked",
+                                  "A password that is too short or too easy to guess is "
+                                  "refused.")
 
         self._row_state.set_subtitle(_plain(_state_phrase(payload)))
         self._row_enforced.set_subtitle(_plain(_enforcement_phrase(stacks, scanned)))

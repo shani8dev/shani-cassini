@@ -150,6 +150,7 @@ from typing import Callable, Final, Optional
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Summary, lead
 
 logger = logging.getLogger(__name__)
 
@@ -842,6 +843,10 @@ class UserspaceCryptoTab(Gtk.Box):
         self._toast = self._toasts
         self.append(self._toasts)
         self._build()
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary('Encrypted Folders',
+                              'A folder that needs its own password to open, inside your files. Separate from the encryption of the whole disk.')
+        lead(self._page, self._plain)
         GLib.idle_add(self.load)
 
     # -- construction ------------------------------------------------------
@@ -1105,6 +1110,21 @@ class UserspaceCryptoTab(Gtk.Box):
         gocryptfs = state.get("gocryptfs") or {}
         ecryptfs = state.get("ecryptfs") or {}
         self._render_mounts(gocryptfs)
+        verdicts = [_fscrypt_state(fscrypt)[0], _gocryptfs_state(gocryptfs)[0],
+                    _ecryptfs_state(ecryptfs)[0]]
+        opened = len(gocryptfs.get("mounts") or [])
+        if "warning" in verdicts:
+            self._plain.set_state("warning", "A kind of encrypted folder cannot work here",
+                                  "This system is missing a part for it; the row marked "
+                                  "below says which.")
+        elif opened:
+            self._plain.set_state("ok", f"{opened} encrypted folder{'s are' if opened != 1 else ' is'} open",
+                                  "Close it below when you are done.")
+        elif gocryptfs.get("installed"):
+            self._plain.set_state("info", "No encrypted folder is open",
+                                  "Create one below, if you want a folder with its own password.")
+        else:
+            self._plain.set_state("info", "Encrypted folders are not set up", "Nothing to do.")
 
         for row, (css, sentence) in (
                 (self._row_fscrypt, _fscrypt_state(fscrypt)),
