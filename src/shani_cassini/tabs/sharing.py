@@ -73,10 +73,11 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Final
 
-from gi.repository import Adw, GLib, Gtk  # type: ignore
+from gi.repository import Adw, Gio, GLib, Gtk  # type: ignore
 
 from shani_cassini import config_io
 from shani_cassini.config_io import ConfigRefused, Document, Line, Staged
+from shani_cassini.plain import Details, Summary, explain_error, lead
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +252,43 @@ ADD_HEADING: Final = "Export a directory over NFS"
 ADD_HINT: Final = ("one path to one client, with the options that client gets — "
                    "one pkexec of the save helper")
 REMOVE_HEADING: Final = "Remove this client from the export?"
+
+
+# Interfaces that are not a network a person is on: container and VM bridges.
+_VIRTUAL_IFACES: Final = ("lo", "docker", "br-", "veth", "virbr", "lxc", "podman",
+                          "cni", "vnet", "tun", "tap", "wg")
+
+
+def client_choices() -> list[tuple[str, str]]:
+    """(client spec, what it means) for the networks this computer is on now.
+
+    Read from the kernel with the same two ioctls `ip addr` uses (address and
+    netmask), so no program is run; an interface with no IPv4 address is
+    skipped, and the list is empty when nothing can be read."""
+    import fcntl
+    import ipaddress
+    import socket
+    import struct
+    choices: list[tuple[str, str]] = []
+    try:
+        names = [name for _i, name in socket.if_nameindex()]
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    except OSError:
+        return choices
+    with sock:
+        for name in names:
+            if name.startswith(_VIRTUAL_IFACES):
+                continue
+            req = struct.pack("256s", name.encode()[:15])
+            try:
+                addr = socket.inet_ntoa(fcntl.ioctl(sock.fileno(), 0x8915, req)[20:24])
+                mask = socket.inet_ntoa(fcntl.ioctl(sock.fileno(), 0x891B, req)[20:24])
+                net = ipaddress.ip_interface(f"{addr}/{mask}").network
+            except (OSError, ValueError):
+                continue  # no IPv4 address on it
+            if net.is_private and all(c != str(net) for c, _w in choices):
+                choices.append((str(net), f"Computers on your {name} network ({net})"))
+    return choices
 
 
 @dataclass(frozen=True)
@@ -701,6 +739,15 @@ class SharingTab(Gtk.Box):
         for group in (self._status_group, self._shares_group,
                       self._kept_group, self._terminal_group):
             self._page.append(group)
+        # Plain words first; the shares stay in view, the drop-in's status,
+        # kept lines and commands go under For experts.
+        self._plain = Summary(
+            "Folder Sharing (NFS)",
+            "Lets Linux computers on your network use a folder on this one as if it "
+            "were their own.")
+        lead(self._page, self._plain,
+             Details(subtitle="The exports drop-in, its permissions, kept lines and commands"),
+             keep=(self._shares_group,))
         self.refresh()
 
     # ---------------------------------------------------------------- building
@@ -828,6 +875,7 @@ class SharingTab(Gtk.Box):
         save."""
         group = self._status_group
         on_disk = self._on_disk()
+        self._plain_verdict(exports, problem)
         row = _row("Drop-in", EXPORTS_DROPIN,
                    *STATE_ICONS["ok" if on_disk else "inactive"])
         refresh = Gtk.Button(label="Refresh", valign=Gtk.Align.CENTER)
@@ -855,6 +903,21 @@ class SharingTab(Gtk.Box):
         show.connect("clicked", lambda *_: self._present(self._message_dialog()))
         last.add_suffix(show)
         self._add(group, _selectable(last))
+
+    def _plain_verdict(self, exports: list[Export], problem: str) -> None:
+        if problem:
+            what, todo = explain_error(problem, "the sharing settings")
+            self._plain.set_state("error", what, todo)
+            return
+        n = len(exports)
+        if n:
+            self._plain.set_state(
+                "ok", f"{n} folder{'s are' if n != 1 else ' is'} shared",
+                "They are listed below. Whether the sharing service is running is "
+                "under For experts.")
+        else:
+            self._plain.set_state("info", "No folder is shared",
+                                  "Add one below to let other Linux computers use it.")
 
     def _exports_row(self, exports: list[Export]) -> Adw.ActionRow:
         """How many paths and clients this file exports, and how many of them
@@ -1003,6 +1066,26 @@ class SharingTab(Gtk.Box):
         become shown before anything is."""
         path = Adw.EntryRow(title="Directory to export")
         client = Adw.EntryRow(title="Who may mount it")
+        # Choices before typing: a folder picker, and the networks this
+        # computer is on.
+        pick = Gtk.Button(icon_name="folder-open-symbolic", valign=Gtk.Align.CENTER,
+                          tooltip_text="Choose a folder")
+        pick.update_property([Gtk.AccessibleProperty.LABEL], ["Choose a folder"])
+        pick.add_css_class("flat")
+        pick.connect("clicked", lambda *_: self._choose_folder(path))
+        path.add_suffix(pick)
+        who = Gtk.MenuButton(icon_name="network-workgroup-symbolic", valign=Gtk.Align.CENTER,
+                             has_frame=False, tooltip_text="Choose who may mount it")
+        who.update_property([Gtk.AccessibleProperty.LABEL], ["Choose who may mount it"])
+        who_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_top=6,
+                          margin_bottom=6, margin_start=6, margin_end=6)
+        for value, what in client_choices():
+            b = Gtk.Button(has_frame=False, tooltip_text=value)
+            b.set_child(Gtk.Label(label=what, xalign=0))
+            b.connect("clicked", lambda _b, v=value: (who.popdown(), client.set_text(v)))
+            who_box.append(b)
+        who.set_popover(Gtk.Popover(child=who_box))
+        client.add_suffix(who)
         options = self._option_rows(())
         preview = _row("Line to be written", _esc("…"))
         note = _row("", NOTE_IDLE)
@@ -1045,6 +1128,20 @@ class SharingTab(Gtk.Box):
             self._checked(options)))
         check()
         return d
+
+    def _choose_folder(self, entry: Adw.EntryRow) -> None:
+        dialog = Gtk.FileDialog(title="Choose a folder to share")
+
+        def picked(d: Gtk.FileDialog, result: Gio.AsyncResult) -> None:
+            try:
+                folder = d.select_folder_finish(result)
+            except GLib.Error:
+                return  # dismissed
+            if folder is not None and folder.get_path():
+                entry.set_text(folder.get_path())
+
+        root = self.get_root()
+        dialog.select_folder(root if isinstance(root, Gtk.Window) else None, None, picked)
 
     def _options_dialog(self, export: Export, spec: Spec) -> Adw.AlertDialog:
         """One client spec's options, with the whole line shown so the effect on

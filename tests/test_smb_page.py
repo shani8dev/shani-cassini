@@ -1653,7 +1653,10 @@ class TestRendering:
                 child = child.get_next_sibling()
 
         walk(SmbTab())
-        assert set(found) <= {"Create share"}, found
+        # The "who may connect" choices are labelled with this machine's user
+        # names; each only fills the form's own field.
+        from shani_cassini.tabs.smb import human_users
+        assert set(found) <= {"Create share"} | set(human_users()), found
         assert found, "no button at all - the gate is inspecting nothing"
 
     def test_the_share_button_is_insensitive_until_the_form_is_complete(self):
@@ -2366,7 +2369,9 @@ class TestThePagePaints:
         # for a real reason rather than to make a run green, and the group's
         # contents are asserted separately — `test_every_rendered_row_has_a_
         # title` fails if any row in it is blank.
-        assert int(facts["groups"]) == 11, out
+        # 13 since the plain-language pass: the Summary on top and the frame
+        # of the For experts expander are groups too.
+        assert int(facts["groups"]) == 13, out
         assert facts["page"] == facts["blank"], (
             f"the control is {facts['blank']} and the page is {facts['page']}; "
             f"a ratio between two different pictures means nothing")
@@ -2538,3 +2543,24 @@ def test_the_sharing_page_is_nfs_and_this_one_is_smb():
         "this page must not grow NFS exports; that is tabs/sharing.py's "
         "subject")
     assert smb_mod.SMB_CONF == "/etc/samba/smb.conf", smb_mod.SMB_CONF
+
+def test_typing_into_the_share_form_enables_create():
+    """The entries were never connected to the button, so Create share stayed
+    insensitive whatever was typed (measured before the fix)."""
+    import pwd
+    tab = SmbTab()
+    tab._entry_name.set_text("photos")
+    tab._entry_path.set_text("/tmp")
+    assert tab._create.get_sensitive() is False, "no user yet"
+    tab._entry_users.set_text(pwd.getpwuid(os.getuid()).pw_name)
+    assert tab._create.get_sensitive() is True
+    tab._entry_users.set_text("")
+    assert tab._create.get_sensitive() is False, "control: emptied again"
+
+
+def test_choosing_a_user_fills_who_may_connect_without_typing():
+    tab = SmbTab()
+    tab._add_user("alice")
+    tab._add_user("bob")
+    tab._add_user("alice")
+    assert tab._entry_users.get_text() == "alice bob"

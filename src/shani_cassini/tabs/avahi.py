@@ -181,6 +181,7 @@ from typing import Callable, Final, Optional
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Details, Summary, lead
 
 logger = logging.getLogger(__name__)
 
@@ -916,7 +917,21 @@ class AvahiTab(Gtk.Box):
         self._page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         self.append(self._page)
         self._build()
+        # Plain words first. Units, listeners, configuration and the raw
+        # browse lines are under For experts.
+        self._plain = Summary(
+            "Finding Devices",
+            "Lets this computer find printers, speakers and shared folders on your "
+            "network, and lets them find it.")
+        self._plain_find = self._plain.add_action("Find Devices", self._plain_browse)
+        self._details = Details(subtitle="Avahi's units, listeners, configuration and browse output")
+        lead(self._page, self._plain, self._details)
         GLib.idle_add(self.load)
+
+    def _plain_browse(self) -> None:
+        """Run the same browse the expert button runs, and show its result."""
+        self._details.expander.set_expanded(True)
+        self._on_browse_clicked(self._btn_browse)
 
     # ------------------------------------------------------------------ build
     def _build(self) -> None:
@@ -1091,6 +1106,7 @@ class AvahiTab(Gtk.Box):
 
     def _on_state(self, payload: dict, err: str) -> None:
         title, subtitle, state = _verdict(payload)
+        self._plain_verdict(payload, title, state)
         self._row_state.set_title(_plain(title))
         self._row_state.set_subtitle(_plain(subtitle))
         # No `[0]` here, and that is a scar worth keeping. `firewall.STATE_ICONS`
@@ -1114,6 +1130,29 @@ class AvahiTab(Gtk.Box):
         self._row_browse.set_subtitle(_plain(
             "Nothing has been asked for yet. The button runs avahi-browse when "
             "you press it, and not before."))
+
+    def _plain_verdict(self, payload: dict, title: str, state: str) -> None:
+        present = title != "Avahi is not installed"
+        self._plain_find.set_visible(present)
+        if not present:
+            self._plain.set_state("info", "Finding devices on your network is not available",
+                                  "The part that does it is not installed. Updating the "
+                                  "system usually brings it back.")
+        elif state == "ok":
+            self._plain.set_state("ok", "On",
+                                  "Printers and shared folders on your network show up "
+                                  "by themselves. Nothing to do.")
+        elif state == "critical":
+            self._plain.set_state("error", "It stopped with an error",
+                                  "Restarting the computer usually fixes this.")
+        elif state == "warning":
+            self._plain.set_state("warning", "Off",
+                                  "Devices on your network will not show up by themselves, "
+                                  "and this computer cannot be found by name. Whoever "
+                                  "turned it off can turn it back on.")
+        else:
+            self._plain.set_state("info", "Could not tell whether it is on",
+                                  "The details are under For experts.")
 
     def _set_state_icon(self, icon: str) -> None:
         """Put one leading image on the persistent row, replacing the last one.

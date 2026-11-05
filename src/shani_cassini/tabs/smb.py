@@ -151,6 +151,7 @@ from typing import Callable, Final, Optional
 from gi.repository import Adw, Gio, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Details, Summary, explain_error, lead
 
 logger = logging.getLogger(__name__)
 
@@ -1091,6 +1092,17 @@ UNAUTHORISED = 127
 SHARE_NAME_MAX = 32
 
 
+def human_users() -> list[str]:
+    """The people with accounts on this machine (uid 1000-59999, a real
+    shell), offered as choices for who may connect."""
+    import pwd
+    out = []
+    for entry in pwd.getpwall():
+        if 1000 <= entry.pw_uid < 60000 and not entry.pw_shell.endswith(("nologin", "false")):
+            out.append(entry.pw_name)
+    return sorted(set(out))
+
+
 def valid_share_name(name: str, taken: Optional[set] = None) -> bool:
     """Whether `name` may be used for a new share.
 
@@ -1294,6 +1306,14 @@ class SmbTab(Gtk.Box):
         self._ours: list[str] = []
         self._busy = False
         self._build()
+        # Plain words first; sharing a folder stays in view, Samba's own
+        # reports go under For experts.
+        self._plain = Summary(
+            "Windows File Sharing",
+            "Let Windows, Mac and Linux computers on your network open a folder on this one.")
+        lead(self._page, self._plain,
+             Details(subtitle="Samba services, parameters, accounts, ports and files"),
+             keep=(self._shares, self._author))
         GLib.idle_add(self.load)
 
     def _build(self) -> None:
@@ -1329,6 +1349,28 @@ class SmbTab(Gtk.Box):
             "least one: without one, nobody can connect.")
         for row in (self._entry_name, self._entry_path, self._entry_users):
             self._author.add(row)
+            # The Create button follows the form. Nothing connected these, so
+            # it stayed insensitive whatever was typed and no share could ever
+            # be created from here.
+            row.connect("changed", lambda *_: self._refresh_author_state())
+        # Choices before typing: a folder picker, and this machine's own users.
+        pick = Gtk.Button(icon_name="folder-open-symbolic", valign=Gtk.Align.CENTER,
+                          tooltip_text="Choose a folder")
+        pick.update_property([Gtk.AccessibleProperty.LABEL], ["Choose a folder"])
+        pick.add_css_class("flat")
+        pick.connect("clicked", lambda *_: self._choose_folder())
+        self._entry_path.add_suffix(pick)
+        who = Gtk.MenuButton(icon_name="system-users-symbolic", valign=Gtk.Align.CENTER,
+                             has_frame=False, tooltip_text="Choose who may connect")
+        who.update_property([Gtk.AccessibleProperty.LABEL], ["Choose who may connect"])
+        who_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_top=6,
+                          margin_bottom=6, margin_start=6, margin_end=6)
+        for user in human_users():
+            b = Gtk.Button(label=user, has_frame=False)
+            b.connect("clicked", lambda _b, u=user: (who.popdown(), self._add_user(u)))
+            who_box.append(b)
+        who.set_popover(Gtk.Popover(child=who_box))
+        self._entry_users.add_suffix(who)
         self._switch_rw = Adw.SwitchRow(
             title="Allow writing",
             subtitle="Off means clients can read the folder but not change it")
@@ -1391,6 +1433,54 @@ class SmbTab(Gtk.Box):
         samba_state(self._on_state)
         return False
 
+    def _choose_folder(self) -> None:
+        dialog = Gtk.FileDialog(title="Choose a folder to share")
+
+        def picked(d: Gtk.FileDialog, result: Gio.AsyncResult) -> None:
+            try:
+                folder = d.select_folder_finish(result)
+            except GLib.Error:
+                return  # dismissed
+            path = folder.get_path() if folder else None
+            if not path:
+                return
+            self._entry_path.set_text(path)
+            if not self._entry_name.get_text().strip():
+                name = "".join(ch if ch.isalnum() or ch in "_-." else "_"
+                               for ch in os.path.basename(path.rstrip("/")))
+                self._entry_name.set_text(name[:SHARE_NAME_MAX])
+
+        root = self.get_root()
+        dialog.select_folder(root if isinstance(root, Gtk.Window) else None, None, picked)
+
+    def _add_user(self, user: str) -> None:
+        users = normalise_users(self._entry_users.get_text())
+        if user not in users:
+            self._entry_users.set_text(" ".join(users + [user]))
+
+    def _plain_verdict(self, payload: dict) -> None:
+        shares = payload.get("shares") or []
+        active = payload.get("active")
+        if not payload.get("have_testparm"):
+            self._plain.set_state("info", "Windows file sharing is not installed",
+                                  "Nothing to do unless you share folders with Windows "
+                                  "computers.")
+        elif payload.get("testparm_error"):
+            what, todo = explain_error(payload["testparm_error"], "Samba")
+            self._plain.set_state("error", f"The sharing settings did not load: {what}", todo)
+        elif not shares:
+            self._plain.set_state("info", "No folder is shared",
+                                  "Add a share below to let other computers open a folder.")
+        elif active in ("active", "reloading", "activating"):
+            n = len(shares)
+            self._plain.set_state("ok", f"{n} folder{'s are' if n != 1 else ' is'} shared",
+                                  "Other computers on your network can open them.")
+        else:
+            self._plain.set_state(
+                "warning", "Folders are set up, but sharing is not running",
+                "Other computers cannot open them until the sharing service starts. "
+                "Restarting the computer may start it.")
+
     @staticmethod
     def _clear(group: Adw.PreferencesGroup, rows: list) -> None:
         for row in rows:
@@ -1423,6 +1513,7 @@ class SmbTab(Gtk.Box):
 
         self._row_state.set_title(_plain(title))
         _set_subtitle(self._row_state, sub)
+        self._plain_verdict(payload)
 
         self._render_services(payload)
         self._render_shares(payload)

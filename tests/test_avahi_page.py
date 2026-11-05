@@ -1880,8 +1880,9 @@ class TestReadOnlyContract:
         assert not hasattr(Adw, "Switch"), (
             "libadwaita grew an Adw.Switch; this gate should look at it now")
         for kind in (Gtk.Switch, Gtk.CheckButton, Gtk.ToggleButton):
+            from conftest import is_details_switch
             found = [type(w).__name__ for w in widgets
-                     if isinstance(w, kind)]
+                     if isinstance(w, kind) and not is_details_switch(w)]
             assert not found, f"the page carries {kind.__name__}: {found}"
 
     def test_the_only_buttons_are_refresh_and_browse(self):
@@ -1893,7 +1894,9 @@ class TestReadOnlyContract:
         tab = AvahiTab()
         labels = sorted(w.get_label() for w in _walk(tab)
                         if isinstance(w, Gtk.Button) and w.get_label())
-        assert labels == ["Browse", "Refresh"], labels
+        # "Find Devices" is the plain summary's button, and runs the same
+        # listen-only browse as Browse.
+        assert labels == ["Browse", "Find Devices", "Refresh"], labels
 
 
 def _own_images(tab) -> list:

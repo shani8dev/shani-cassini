@@ -380,7 +380,12 @@ def buttons(page):
 
 
 def groups(page):
-    return [w for w in walk(page) if isinstance(w, Adw.PreferencesGroup)]
+    """The page's own groups: not the plain Summary on top, nor the frame of
+    the For experts expander."""
+    from shani_cassini.plain import Details, Summary
+    return [w for w in walk(page) if isinstance(w, Adw.PreferencesGroup)
+            and not isinstance(w, Summary)
+            and not isinstance(w.get_parent(), Details)]
 
 
 def group_titled(page, needle):
@@ -419,8 +424,9 @@ def test_the_content_lives_under_a_toast_overlay(env):
 
 def test_the_page_has_the_four_groups_it_promises(env):
     tab = sh.SharingTab()
+    # Shares stays in view under the plain summary; the rest is under For experts.
     assert [g.get_title() for g in groups(tab)] == [
-        "Status", "Shares", "Lines kept as they are", "From a Terminal"], \
+        "Shares", "Status", "Lines kept as they are", "From a Terminal"], \
         f"the page's groups are {[g.get_title() for g in groups(tab)]}"
 
 
@@ -1471,3 +1477,11 @@ def test_the_terminal_group_names_showmount_and_the_page_never_runs_exportfs(env
         for arg in argv:
             assert not arg.endswith("/exportfs"), \
                 f"this page ran exportfs itself: {argv}"
+
+
+def test_who_may_mount_is_offered_from_this_machines_own_networks():
+    """Choices before typing, read from the kernel - and every one of them is a
+    client spec the page's own validator accepts."""
+    for value, what in sh.client_choices():
+        assert not sh._why_not("/srv", value, ()), (value, what)
+        assert not value.startswith("127."), value

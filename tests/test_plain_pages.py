@@ -304,3 +304,51 @@ def test_kerberos_offers_a_realm_from_this_machines_domain_not_a_guess():
     tab._domain = "corp.example.org"
     assert tab._choices("default_realm")[0][0] == "CORP.EXAMPLE.ORG"
     assert any(v.startswith("KEYRING:") for v, _w in tab._choices("default_ccache_name"))
+
+
+# --- Network sharing pages ---------------------------------------------------
+
+@pytest.mark.parametrize("payload,expect", [
+    ({"have_testparm": False}, "not installed"),
+    ({"have_testparm": True, "testparm_error": "Can't load /etc/samba/smb.conf: No such file"},
+     "did not load"),
+    ({"have_testparm": True, "shares": []}, "No folder is shared"),
+    ({"have_testparm": True, "shares": [{"name": "p"}], "active": "active"}, "1 folder is shared"),
+    ({"have_testparm": True, "shares": [{"name": "p"}], "active": "inactive"}, "not running"),
+])
+def test_smb_verdict(payload, expect):
+    from shani_cassini.tabs.smb import SmbTab
+    tab = SmbTab()
+    tab._plain_verdict(payload)
+    assert expect in headline(tab), headline(tab)
+    assert "testparm" not in headline(tab) + detail(tab)
+
+
+def test_smb_keeps_the_share_form_in_view_and_folds_samba_internals():
+    from shani_cassini.tabs.smb import SmbTab
+    tab = SmbTab()
+    assert first_group(tab) is summary_of(tab)
+    assert tab._author.get_ancestor(Details) is None, "adding a share must stay in view"
+    assert tab._ports.get_ancestor(Details) is not None
+
+
+@pytest.mark.parametrize("title,state,expect", [
+    ("Avahi is not installed", "critical", "not available"),
+    ("Running now", "ok", "On"),
+    ("The daemon is enabled but has failed", "critical", "error"),
+    ("Discovery is masked", "warning", "Off"),
+])
+def test_avahi_verdict(title, state, expect):
+    from shani_cassini.tabs.avahi import AvahiTab
+    tab = AvahiTab()
+    tab._plain_verdict({}, title, state)
+    assert expect in headline(tab)
+    assert tab._plain_find.get_visible() is (title != "Avahi is not installed")
+
+
+def test_nfs_sharing_keeps_the_shares_in_view():
+    from shani_cassini.tabs.sharing import SharingTab
+    tab = SharingTab()
+    assert first_group(tab) is summary_of(tab)
+    assert tab._shares_group.get_ancestor(Details) is None
+    assert tab._status_group.get_ancestor(Details) is not None
