@@ -276,9 +276,11 @@ def rows(tab: Gtk.Widget) -> list[tuple[str, str]]:
 
 
 def group_titles(tab: Gtk.Widget) -> list[str]:
-    """The groups' titles, in the order they are shown."""
+    """The groups' titles, in the order they are shown - the page's own, so
+    not the plain Summary on top."""
+    from shani_cassini.plain import Summary
     return [w.get_title() or "" for w in descendants(tab)
-            if isinstance(w, Adw.PreferencesGroup)]
+            if isinstance(w, Adw.PreferencesGroup) and not isinstance(w, Summary)]
 
 
 def all_text(tab: Gtk.Widget) -> str:

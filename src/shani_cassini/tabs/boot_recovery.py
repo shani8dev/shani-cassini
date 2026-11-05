@@ -84,6 +84,7 @@ from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
 from shani_cassini.widgets import find_named
+from shani_cassini.plain import Summary, explain_error, lead
 
 logger = logging.getLogger(__name__)
 
@@ -412,6 +413,13 @@ class BootRecoveryTab(Gtk.Box):
         for group in (self._deployment, self._markers, self._integrity,
                       self._checks, self._history_group, self._about):
             self._page.append(group)
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary(
+            "Start-up & Recovery",
+            "This computer keeps two copies of the system. If an update does not "
+            "start, it goes back to the copy that worked.")
+        lead(self._page, self._plain)
+        self._permanent.append(self._plain.status)
         self.refresh()
 
     def _add_permanent(self, group: Adw.PreferencesGroup, name: str,
@@ -515,7 +523,31 @@ class BootRecoveryTab(Gtk.Box):
         ss.deploy_verify_existing(done)
 
     # --------------------------------------------------------------- rendering
+    def _plain_verdict(self) -> None:
+        if self._tool_missing:
+            self._plain.set_state("info", "This cannot be checked here",
+                                  "The update tool is not installed.")
+        elif self._status_busy:
+            self._plain.set_state("busy", "Checking…")
+        elif self._status is None:
+            what, todo = explain_error(self._status_error, "the update tool")
+            self._plain.set_state("info", what, todo)
+        elif self._status.get("boot_failure"):
+            self._plain.set_state(
+                "warning", "The last start-up failed",
+                "The computer went back to the copy that worked." if
+                self._status.get("auto_rollback_done") else
+                "The details are below. Restarting may try the other copy.")
+        else:
+            slot = str(self._status.get("booted_slot") or "")
+            self._plain.set_state(
+                "ok", "Starting up normally",
+                (f"Running the {slot} copy. " if slot else "")
+                + ("Restart to finish an update." if self._status.get("reboot_needed")
+                   else "Nothing to do."))
+
     def _render(self) -> None:
+        self._plain_verdict()
         self._pending = (int(self._status_busy) + int(self._history_busy)
                          + int(self._verify_busy))
         self._clear()

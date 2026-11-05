@@ -42,6 +42,7 @@ import logging
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Summary, explain_error, lead
 
 logger = logging.getLogger(__name__)
 AGENT = "shani-fleet-agent"
@@ -149,6 +150,7 @@ class FleetTab(Gtk.Box):
         self._page = page
 
         self._enrolled: bool | None = None
+        self._no_answer = False
         self._machine_id = ""
         self._busy = False
         # The dialog currently on screen, if any. Kept so it can be closed, and
@@ -201,6 +203,12 @@ class FleetTab(Gtk.Box):
         self._row_identity.add_suffix(self._btn_unenroll)
         self._membership.add(self._row_identity)
         page.append(self._membership)
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary(
+            "Fleet",
+            "Whether this computer belongs to an organisation that manages "
+            "many computers.")
+        lead(page, self._plain)
 
         self._status = Adw.PreferencesGroup(title="Status", visible=False)
         page.append(self._status)
@@ -470,7 +478,8 @@ class FleetTab(Gtk.Box):
                 img.add_css_class("warning")
                 row.add_prefix(img)
             new.add(row)
-        if rc != 0 and not lines:
+        self._no_answer = bool(rc != 0 and not lines)
+        if self._no_answer:
             new.set_description("The agent did not answer")
         parent.remove(self._status)
         parent.append(new)
@@ -487,6 +496,20 @@ class FleetTab(Gtk.Box):
         guess - `enroll` is offered either way, because a machine with no
         reading may well be enrolled and the agent will refuse it if so.
         """
+        if getattr(self, "_no_answer", False):
+            what, todo = explain_error("The agent did not answer", "the fleet agent")
+            self._plain.set_state("warning", what, todo)
+        elif self._enrolled is None:
+            self._plain.set_state("info", "Not checked yet",
+                                  "Press Show below to see whether this device "
+                                  "is part of an organisation.")
+        elif self._enrolled:
+            ident = f" as {_esc(self._machine_id)}" if self._machine_id else ""
+            self._plain.set_state("ok", f"This device is enrolled{ident}",
+                                  "It reports to your organisation below.")
+        else:
+            self._plain.set_state("info", "Not part of a fleet",
+                                  "This is a personal device. Nothing to do.")
         if self._enrolled is None:
             subtitle = ("Not read yet - press Show to see whether this device "
                         "is enrolled")
@@ -638,6 +661,7 @@ class FleetTab(Gtk.Box):
                 # re-enrolled as something else, which is the app reporting a
                 # fact it knows to be stale.
                 self._enrolled = None
+                self._no_answer = False
                 self._machine_id = ""
                 self._enrolled_line = ""
                 self._clear_status()

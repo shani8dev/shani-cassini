@@ -114,6 +114,7 @@ from typing import Final
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Summary, lead
 
 logger = logging.getLogger(__name__)
 
@@ -712,6 +713,12 @@ class KvmTab(Gtk.Box):
             group.set_name(name)
             self._page.append(group)
         self._build_controls()
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary(
+            "Virtual Machine Speed",
+            "Whether virtual machines can use the processor directly, which makes "
+            "them run at nearly full speed.")
+        lead(self._page, self._plain)
         self.refresh()
 
     def add_to(self, container: Gtk.Widget) -> None:
@@ -763,6 +770,17 @@ class KvmTab(Gtk.Box):
         verdict = classify(cpu, device)
         module = vendor_module(cpu)
         blocked = preflight(cpu, device, group)
+        if verdict == ACCELERATED:
+            self._plain.set_state("ok", "Virtual machines run at full speed", "Nothing to do.")
+        elif verdict == FIRMWARE:
+            self._plain.set_state("warning", "Switched off in the computer's firmware",
+                                  "Virtual machines will be slow. Turn on virtualisation "
+                                  "(often called VT-x or SVM) in the firmware settings.")
+        elif verdict == NOT_LOADED:
+            self._plain.set_state("warning", "Available, but not switched on",
+                                  "Switch it on below.")
+        else:
+            self._plain.set_state("info", "Could not tell", "The readings are below.")
 
         self._render_verdict(verdict, cpu, module)
         self._render_reads(cpu, device, modules, nested, group, iom)

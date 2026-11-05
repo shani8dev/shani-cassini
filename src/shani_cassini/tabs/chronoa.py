@@ -18,6 +18,7 @@ import shutil
 from gi.repository import Adw, Gio, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Summary, lead
 
 logger = logging.getLogger(__name__)
 SCHEMA = "org.shani.chronoa"
@@ -84,6 +85,12 @@ class ChronoaTab(Gtk.Box):
         self._state = state
         self._auth_manager = auth_manager
         self._settings = _settings()
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary(
+            "Chronoa",
+            "Your voice and text assistant. It answers with a language model "
+            "running on this computer.")
+        self.append(self._plain)
 
         head = Adw.PreferencesGroup()
         row = Adw.ActionRow(title="Chronoa", subtitle="Voice and text assistant")
@@ -98,6 +105,9 @@ class ChronoaTab(Gtk.Box):
         self.append(head)
 
         if self._settings is None:
+            self._plain.set_state("info", "Chronoa is not installed here",
+                                  "Its settings are not installed, so there is "
+                                  "nothing to set up.")
             self.append(Adw.StatusPage(icon_name="dialog-warning-symbolic", title="Chronoa's settings are missing",
                                        description=f"The {SCHEMA} schema is not installed."))
             return
@@ -164,14 +174,26 @@ class ChronoaTab(Gtk.Box):
             if d is None:
                 how = "not running" if shutil.which("ollama") else "not installed (ollama)"
                 self._llm.set_subtitle(f"Ollama {how} at {host}")
+                self._plain.set_state(
+                    "info",
+                    "The language model is not answering",
+                    "Chronoa cannot answer until it is running. "
+                    + ("Install Ollama, or start it on this computer." if
+                       shutil.which("ollama") else "Ollama is not installed."))
                 return
             models = [m.get("name", "") for m in d.get("models", [])]
             if not models:
                 self._llm.set_subtitle("Ollama is running, but has no models yet")
+                self._plain.set_state("warning", "No language model is ready",
+                                      "Download a model in Chronoa's Settings, "
+                                      "then Chronoa can answer.")
             else:
                 self._llm.set_subtitle(GLib.markup_escape_text(
                     f"Ollama: {len(models)} model{'s' * (len(models) != 1)}"
                     + (f" · using {want}" if want else f" · {', '.join(models[:3])}")))
+                self._plain.set_state("ok", "Ready to answer",
+                                      f"{len(models)} model{'s are' if len(models) != 1 else ' is'} "
+                                      "downloaded. The switches are below.")
         ss.run_json(["curl", "-fsS", "--max-time", "3", f"{host}/api/tags"], done)
 
     def _open(self) -> None:

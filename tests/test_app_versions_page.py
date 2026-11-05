@@ -601,8 +601,8 @@ def test_ostree_populated_names_the_commit_and_the_refspec() -> None:
     assert "from test2" in first.get_subtitle(), first.get_subtitle()
     assert "from test" in second.get_subtitle(), second.get_subtitle()
     assert "booted" not in first.get_subtitle(), first.get_subtitle()
-    # summary + three status rows + two deployments
-    assert len(subtitles(tab)) == 6, subtitles(tab)
+    # plain summary + three status rows + two deployments
+    assert len(subtitles(tab)) == 7, subtitles(tab)
 
 
 # ---------------------------------------------------------------------------
@@ -1252,4 +1252,5 @@ def test_no_manager_on_path_at_all_still_renders_every_group(tmp_path,
         row = row_named(tab, title)
         assert row is not None, subtitles(tab)
         assert word in row.get_subtitle(), (title, row.get_subtitle())
-    assert len(rows(tab)) == 4, subtitles(tab)
+    # +1 for the plain Summary's status row
+    assert len(rows(tab)) == 5, subtitles(tab)

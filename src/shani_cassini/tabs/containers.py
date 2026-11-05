@@ -80,6 +80,7 @@ from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
 from shani_cassini.widgets import reserve_leading_column
+from shani_cassini.plain import Summary, lead
 
 logger = logging.getLogger(__name__)
 
@@ -374,6 +375,13 @@ class ContainersTab(Gtk.Box):
         self._chart_group = Adw.PreferencesGroup(title="Containers (chart)")
         self._page.append(self._chart_group)
         self._chart_added = []
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary(
+            "Containers",
+            "Other Linux systems running alongside this one, for apps and tools "
+            "that are not in the app store.")
+        lead(self._page, self._plain)
+        self._permanent.append(self._plain.status)
         self.refresh()
 
     # ----------------------------------------------------------------- widgets
@@ -598,7 +606,28 @@ class ContainersTab(Gtk.Box):
                       _selectable(_item_row("distrobox-environment", container)))
         self._add_empty(BOXES_COUNT, "distrobox-empty")
 
+    def _plain_verdict(self) -> None:
+        if self._podman_missing and self._distrobox_missing:
+            self._plain.set_state("info", "Containers are not installed", "Nothing to do.")
+            return
+        if self._pending:
+            self._plain.set_state("busy", "Looking…")
+            return
+        boxes = len(self._rows_for(BOXES)) if not self._distrobox_missing else 0
+        running = len(self._rows_for(RUNNING)) if not self._podman_missing else 0
+        if boxes or running:
+            parts = []
+            if boxes:
+                parts.append(f"{boxes} Linux environment{'s' * (boxes != 1)} (Distrobox)")
+            if running:
+                parts.append(f"{running} container{'s' * (running != 1)} running")
+            self._plain.set_state("ok", ", ".join(parts).capitalize(), "They are listed below.")
+        else:
+            self._plain.set_state("info", "No container is set up",
+                                  "Nothing to do unless you use them.")
+
     def _render(self) -> None:
+        self._plain_verdict()
         self._clear()
         self._row_reads.set_subtitle(READS_PENDING if self._pending
                                      else READS_NOTE)

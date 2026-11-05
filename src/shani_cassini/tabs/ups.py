@@ -40,6 +40,7 @@ from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import config_edit as ce
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Summary, lead
 
 
 SUMMARY_NOTE = (
@@ -148,6 +149,10 @@ class UpsTab(Gtk.Box):
         self._toast = self._toasts
         self.append(self._toasts)
         self._build()
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary('Backup Battery (UPS)',
+                              'A battery box that keeps the computer running in a power cut, and shuts it down safely before it runs out.')
+        lead(self._page, self._plain)
         GLib.idle_add(self.load)
 
     def _build(self) -> None:
@@ -306,6 +311,21 @@ class UpsTab(Gtk.Box):
 
     def _on_state(self, state: dict, err: str) -> None:
         self._render_policy()
+        if not state.get("installed", True) or not state.get("monitor"):
+            self._plain.set_state("info", "No backup battery is set up",
+                                  "Nothing to do unless one is plugged in.")
+        elif state.get("service") is False:
+            self._plain.set_state("warning", "The backup battery is not being watched",
+                                  "In a power cut the computer will not shut down safely. "
+                                  "Restarting the computer usually starts the watcher.")
+        elif state.get("service"):
+            self._plain.set_state("ok", f"Watching {state.get('name') or 'the backup battery'}",
+                                  "The computer shuts down safely if the power goes out.")
+        else:
+            # service is None: systemctl did not answer, so claiming "watching"
+            # would be inventing the watcher's state (the row below says so too).
+            self._plain.set_state("info", "Could not tell whether it is being watched",
+                                  "The watcher could not be asked. Its state is below.")
 
         # not installed is its own answer, and not a fault: a machine with no
         # /etc/nut/upsmon.conf has nothing monitored and nothing wrong.

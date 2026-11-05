@@ -62,6 +62,7 @@ from typing import Final
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Summary, lead
 
 logger = logging.getLogger(__name__)
 
@@ -402,6 +403,14 @@ class VirtualizationTab(Gtk.Box):
         self._chart_group = Adw.PreferencesGroup(title="Guests (chart)")
         self._page.append(self._chart_group)
         self._chart_added = []
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary(
+            "Virtual Machines",
+            "Other systems running inside this one, such as virtual machines and "
+            "system containers.")
+        lead(self._page, self._plain)
+        if hasattr(self, "_permanent"):
+            self._permanent.append(self._plain.status)
         self.refresh()
 
     # ----------------------------------------------------------------- widgets
@@ -518,6 +527,23 @@ class VirtualizationTab(Gtk.Box):
                 if ans is not None and ans.get("status") == 0:
                     rows, _ = PARSERS[key](ans["lines"])
                     total += len(rows)
+            if self._pending:
+                self._plain.set_state("busy", "Looking…")
+            elif total:
+                self._plain.set_state(
+                    "ok",
+                    f"{total} virtual machine{'s' * (total != 1)} or container{'s' * (total != 1)}",
+                    "They are listed below.")
+            elif any(self._reads.get(key) and self._reads[key].get("status") == 0
+                     for key in (DOMAINS, CONTAINERS, INSTANCES, MACHINES)):
+                self._plain.set_state("info", "No virtual machine was found",
+                                      "Nothing to do.")
+            else:
+                # Every guest tool failed to answer, so zero is UNKNOWN, not
+                # zero-guests - the same distinction the chart heading keeps.
+                self._plain.set_state("info", "Could not tell",
+                                      "No virtualization tool answered. What each "
+                                      "one said is below.")
             if total:
                 meter = charts.Meter(title="Guests found", high_is_bad=False)
                 meter.set(min(total / 20.0, 1.0), f"{total}")

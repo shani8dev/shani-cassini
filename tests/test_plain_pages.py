@@ -540,3 +540,177 @@ def test_passwordless_admin_names_who_skips_the_password():
     assert headline(tab) == "Some accounts skip the password" and "alice" in detail(tab)
     tab._render_status([], "")
     assert headline(tab) == "Every account is asked for a password", "control"
+
+
+# --- Final expert pages (session resume) ------------------------------------
+
+@pytest.mark.parametrize("module,cls", [
+    ("ananicy", "AnanicyTab"), ("app_versions", "AppVersionsTab"),
+    ("boot_recovery", "BootRecoveryTab"), ("containers", "ContainersTab"),
+    ("kvm", "KvmTab"), ("outbound_mail", "OutboundMailTab"),
+    ("ups", "UpsTab"), ("virtualization", "VirtualizationTab"),
+    ("fleet", "FleetTab"),
+])
+def test_remaining_expert_pages_lead_with_a_plain_summary(module, cls, monkeypatch):
+    import importlib
+    # Boot Recovery reads shani-deploy on first render; never run a real one.
+    monkeypatch.setattr(ss, "run_json", lambda argv, done: done(None, "not authorized"))
+    tab = getattr(importlib.import_module(f"shani_cassini.tabs.{module}"), cls)()
+    assert first_group(tab) is summary_of(tab), cls
+    # Detail stays in view underneath (expert-page shape, not Details folding).
+    assert len([w for w in walk(tab) if isinstance(w, Adw.PreferencesGroup)]) >= 2, cls
+
+
+def test_outbound_mail_stuck_messages_and_relay(monkeypatch):
+    from shani_cassini.tabs.outbound_mail import OutboundMailTab
+    tab = OutboundMailTab()
+    assert first_group(tab) is summary_of(tab)
+    tab._plain_verdict({"transports": ["smtp"], "messages": 3, "relay": False}, "")
+    assert headline(tab) == "3 messages are stuck"
+    assert "relay" in detail(tab)
+    tab._plain_verdict({"transports": ["smtp"], "messages": 0, "relay": False}, "")
+    assert headline(tab) == "System mail may not arrive"
+    tab._plain_verdict({"transports": ["smtp"], "messages": 0, "relay": True}, "")
+    assert headline(tab) == "Nothing is waiting to be sent", "control"
+    tab._plain_verdict({}, "exim: command not found")
+    assert "not installed" in headline(tab)
+    assert "command not found" not in headline(tab) + detail(tab)
+
+
+def test_app_versions_counts_apps_and_explains_a_failed_store(monkeypatch):
+    from shani_cassini.tabs.app_versions import AppVersionsTab
+    tab = AppVersionsTab()
+    assert first_group(tab) is summary_of(tab)
+    tab._plain_verdict({"flatpak": {"apps": [{"name": "a"}, {"name": "b"}]},
+                        "snap": {"snaps": []}})
+    assert headline(tab) == "2 apps installed"
+    tab._plain_verdict({"flatpak": {"apps": []}, "snap": {"snaps": []}})
+    assert headline(tab) == "No app from an app store is installed", "control"
+    tab._plain_verdict({"flatpak": {"installed": True, "error": "flatpak: command not found",
+                                   "apps": []}, "snap": {"snaps": []}})
+    assert "not installed" in headline(tab)
+
+
+def test_ups_distinguishes_unset_monitor_from_unknown_watcher(monkeypatch):
+    from shani_cassini.tabs.ups import UpsTab
+    tab = UpsTab()
+    assert first_group(tab) is summary_of(tab)
+    tab._on_state({"installed": True, "monitor": "", "service": None}, "")
+    assert headline(tab) == "No backup battery is set up"
+    tab._on_state({"installed": True, "monitor": "ups@host", "name": "ups",
+                   "service": None}, "")
+    assert headline(tab) == "Could not tell whether it is being watched", "unknown is not watching"
+    tab._on_state({"installed": True, "monitor": "ups@host", "name": "ups",
+                   "service": True}, "")
+    assert headline(tab) == "Watching ups", "control"
+
+
+def test_virtualization_never_calls_zero_unknown_zero_guests(monkeypatch):
+    """With every tool absent the verdict is 'Could not tell', not 'none found'."""
+    from shani_cassini.tabs.virtualization import VirtualizationTab
+    # run_stream_tool collapses a missing tool to one line + 127, so the page
+    # settles on its own; spin for the async readers.
+    tab = VirtualizationTab()
+    assert first_group(tab) is summary_of(tab)
+    if spin(lambda: summary_of(tab).state != "busy"):
+        assert headline(tab) == "Could not tell", headline(tab)
+
+
+def test_containers_absent_tools_is_not_a_failure(monkeypatch):
+    from shani_cassini.tabs.containers import ContainersTab
+    tab = ContainersTab()
+    assert first_group(tab) is summary_of(tab)
+    tab._podman_missing = tab._distrobox_missing = True
+    tab._pending = 0
+    tab._plain_verdict()
+    assert headline(tab) == "Containers are not installed"
+
+
+def test_kvm_firmware_disabled_points_at_firmware_settings(monkeypatch):
+    from shani_cassini.tabs import kvm as kvm_mod
+    monkeypatch.setattr(kvm_mod, "cpu_virt", lambda: {"ok": True, "vendor": "GenuineIntel",
+                                                      "flag": False})
+    monkeypatch.setattr(kvm_mod, "kvm_device", lambda: {"exists": False})
+    tab = kvm_mod.KvmTab()
+    assert first_group(tab) is summary_of(tab)
+    assert headline(tab) == "Switched off in the computer's firmware"
+    monkeypatch.setattr(kvm_mod, "cpu_virt", lambda: {"ok": True, "vendor": "GenuineIntel",
+                                                      "flag": True})
+    tab.refresh()
+    assert headline(tab) == "Available, but not switched on", "control"
+
+
+def test_ananicy_distinguishes_off_from_running_without_rules(monkeypatch):
+    from shani_cassini.tabs.ananicy import AnanicyTab
+    tab = AnanicyTab()
+    assert first_group(tab) is summary_of(tab)
+    tab._on_state({"enabled": "disabled", "active": "inactive",
+                   "rules_dirs": []}, "")
+    assert headline(tab) == "Off"
+    tab._on_state({"enabled": "enabled", "active": "active",
+                   "rules_dirs": [{"rules": 0, "present": True, "files": []}]}, "")
+    assert headline(tab) == "On, but it has no rules to apply"
+
+
+def test_boot_recovery_boot_failure_is_named(monkeypatch):
+    from shani_cassini.tabs.boot_recovery import BootRecoveryTab
+    tab = BootRecoveryTab()
+    assert first_group(tab) is summary_of(tab)
+    tab._tool_missing = True
+    tab._plain_verdict()
+    assert headline(tab) == "This cannot be checked here"
+    tab._tool_missing = False
+    tab._status_busy = False
+    tab._status = {"boot_failure": True, "auto_rollback_done": True}
+    tab._plain_verdict()
+    assert headline(tab) == "The last start-up failed"
+
+
+def test_fleet_enrollment_states(monkeypatch):
+    from shani_cassini.tabs.fleet import FleetTab
+    tab = FleetTab()
+    assert first_group(tab) is summary_of(tab)
+    assert headline(tab) == "Not checked yet"
+    tab._enrolled = False
+    tab._render_membership()
+    assert headline(tab) == "Not part of a fleet", headline(tab)
+    tab._enrolled = True
+    tab._machine_id = "m-abc"
+    tab._render_membership()
+    assert headline(tab) == "This device is enrolled as m-abc", headline(tab)
+    tab._show([], 1)
+    assert headline(tab) == "Something went wrong while asking the fleet agent", headline(tab)
+
+
+def test_chronoa_language_model_states(monkeypatch):
+    from shani_cassini.tabs import chronoa as tab_mod
+    wanted = [k for k, _t, _s in tab_mod.SWITCHES] + [k for k, _t in tab_mod.ENTRIES]
+
+    class _FakeSettings:
+        def __init__(self, keys):
+            self.props = type("P", (), {"settings_schema":
+                type("S", (), {"list_keys": lambda self: list(keys)})()})()
+
+        def get_string(self, key):
+            return ""
+
+        def set_string(self, key, value):
+            pass
+
+        def bind(self, key, obj, prop, flags):
+            pass
+
+    monkeypatch.setattr(tab_mod, "_settings", lambda: _FakeSettings(wanted))
+    monkeypatch.setattr(ss, "run_json",
+                        lambda argv, done: done({"models": [{"name": "llama3"}]}, ""))
+    tab = tab_mod.ChronoaTab()
+    assert first_group(tab) is summary_of(tab)
+    assert headline(tab) == "Ready to answer", headline(tab)
+    monkeypatch.setattr(ss, "run_json",
+                        lambda argv, done: done({"models": []}, ""))
+    tab._check_ollama(set(wanted))
+    assert headline(tab) == "No language model is ready", headline(tab)
+    monkeypatch.setattr(ss, "run_json",
+                        lambda argv, done: done(None, "Connection refused"))
+    tab._check_ollama(set(wanted))
+    assert headline(tab) == "The language model is not answering", headline(tab)

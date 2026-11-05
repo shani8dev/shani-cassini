@@ -118,6 +118,7 @@ from typing import Callable, Final, Optional
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Summary, lead
 
 logger = logging.getLogger(__name__)
 
@@ -714,6 +715,12 @@ class AnanicyTab(Gtk.Box):
         self.append(self._page)
         self._aggregate_error = ""
         self._build()
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary(
+            "App Priorities",
+            "Gives the program you are using more of the processor than background "
+            "work, so the desktop stays responsive.")
+        lead(self._page, self._plain)
         GLib.idle_add(self.load)
 
     def _build(self) -> None:
@@ -785,7 +792,22 @@ class AnanicyTab(Gtk.Box):
         # argument and never reads it is a page with a hole where a diagnostic
         # should be. `_state_detail` falls back to this.
         self._aggregate_error = err or ""
-        self._set_status(*self._verdict(payload))
+        title, detail = self._verdict(payload)
+        enabled, active = payload.get("enabled") or "", payload.get("active") or ""
+        if enabled == "not-found":
+            self._plain.set_state("info", "Not installed",
+                                  "The computer works without it. Nothing to do.")
+        elif active == "active" and title != "Running with nothing to apply":
+            self._plain.set_state("ok", "On", "Nothing to do.")
+        elif active == "active":
+            self._plain.set_state("warning", "On, but it has no rules to apply",
+                                  "It is running and changing nothing.")
+        elif active == "failed":
+            self._plain.set_state("warning", "It stopped with an error",
+                                  "The computer still works. Restarting it usually fixes this.")
+        else:
+            self._plain.set_state("info", "Off", "The computer works without it.")
+        self._set_status(title, detail)
         self._render_unit(payload)
         self._render_rules(payload)
         self._render_config(payload)

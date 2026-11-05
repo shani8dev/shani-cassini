@@ -35,6 +35,7 @@ import logging
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Summary, explain_error, lead
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,12 @@ class OutboundMailTab(Gtk.Box):
         self._page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         self.append(self._page)
         self._build()
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary(
+            "System Mail",
+            "Messages the system itself sends, such as alerts. Your own email app "
+            "does not use this.")
+        lead(self._page, self._plain)
         GLib.idle_add(self.load)
 
     def _build(self) -> None:
@@ -115,7 +122,26 @@ class OutboundMailTab(Gtk.Box):
             self._queue_group.remove(row)
         self._rows = []
 
+    def _plain_verdict(self, state: dict, err: str) -> None:
+        relay = state.get("relay")
+        stuck = state.get("messages") or 0
+        if not state.get("transports"):
+            what, todo = explain_error(err, "the mail service")
+            self._plain.set_state("info", what, todo)
+        elif stuck:
+            self._plain.set_state("warning", f"{stuck} message{'s are' if stuck != 1 else ' is'} stuck",
+                                  "They could not be sent yet. "
+                                  + ("Most internet providers block direct sending; a relay "
+                                     "has to be set up." if relay is False else "The queue is below."))
+        elif relay is False:
+            self._plain.set_state("info", "System mail may not arrive",
+                                  "No relay is set up, and most providers block direct "
+                                  "sending. Nothing is waiting right now.")
+        else:
+            self._plain.set_state("ok", "Nothing is waiting to be sent", "Nothing to do.")
+
     def _on_state(self, state: dict, err: str) -> None:
+        self._plain_verdict(state, err)
         self._row_mta.set_subtitle(
             "exim - the local MTA every image profile ships" if state.get(
                 "transports") else (err or "exim did not report its transports"))

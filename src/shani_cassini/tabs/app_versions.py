@@ -73,6 +73,7 @@ from typing import Callable, Optional
 from gi.repository import Adw, Gio, GLib, Gtk  # type: ignore
 
 from shani_cassini import system_status as ss
+from shani_cassini.plain import Summary, explain_error, lead
 
 logger = logging.getLogger(__name__)
 
@@ -686,6 +687,12 @@ class AppVersionsTab(Gtk.Box):
         self._page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         self.append(self._page)
         self._build()
+        # An expert page: its detail stays in view, under a plain summary.
+        self._plain = Summary(
+            "App Versions",
+            "Which version of each installed app you have. Your app store updates "
+            "them.")
+        lead(self._page, self._plain)
         GLib.idle_add(self.load)
 
     # -- layout ------------------------------------------------------------
@@ -747,7 +754,24 @@ class AppVersionsTab(Gtk.Box):
         app_versions_state(self._on_state)
         return False
 
+    def _plain_verdict(self, payload: dict) -> None:
+        fp = payload.get("flatpak") or {}
+        apps = len(fp.get("apps") or [])
+        snaps = len((payload.get("snap") or {}).get("snaps") or [])
+        if fp.get("installed") and fp.get("error") and not apps:
+            what, todo = explain_error(fp.get("error") or "", "the app store")
+            self._plain.set_state("info", what, todo)
+        elif apps or snaps:
+            n = apps + snaps
+            self._plain.set_state("ok", f"{n} app{'s' * (n != 1)} installed",
+                                  "Each one's version is below. Updates come from your "
+                                  "app store.")
+        else:
+            self._plain.set_state("info", "No app from an app store is installed",
+                                  "Nothing to do.")
+
     def _on_state(self, payload: dict, err: str) -> None:
+        self._plain_verdict(payload)
         self._on_flatpak(payload.get("flatpak") or {})
         self._on_snap(payload.get("snap") or {})
         self._on_ostree(payload.get("ostree") or {})
