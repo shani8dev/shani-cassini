@@ -539,7 +539,7 @@ def test_services_lists_only_toggleable_and_toggles(tmp_path, monkeypatch):
     tab = ServicesTab()
     assert spin(lambda: len(tab._rows) == 2)  # no static unit, no template
     assert tab._running.get_title() == "Running (1)" and tab._stopped.get_title() == "Not Running (1)"
-    sshd_row = next(r for r, h in tab._rows if h.startswith("sshd"))
+    sshd_row = next(r for r, h, *_ in tab._rows if h.startswith("sshd"))
     sw = next(w for w in _descendants(sshd_row) if isinstance(w, __import__("gi").repository.Gtk.Switch))
     sw.set_active(True)
     assert spin(lambda: log.exists() and log.stat().st_size > 0)

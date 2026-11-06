@@ -38,7 +38,7 @@ class ServicesTab(Gtk.Box):
         self._auth_manager = auth_manager
         self._files: dict | None = None
         self._units: dict | None = None
-        self._rows: list[tuple[Adw.ActionRow, str]] = []
+        self._rows: list[tuple[Adw.ActionRow, str, str]] = []  # (row, search text, state)
 
         self._toasts = Adw.ToastOverlay()
         self.append(self._toasts)
