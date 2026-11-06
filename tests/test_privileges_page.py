@@ -2504,6 +2504,10 @@ class TestThePangoGate:
                     reason="this host has no polkit installed, so the "
                            "populated branches cannot be exercised here")
 class TestTheReader:
+    @pytest.mark.skipif(
+        not os.path.isdir("/run/systemd/system"),
+        reason="is-active is empty without a systemd bus; the container "
+               "branches are covered separately")
     def test_the_reader_produces_a_payload_whose_keys_the_page_reads(self):
         """A real read on this host, which has polkit 124 installed.
 

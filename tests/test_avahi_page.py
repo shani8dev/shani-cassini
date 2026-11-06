@@ -3272,8 +3272,15 @@ class TestTheIdentityGroupIsWired:
         titles = [t for t, _ in rows]
         # The verdict row, named by the collector, and at least one interface.
         assert "Hardware addresses" in titles, titles
-        assert any(t.startswith(("en", "wl", "eth", "wlp")) for t in titles), (
-            f"no interface row was filled: {titles}")
+        # A container's veth has no /sys/class/net/<if>/device, so there is no
+        # physical card for the page to name. load() still dispatched _on_macs
+        # - the verdict row below proves it - which is the regression this
+        # test exists for, so only demand interface rows where a card exists.
+        physical = [i for i in avahi_mod.ss.mac_addresses()["interfaces"]
+                    if i.get("physical")]
+        if physical:
+            assert any(t.startswith(("en", "wl", "eth", "wlp"))
+                       for t in titles), (f"no interface row was filled: {titles}")
         subs = [s for t, s in rows if t == "Hardware addresses"]
         assert subs and subs[0], "the verdict row is empty"
 

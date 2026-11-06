@@ -841,8 +841,13 @@ class TestReaderShape:
 
         import pwd
 
-        user = pwd.getpwuid(os.getuid()).pw_name
-        assert paths[0] == os.path.expanduser(f"~/.config/oath/{user}.oath")
+        entry = pwd.getpwuid(os.getuid())
+        # pam_oath resolves ${HOME} from the authenticating user's passwd
+        # entry, which is what _expand_usersfile() models. HOME can differ from
+        # it (a container started with -e HOME=/tmp), so asserting the
+        # environment's value would test this shell, not pam_oath.
+        assert paths[0] == \
+            f"{entry.pw_dir}/.config/oath/{entry.pw_name}.oath"
 
     def test_the_reader_end_to_end_over_a_real_token_file(self, tmp_path,
                                                          monkeypatch):

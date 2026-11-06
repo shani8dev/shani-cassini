@@ -253,10 +253,15 @@ def make_tool(tmp_path, monkeypatch, name: str, body: str) -> Path:
     return fake
 
 
-def hide_tools(monkeypatch, names=("flatpak", "snap", "ostree")) -> None:
-    """A PATH with none of the three tools on it, which is a real state."""
-    d = Path(os.environ["PATH"].split(":")[0])
-    empty = d.parent / "av-empty-path"
+def hide_tools(monkeypatch, tmp_path,
+               names=("flatpak", "snap", "ostree")) -> None:
+    """A PATH with none of the three tools on it, which is a real state.
+
+    The empty directory is under the test's own tmp_path: deriving it from the
+    first PATH entry wrote to /usr/local on a real machine, which a non-root
+    test run cannot do (and should not).
+    """
+    empty = tmp_path / "av-empty-path"
     empty.mkdir(exist_ok=True)
     monkeypatch.setenv("PATH", str(empty))
 
@@ -1238,7 +1243,7 @@ def test_one_manager_failing_does_not_blank_the_others(tmp_path,
 def test_no_manager_on_path_at_all_still_renders_every_group(tmp_path,
                                                               monkeypatch) -> None:
     """The state of a development machine, and a legitimate one."""
-    hide_tools(monkeypatch)
+    hide_tools(monkeypatch, tmp_path)
     monkeypatch.setattr(av, "snapd_version", lambda *a, **k: "")
     payload = {}
     av.app_versions_state(lambda p, e: payload.update(p=p, e=e))

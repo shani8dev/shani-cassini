@@ -1511,6 +1511,9 @@ class TestThePangoGate:
 
 
 class TestTheReader:
+    @pytest.mark.skipif(
+        not os.path.isdir("/run/systemd/system"),
+        reason="systemctl is-active needs systemd as init; a container has no bus")
     def test_the_reader_produces_a_payload_whose_keys_the_page_reads(self):
         """A real read on this host, which has no ananicy-cpp at all.
 

@@ -1312,7 +1312,12 @@ class TestTheReader:
         payload, error = payloads[0]
         assert error == "", f"an absent sbctl was reported as {error!r}"
         assert payload["sbctl_installed"] is False
-        assert payload["lockdown"]["modes"], payload
+        if os.path.isfile(sbctl_mod.LOCKDOWN_PATH):
+            # securityfs is not mounted in a container, and "no lockdown
+            # support" is a state the reader reports as an empty mode list
+            # rather than as a failure. This test is about sbctl being absent,
+            # so only insist on the file's contents where the file is real.
+            assert payload["lockdown"]["modes"], payload
 
     def test_the_sysfs_paths_are_module_constants(self):
         """A test cannot create an entry in the real /sys, so the reader takes

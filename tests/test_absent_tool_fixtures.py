@@ -115,12 +115,18 @@ class TestAPageActuallyTakesTheBranch:
         from gi.repository import Adw
         Adw.init()
         monkeypatch.setattr(ss, "have_tool", lambda cmd: True)
-        from shani_cassini.tabs.containers import ContainersTab
+        from shani_cassini.tabs.containers import ContainersTab, MISSING
         tab = ContainersTab()
         from tests.test_containers_page import settled
         assert settled(tab)
         text = " ".join(r.get_subtitle() or "" for r in _rows(tab))
-        assert "podman is not installed" not in text, text
+        # The absent branch's own sentence, not the phrase anywhere. On a
+        # machine with no podman, forcing have_tool() true still makes the page
+        # run it, and the spawn reports "podman is not installed" as a *failed
+        # read*. That is the honest answer to a fake that lies about the
+        # binary, and not the branch this test is about.
+        assert not tab._podman_missing, text
+        assert MISSING.format(tool="podman") not in text, text
 
 
 def _rows(tab):
