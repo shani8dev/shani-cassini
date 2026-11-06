@@ -1357,7 +1357,6 @@ class SmbTab(Gtk.Box):
         pick = Gtk.Button(icon_name="folder-open-symbolic", valign=Gtk.Align.CENTER,
                           tooltip_text="Choose a folder")
         pick.update_property([Gtk.AccessibleProperty.LABEL], ["Choose a folder"])
-        pick.add_css_class("flat")
         pick.connect("clicked", lambda *_: self._choose_folder())
         self._entry_path.add_suffix(pick)
         who = Gtk.MenuButton(icon_name="system-users-symbolic", valign=Gtk.Align.CENTER,

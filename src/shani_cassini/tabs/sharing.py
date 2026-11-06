@@ -1071,7 +1071,6 @@ class SharingTab(Gtk.Box):
         pick = Gtk.Button(icon_name="folder-open-symbolic", valign=Gtk.Align.CENTER,
                           tooltip_text="Choose a folder")
         pick.update_property([Gtk.AccessibleProperty.LABEL], ["Choose a folder"])
-        pick.add_css_class("flat")
         pick.connect("clicked", lambda *_: self._choose_folder(path))
         path.add_suffix(pick)
         who = Gtk.MenuButton(icon_name="network-workgroup-symbolic", valign=Gtk.Align.CENTER,
