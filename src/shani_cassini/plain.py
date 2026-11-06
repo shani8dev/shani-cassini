@@ -35,7 +35,8 @@ from shani_cassini.widgets import reserve_leading_column
 SETTINGS_CATEGORIES = frozenset({
     "personal", "notifications", "network", "displays", "windows", "sound",
     "access", "input", "time", "apps", "search", "printers", "sharing",
-    "backup", "automations", "privacy", "account", "users", "power", "about",
+    "backup", "automations", "privacy", "chronoa", "account", "users", "power",
+    "about",
 })
 
 # state -> (icon, css class). "busy" has no colour: it is not a verdict yet.

@@ -132,6 +132,16 @@ shani-cassini --agent                # the background check; no window
 `gapplication action dev.shani.cassini show-section "'btrfs'"` — useful for
 driving the app from a test harness.
 
+## Cassini and shani-shell
+
+On the niri image the desktop's settings app is shani-shell's Settings, and
+Cassini defers to it rather than duplicating it: `SHELL_OWNS` in
+`notebook.py` turns Chronoa and Printers into a pointer to the shell's
+Settings inside the shell, and the Fingerprint page hides enrolment there too.
+The shell points back with `shani-cassini --section=<id>` (update badge,
+firmware, a failing disk, Settings > About's "More in Cassini"). On GNOME and
+Plasma nothing changes. See `AGENTS.md` ("Cassini and shani-shell").
+
 ## Development
 
 ### Setting up the development environment
