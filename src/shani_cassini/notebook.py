@@ -3,7 +3,7 @@ the page for the selected one (Adw.NavigationSplitView - it collapses to a
 single pane with a back button on a narrow window).
 
 Pages are built the first time they are shown: each tab queries its CLI
-(shani-health, shani-deploy, ...) when constructed, and building all 14 at
+(shani-health, shani-deploy, ...) when constructed, and building all of them at
 startup ran every one of those before the window appeared.
 """
 
@@ -109,17 +109,6 @@ class SystemInfoPage(Gtk.Box):
         details.append(KernelTab(state=state, auth_manager=auth_manager))
         self.append(details)
 
-# (group, [(sub-group, [(tab class, id, title, icon, subtitle)])])
-#
-# Three levels, because two were not enough. At two, "Security" carried fifteen
-# rows and "Manage" fourteen, which is a wall rather than a list. Every group is
-# now a few named subjects, and a sub-heading says which subject a page belongs
-# to - so "Secure Boot" reads as being about boot and disk rather than floating
-# beside "Access", which is the ambiguity a flat list of security pages creates.
-#
-# **`id` is the `--section=<id>` contract** and is also what `REQUIRES` and every
-# test match on, so every id below is carried over verbatim. Icons are symbolic
-# names that exist in the Adwaita theme (checked against the Arch package).
 # (group, [(sub-group, [(tab class, id, title, icon, subtitle)])])
 #
 # Three levels, because two were not enough. At two, "Security" carried fifteen
@@ -249,7 +238,7 @@ SECTIONS = [
              "What the firmware will boot, and where the slot is really decided"),
         ]),
         ("Sign-in", [
-            (BiometricsTab, "biometrics", "Fingerprint & Face", "fingerprint-symbolic",
+            (BiometricsTab, "biometrics", "Fingerprint & Face", "auth-fingerprint-symbolic",
              "Sign in with your fingerprint or your face"),
             (SmartcardTab, "smartcard", "Smartcard", "system-users-symbolic",
              "Readers, cards, and the subject mappings pam_pkcs11 reads"),

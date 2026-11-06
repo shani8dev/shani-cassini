@@ -2,6 +2,7 @@
 
 import ast
 import inspect
+import os
 import subprocess
 import unittest.mock
 from pathlib import Path
@@ -454,7 +455,7 @@ class TestBiometricsNoPrivilegeEscalation:
         # By id, not by position: inserting a section used to move this assertion
         # silently onto a different page, which is how the wrong icon passes.
         assert next(p[3] for p in pages if p[1] == "biometrics") == \
-            "fingerprint-symbolic"
+            "auth-fingerprint-symbolic"
 
     def test_biometrics_page_is_not_gated_on_fprintd(self):
         """The page reports the other hardware-auth login methods too, and a
@@ -581,7 +582,49 @@ def test_every_section_has_an_icon_and_it_exists_in_the_theme():
 
     theme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default())
     missing = [(sid, icon) for sid, icon in sections if not theme.has_icon(icon)]
+    if missing:
+        # The running theme is whatever this host happens to use
+        # (elementary-xfce on a dev machine, Yaru on Ubuntu CI); Shanios
+        # ships Adwaita, so an icon the running theme lacks but Adwaita on
+        # disk has — e.g. auth-fingerprint-symbolic, which adwaita-icon-theme
+        # 50/51 carries and elementary-xfce does not — is not missing where
+        # it matters. A name in neither is a genuine typo.
+        adwaita = set()
+        for base in ("/usr/share/icons", "/usr/local/share/icons"):
+            for name in ("Adwaita", "AdwaitaLegacy"):
+                root = os.path.join(base, name)
+                if os.path.isdir(root):
+                    for dirpath, _dirs, files in os.walk(root):
+                        adwaita.update(
+                            os.path.splitext(f)[0] for f in files)
+        assert adwaita, "no Adwaita theme on disk; cannot check icons"
+        missing = [(sid, icon) for sid, icon in missing
+                   if icon not in adwaita]
     assert not missing, f"section icons not in the theme: {missing}"
+
+
+class TestIconThemeFallbackCanFail:
+    """CONTROL for the Adwaita fallback in
+    test_every_section_has_an_icon_and_it_exists_in_the_theme: without it, a
+    typo'd icon name would hide behind "not in the running theme"."""
+
+    def test_a_bogus_icon_name_is_in_neither_place(self):
+        import gi
+        gi.require_version("Gtk", "4.0")
+        from gi.repository import Gdk, Gtk
+
+        theme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default())
+        bogus = "cassini-no-such-icon-xyz-symbolic"
+        assert not theme.has_icon(bogus)
+        adwaita = set()
+        for base in ("/usr/share/icons", "/usr/local/share/icons"):
+            for name in ("Adwaita", "AdwaitaLegacy"):
+                root = os.path.join(base, name)
+                if os.path.isdir(root):
+                    for dirpath, _dirs, files in os.walk(root):
+                        adwaita.update(os.path.splitext(f)[0] for f in files)
+        assert adwaita, "no Adwaita theme on disk"
+        assert bogus not in adwaita
 
 
 class TestSiblingTestModuleIsIntact:
