@@ -65,6 +65,7 @@ import logging
 import re
 
 from gi.repository import Adw, Gio, GLib, Gtk  # type: ignore
+from shani_cassini.desktop_app import DesktopAppInfo
 
 from shani_cassini import system_status as ss
 from shani_cassini.plain import Details, Summary, explain_error
@@ -342,7 +343,7 @@ class FirewallTab(Gtk.Box):
     def _open(self) -> None:
         """Hand over to firewall-config, the way backup.py hands over to Shani
         Backup: the desktop entry when there is one, the binary otherwise."""
-        info = Gio.DesktopAppInfo.new(f"{FIREWALL_CONFIG}.desktop")
+        info = DesktopAppInfo.new(f"{FIREWALL_CONFIG}.desktop")
         try:
             (info.launch([], None) if info
              else Gio.Subprocess.new([FIREWALL_CONFIG], Gio.SubprocessFlags.NONE))

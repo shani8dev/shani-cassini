@@ -16,6 +16,7 @@ import os
 import shutil
 
 from gi.repository import Adw, Gio, GLib, Gtk  # type: ignore
+from shani_cassini.desktop_app import DesktopAppInfo
 
 from shani_cassini import system_status as ss
 from shani_cassini.plain import Summary, lead
@@ -197,7 +198,7 @@ class ChronoaTab(Gtk.Box):
         ss.run_json(["curl", "-fsS", "--max-time", "3", f"{host}/api/tags"], done)
 
     def _open(self) -> None:
-        info = Gio.DesktopAppInfo.new("shani-chronoa.desktop")
+        info = DesktopAppInfo.new("shani-chronoa.desktop")
         try:
             (info.launch([], None) if info else Gio.Subprocess.new(["shani-chronoa"], Gio.SubprocessFlags.NONE))
         except GLib.Error as e:

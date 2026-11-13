@@ -796,6 +796,7 @@ def test_the_only_program_this_page_starts_is_the_gui_it_dispatches_to(
                 return None
 
     monkeypatch.setattr(fw, "Gio", FakeGio)
+    monkeypatch.setattr(fw, "DesktopAppInfo", FakeGio.DesktopAppInfo)
     tab = fw.FirewallTab()
     assert settled(tab), rows(tab)
     button_named(tab, "Open firewall-config").emit("clicked")

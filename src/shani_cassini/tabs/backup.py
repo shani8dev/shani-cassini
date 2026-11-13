@@ -45,6 +45,7 @@ import os
 import shutil
 
 from gi.repository import Adw, Gio, GLib, Gtk  # type: ignore
+from shani_cassini.desktop_app import DesktopAppInfo
 
 from shani_cassini import system_status as ss
 from shani_cassini.plain import Details, settings_row
@@ -389,7 +390,7 @@ class BackupTab(Gtk.Box):
             self._linger_note.set_visible(False)
 
     def _open(self) -> None:
-        info = Gio.DesktopAppInfo.new("shani-backup.desktop")
+        info = DesktopAppInfo.new("shani-backup.desktop")
         try:
             (info.launch([], None) if info else Gio.Subprocess.new(["shani-backup"], Gio.SubprocessFlags.NONE))
         except GLib.Error as e:
