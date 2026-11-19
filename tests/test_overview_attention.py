@@ -166,3 +166,64 @@ def test_a_nearly_full_disk_is_coloured(tmp_path, monkeypatch, free_share, cls):
     v = tab._cards["storage"].value
     assert v.has_css_class("error") == (cls == "error")
     assert v.has_css_class("warning") == (cls == "warning")
+
+
+# ---- recent activity -------------------------------------------------------------------
+# Job times relative to THIS host's boot, so "Shanios ... started" (boot time from
+# /proc/uptime) is the newest entry whatever the host's uptime is.
+NOW = int(time.time() - float(open("/proc/uptime").read().split()[0])) - 10
+
+
+def with_systemctl(tmp_path, monkeypatch, system, user, show):
+    b = tmp_path / "bin"
+    b.mkdir(exist_ok=True)
+    (tmp_path / "sys.json").write_text(json.dumps(system))
+    (tmp_path / "user.json").write_text(json.dumps(user))
+    (tmp_path / "show.txt").write_text(show)
+    (b / "systemctl").write_text(f'''#!/bin/sh
+case "$*" in
+  "--user list-timers"*) cat {tmp_path}/user.json ;;
+  "list-timers"*) cat {tmp_path}/sys.json ;;
+  *show*) cat {tmp_path}/show.txt ;;
+esac
+''')
+    (b / "systemctl").chmod(0o755)
+
+
+def activity(tab):
+    assert spin(lambda: tab._activity_rows)
+    return [(r.get_title(), r.get_subtitle()) for r in tab._activity_rows]
+
+
+def test_recent_activity_newest_first_with_results(tmp_path, monkeypatch):
+    us = 1_000_000
+    with_systemctl(tmp_path, monkeypatch,
+        system=[{"unit": "btrfs-scrub.timer", "activates": "btrfs-scrub.service", "last": (NOW - 3600) * us},
+                {"unit": "shani-backup-home.timer", "activates": "shani-backup-home.service", "last": (NOW - 60) * us},
+                {"unit": "btrfs-balance.timer", "activates": "btrfs-balance.service", "last": 0},
+                {"unit": "sysstat-collect.timer", "activates": "sysstat-collect.service", "last": (NOW - 5) * us}],
+        user=[{"unit": "shani-backup-restic.timer", "activates": "shani-backup-restic.service", "last": (NOW - 7200) * us}],
+        show="Id=btrfs-scrub.service\nResult=exit-code\nExecMainStatus=3\n\n"
+             "Id=shani-backup-home.service\nResult=success\nExecMainStatus=0\n\n"
+             "Id=shani-backup-restic.service\nResult=success\nExecMainStatus=0\n")
+    tab = overview(tmp_path, monkeypatch, boot_failure="green")
+    rows = activity(tab)
+    titles = [t for t, _ in rows]
+    assert titles[0] == "Shanios 2026.09.21 started"            # this boot is the newest
+    assert "after a failed boot of @green" in rows[0][1]
+    assert titles[1:] == ["Snapshot of your files", "Disk check", "Backup to your drive"], titles
+    assert dict(rows)["Disk check"] == "Did not succeed"
+    scrub = next(r for r in tab._activity_rows if r.get_title() == "Disk check")
+    assert scrub.get_tooltip_text() == "btrfs-scrub.service: Result=exit-code"
+    # never-run and unrelated timers are not news
+    assert "Disk space tidied" not in titles and not any("sysstat" in t for t in titles)
+
+
+def test_recent_activity_with_nothing_run_yet(tmp_path, monkeypatch):
+    """NEGATIVE control: no timer has run -> one plain row, nothing invented."""
+    with_systemctl(tmp_path, monkeypatch, system=[], user=[], show="")
+    from shani_cassini import system_status as ss
+    got = []
+    ss.recent_activity(got.append)
+    assert spin(lambda: got)
+    assert got[0] == []

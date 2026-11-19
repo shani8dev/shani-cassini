@@ -27,6 +27,7 @@ import os
 import pwd
 import re
 import shutil
+import time
 from pathlib import Path
 from typing import Callable, Final, Optional
 
@@ -5841,3 +5842,106 @@ def btrfs_maintenance_state(done: Callable[[dict, str], None]) -> None:
                  lambda a, b: step(0, a, b))
     else:
         done(payload, "")
+
+
+# ---------------------------------------------------------------------------
+# Recent activity: what the machine did by itself, read without a password
+# ---------------------------------------------------------------------------
+#
+# The Overview's "Recent Activity" (an idea from Ananta OS's overview). Every
+# source is unprivileged: `systemctl [--user] list-timers --all -o json` says
+# when each maintenance job last ran, and `systemctl [--user] show -p Id -p
+# Result -p ExecMainStatus <service>...` whether it succeeded. The journal is
+# NOT used: only some groups may read it, so the list would differ by account.
+#
+# Only jobs a person would call "looking after my computer" are named; the
+# boot-check timers (check-boot-failure, shani-auto-rollback) run on every
+# start and are not news. A timer that never ran is not listed.
+ACTIVITY_JOBS = {
+    # timer: (title, section, user scope)
+    "shani-backup-home.timer": ("Snapshot of your files", "backup", False),
+    "shani-backup-restic.timer": ("Backup to your drive", "backup", True),
+    "btrfs-scrub.timer": ("Disk check", "btrfs", False),
+    "btrfs-balance.timer": ("Disk space tidied", "btrfs", False),
+    "btrfs-trim.timer": ("Free space handed back to the SSD", "btrfs", False),
+    "btrfs-defrag.timer": ("Files defragmented", "btrfs", False),
+    "flatpak-update-system.timer": ("Apps updated", "updates", False),
+    "flatpak-update-user.timer": ("Your apps updated", "updates", True),
+    "shani-download-only.timer": ("Update downloaded", "updates", False),
+}
+
+
+def _parse_show(text: str) -> dict:
+    """`systemctl show -p Id -p Result -p ExecMainStatus a b ...` → {Id: {..}}."""
+    out, cur = {}, {}
+    for line in (text or "").splitlines() + [""]:
+        if not line.strip():
+            if cur.get("Id"):
+                out[cur["Id"]] = cur
+            cur = {}
+            continue
+        k, _, v = line.partition("=")
+        cur[k] = v
+    return out
+
+
+def recent_activity(done: Callable[[list], None], boot: Optional[dict] = None, limit: int = 6) -> None:
+    """done([{at, title, detail, ok, section}], newest first, at most `limit`).
+
+    `boot` (optional) is the deploy status the caller already has: it adds
+    "Shanios <version> started" at the time of this boot. Never raises; a scope
+    that cannot be read contributes nothing rather than an invented entry.
+    """
+    items: list[dict] = []
+    if boot:
+        try:
+            up = float(open("/proc/uptime").read().split()[0])
+            ver = pretty_version(boot.get("version", ""))
+            slot = boot.get("booted_slot") or ""
+            failed = boot.get("boot_hard_failure") or boot.get("boot_failure") or ""
+            items.append({"at": time.time() - up, "title": f"Shanios {ver} started",
+                          "detail": (f"@{slot}" if slot else "")
+                                    + (f" · after a failed boot of @{failed}" if failed and failed != slot else ""),
+                          # neutral unless a failure is recorded: whether this
+                          # start was marked good lives in /data, not readable here
+                          "ok": False if failed else None, "section": "updates"})
+        except (OSError, ValueError, IndexError):
+            pass
+    pending = [2]
+
+    def finish():
+        pending[0] -= 1
+        if pending[0] == 0:
+            items.sort(key=lambda i: i["at"], reverse=True)
+            done(items[:limit])
+
+    def scope(user: bool):
+        base = ["systemctl", "--user"] if user else ["systemctl"]
+
+        def on_timers(timers, _err):
+            ran = []
+            for t in timers if isinstance(timers, list) else []:
+                job = ACTIVITY_JOBS.get(t.get("unit", ""))
+                if job and job[2] == user and (t.get("last") or 0) > 0:
+                    ran.append((t["unit"], t.get("activates") or t["unit"].replace(".timer", ".service"),
+                                int(t["last"]) / 1e6, job))
+            if not ran:
+                finish()
+                return
+
+            def on_show(text, _err):
+                res = _parse_show(text or "")
+                for unit, svc, at, (title, section, _u) in ran:
+                    r = res.get(svc, {})
+                    result = r.get("Result", "")
+                    ok = None if not result else (result == "success")
+                    detail = "" if ok is not False else "Did not succeed"
+                    items.append({"at": at, "title": title, "detail": detail, "ok": ok, "section": section,
+                                  "technical": f"{svc}: Result={result}" if result else ""})
+                finish()
+            run_text(base + ["show", "-p", "Id", "-p", "Result", "-p", "ExecMainStatus"]
+                     + [svc for _u, svc, _a, _j in ran], on_show)
+        run_json(base + ["list-timers", "--all", "-o", "json"], on_timers)
+
+    scope(False)
+    scope(True)

@@ -59,6 +59,10 @@ def _size(n: float) -> str:
     return f"{n:.1f} TB"
 
 
+def _when_epoch(at: float) -> str:
+    return _when(dt.datetime.fromtimestamp(at).astimezone().isoformat())
+
+
 def _when(iso: str) -> str:
     try:
         t = dt.datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone()
@@ -177,6 +181,14 @@ class OverviewTab(Gtk.Box):
         self.append(cards)
         self._fill_cards()
 
+        # --- what the computer did by itself (ss.recent_activity: timers and
+        # their results, no password). Filled once the deploy status is in, so
+        # this start can head it.
+        self._activity = Adw.PreferencesGroup(title="Recent Activity",
+                                              description="What Shanios did in the background")
+        self._activity_rows: list[Adw.ActionRow] = []
+        self.append(self._activity)
+
         # --- this computer
         g = Adw.PreferencesGroup(title="This Computer")
         self._rows = {}
@@ -223,9 +235,11 @@ class OverviewTab(Gtk.Box):
             self._subtitle.set_tooltip_text(err or None)
             for k in ("channel", "slot"):
                 self._rows[k].set_subtitle("Unavailable")
+            ss.recent_activity(self._on_activity)
             return
         self._render_attention(st)
         self._badge_updates(st)
+        ss.recent_activity(self._on_activity, boot=st)
         prof = (st.get("profile") or "").capitalize()
         self._title.set_label(f"Shanios {ss.pretty_version(st.get('version', ''))}")
         self._subtitle.set_label(f"{prof} edition" if prof else "")
@@ -355,3 +369,35 @@ class OverviewTab(Gtk.Box):
             nb.set_badge("updates", "1")
         else:
             nb.set_badge("updates", "")
+
+    def _on_activity(self, items: list) -> None:
+        for r in self._activity_rows:
+            self._activity.remove(r)
+        self._activity_rows = []
+        if not items:
+            r = Adw.ActionRow(title="Nothing yet",
+                              subtitle="Snapshots, backups and disk checks appear here once they have run")
+            self._activity.add(r)
+            self._activity_rows.append(r)
+            return
+        for it in items:
+            r = Adw.ActionRow(title=GLib.markup_escape_text(it["title"]),
+                              subtitle=GLib.markup_escape_text(it.get("detail") or ""))
+            icon = Gtk.Image.new_from_icon_name(
+                {True: "object-select-symbolic", False: "dialog-warning-symbolic"}.get(
+                    it.get("ok"), "document-open-recent-symbolic"))
+            if it.get("ok") is True:
+                icon.add_css_class("success")
+            elif it.get("ok") is False:
+                icon.add_css_class("warning")
+            r.add_prefix(icon)
+            if it.get("technical"):
+                r.set_tooltip_text(it["technical"])
+            when = Gtk.Label(label=_when_epoch(it["at"]), valign=Gtk.Align.CENTER)
+            when.add_css_class("dim-label")
+            r.add_suffix(when)
+            if it.get("section"):
+                r.set_activatable(True)
+                r.connect("activated", lambda _r, sec=it["section"]: goto(self, sec))
+            self._activity.add(r)
+            self._activity_rows.append(r)
