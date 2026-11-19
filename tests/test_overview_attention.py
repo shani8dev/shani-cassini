@@ -126,9 +126,26 @@ def _badge(tmp_path, monkeypatch, **status):
     (b / "shani-deploy").chmod(0o755)
     monkeypatch.setenv("PATH", f"{b}:{os.environ['PATH']}")
     from shani_cassini.notebook import ShaniosNotebook
+    from shani_cassini.tabs.overview import OverviewTab
     nb = ShaniosNotebook()
     badge = nb._badges["updates"]
-    spin(lambda: badge.get_visible(), timeout=4.0)
+
+    def overview_tab():
+        stack = [nb]
+        while stack:
+            w = stack.pop()
+            if isinstance(w, OverviewTab):
+                return w
+            c = w.get_first_child()
+            while c is not None:
+                stack.append(c)
+                c = c.get_next_sibling()
+    # Wait for the status to have ARRIVED (the Overview's pill shows), not for
+    # the badge: otherwise the no-badge control passes vacuously when the status
+    # is merely slow - which a loaded full-suite run made it.
+    assert spin(lambda: (t := overview_tab()) is not None and t._pill.get_visible(), timeout=20.0), \
+        "the Overview never received the status"
+    spin(lambda: False, timeout=0.2)
     return badge
 
 

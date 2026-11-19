@@ -406,7 +406,9 @@ def test_a_finished_deploy_awaiting_a_reboot_is_the_first_thing_on_the_page(
     # Order by where each group sits in the box, not by discovery order:
     # descendants() walks with a stack, so its list is not the page's order and
     # asserting on its index would be asserting on the traversal.
-    assert [g for g in groups(tab)][0] is pending, (
+    # Visible groups only: "the first thing on the page" is what a person sees.
+    # The failure explanation sits above it and is hidden unless a boot failed.
+    assert [g for g in groups(tab) if g.get_visible()][0] is pending, (
         "the pending group is not the first thing on the page")
 
 
@@ -1119,3 +1121,29 @@ def test_fleet_status_reads_the_agent_output_verbatim(tmp_path, monkeypatch) -> 
         if isinstance(w, Adw.ActionRow) and w.get_title() == "Server":
             assert "&amp;" not in w.get_subtitle() or "&" not in w.get_subtitle()
             assert w.get_subtitle() == "https://fleet.example.internal"
+
+
+def test_a_failed_boot_says_what_happened_and_what_to_do(tmp_path, monkeypatch) -> None:
+    """Under the banner: the consequence and the choices, from the same markers."""
+    tab, _ = updates_tab(tmp_path, monkeypatch,
+                         status=with_status(boot_failure="green", booted_slot="blue",
+                                            current_slot="green", reboot_needed=""))
+    assert tab._failure.get_visible() is True
+    assert tab._failure_row.get_title() == "Shanios went back to @blue, the system that worked"
+    sub = tab._failure_row.get_subtitle()
+    assert "did not start properly" in sub and "files and settings are untouched" in sub
+    assert "installs into @green afresh" in sub
+
+
+def test_a_hard_failure_says_the_system_may_be_damaged(tmp_path, monkeypatch) -> None:
+    tab, _ = updates_tab(tmp_path, monkeypatch,
+                         status=with_status(boot_hard_failure="green", booted_slot="blue",
+                                            current_slot="blue", reboot_needed=""))
+    assert "could not even mount its system files" in tab._failure_row.get_subtitle()
+
+
+def test_no_failure_no_explanation(tmp_path, monkeypatch) -> None:
+    """NEGATIVE control: a pending restart alone is not a failure to explain."""
+    tab, _ = updates_tab(tmp_path, monkeypatch,
+                         status=with_status(reboot_needed="20260926"))
+    assert tab._failure.get_visible() is False

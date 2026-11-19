@@ -36,6 +36,20 @@ class UpdatesTab(Gtk.Box):
         self._banner.connect("button-clicked", lambda *_: self._restart())
         page.append(self._banner)
 
+        # What a failed boot means for the person, under the banner that names
+        # it: what happened, that nothing of theirs was touched, and what they
+        # can do. Hidden unless _render_health finds a failure. (The banner
+        # alone was a grey strip with no next step; Ananta OS's updater says
+        # each state with its consequence, which is what this adds.)
+        self._failure = Adw.PreferencesGroup(visible=False)
+        self._failure_row = Adw.ActionRow(title="Nothing went wrong")
+        self._failure_row.set_subtitle_lines(0)
+        self._failure_icon = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
+        self._failure_icon.add_css_class("warning")
+        self._failure_row.add_prefix(self._failure_icon)
+        self._failure.add(self._failure_row)
+        page.append(self._failure)
+
         # --- pending reboot, before anything else on the page.
         #
         # A finished deploy that is waiting for a restart is the single most
@@ -264,6 +278,7 @@ class UpdatesTab(Gtk.Box):
                 f"The last boot of @{hard} failed before it could mount the system")
             self._banner.set_button_label("")
             self._banner.set_revealed(True)
+            self._explain_failure(hard, booted, before_mount=True)
             return
         if soft:
             where = (f" - you are running @{booted}" if booted and booted != soft
@@ -271,7 +286,9 @@ class UpdatesTab(Gtk.Box):
             self._banner.set_title(f"The last boot of @{soft} failed{where}")
             self._banner.set_button_label("")
             self._banner.set_revealed(True)
+            self._explain_failure(soft, booted, before_mount=False)
             return
+        self._failure.set_visible(False)
         if self._pending.get_visible():
             # A reboot is waiting and nothing has failed: the group above says
             # it with a button attached, so a banner repeating it adds nothing.
@@ -281,6 +298,31 @@ class UpdatesTab(Gtk.Box):
             # A banner left up from a previous read would keep claiming a failure
             # that has since been cleared or acknowledged.
             self._banner.set_revealed(False)
+
+    def _explain_failure(self, failed: str, booted: str, before_mount: bool) -> None:
+        """The banner's fact, with its consequence and the person's choices.
+
+        Only what the deploy design guarantees is said: the machine started the
+        other system, /home and /data are not part of a slot, and an update
+        always writes into the slot that is not running - here the failed one.
+        """
+        other = booted and booted != failed
+        if other:
+            self._failure_row.set_title(GLib.markup_escape_text(
+                f"Shanios went back to @{booted}, the system that worked"))
+            why = ("could not even mount its system files - it may be damaged"
+                   if before_mount else "did not start properly")
+            self._failure_row.set_subtitle(GLib.markup_escape_text(
+                f"The system in @{failed} {why}, so the computer started @{booted} "
+                f"instead. Your files and settings are untouched. You can stay on this "
+                f"system, or update again: an update installs into @{failed} afresh."))
+        else:
+            self._failure_row.set_title(GLib.markup_escape_text(
+                f"@{failed} did not finish starting last time"))
+            self._failure_row.set_subtitle(GLib.markup_escape_text(
+                "Your files and settings are untouched. If it happens again, go back "
+                "to the previous system below."))
+        self._failure.set_visible(True)
 
     def _render_update_row(self, st: dict, ver: str) -> None:
         """The one row that answers "is there anything to install".
