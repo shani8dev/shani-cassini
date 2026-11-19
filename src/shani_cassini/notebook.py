@@ -40,6 +40,7 @@ from shani_cassini.tabs.directory import DirectoryTab
 from shani_cassini.tabs.maintenance import MaintenanceTab
 from shani_cassini.tabs.btrfs import BtrfsTab
 from shani_cassini.tabs.persistence import PersistenceTab
+from shani_cassini.tabs.etc_changes import EtcChangesTab
 from shani_cassini.tabs.memory_state import MemoryStateTab
 from shani_cassini.tabs.attachment import AttachmentTab
 from shani_cassini.tabs.voice_access import VoiceAccessTab
@@ -142,6 +143,8 @@ SECTIONS = [
              "mdadm arrays, their members, and which slot is degraded or failed"),
             (PersistenceTab, "persistence", "Persistence", "folder-symbolic",
              "The bind mounts this image ships, and which are present now"),
+            (EtcChangesTab, "etc-changes", "System Changes", "document-edit-symbolic",
+             "Files in /etc this computer changed from what Shanios ships, and putting one back"),
         ]),
         ("Hardware", [
             (SystemInfoPage, "system", "System Info", "computer-symbolic",

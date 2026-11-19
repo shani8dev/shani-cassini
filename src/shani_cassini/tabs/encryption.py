@@ -183,6 +183,27 @@ class EncryptionTab(Gtk.Box):
         self._unlock.add(self._remove_row)
         self._page.append(self._unlock)
 
+        # Getting back in when the passphrase is lost or the header is damaged.
+        # `gen-efi recovery-key --stdin` / `luks-header-backup` (root, pkexec);
+        # both measured against a real LUKS volume (shani-deploy history).
+        recovery = Adw.PreferencesGroup(
+            title="If You Lose Access",
+            description="A recovery key opens the disk when the passphrase is forgotten. "
+                        "A copy of the encryption header, kept off this computer, opens it "
+                        "if the header on the disk is ever damaged.")
+        self._rk_row = _row("Recovery key", "Make a new one and write it down; older recovery keys stop working")
+        self._btn_rk = Gtk.Button(label="Make a New Key…", valign=Gtk.Align.CENTER)
+        self._btn_rk.connect("clicked", lambda *_: self._recovery_dialog())
+        self._rk_row.add_suffix(self._btn_rk)
+        recovery.add(self._rk_row)
+        self._hdr_row = _row("Encryption header",
+                             "Save a copy to a USB drive or another computer - not to this disk")
+        self._btn_hdr = Gtk.Button(label="Save a Copy…", valign=Gtk.Align.CENTER)
+        self._btn_hdr.connect("clicked", lambda *_: self._header_dialog())
+        self._hdr_row.add_suffix(self._btn_hdr)
+        recovery.add(self._hdr_row)
+        self._page.append(recovery)
+
         self._luks_rows = {}
         self._policy_row = _row("PCR policy", "Read with the button above")
         details = Adw.PreferencesGroup(
@@ -367,6 +388,137 @@ class EncryptionTab(Gtk.Box):
             ["pkexec", "gen-efi", "remove-tpm2"], "y\n",  # answers gen-efi's own y/N
             "Automatic unlock is off", "Turning off automatic unlock failed"))
         d.present(self.get_root())
+
+    # ------------------------------------------------------------ recovery key
+    def _recovery_dialog(self) -> None:
+        d = Adw.AlertDialog(heading="Make a new recovery key?",
+                            body="Enter the disk passphrase. The new key is shown once; "
+                                 "any recovery key made before stops working.")
+        grp = Adw.PreferencesGroup()
+        pw = Adw.PasswordEntryRow(title="Disk passphrase")
+        grp.add(pw)
+        d.set_extra_child(grp)
+        d.add_response("cancel", "Cancel")
+        d.add_response("make", "Make Key")
+        d.set_response_appearance("make", Adw.ResponseAppearance.SUGGESTED)
+        d.set_default_response("make")
+        d.set_close_response("cancel")
+        pw.connect("changed", lambda *_: d.set_response_enabled("make", bool(pw.get_text())))
+        d.set_response_enabled("make", False)
+        d.connect("response", lambda _d, r: r == "make" and self._make_recovery_key(pw.get_text()))
+        d.present(self.get_root())
+        self._last_dialog = d
+
+    def _make_recovery_key(self, passphrase: str) -> None:
+        self._btn_rk.set_sensitive(False)
+        self._pending_rk = True
+        try:
+            p = Gio.Subprocess.new(["pkexec", "gen-efi", "recovery-key", "--stdin"],
+                                   Gio.SubprocessFlags.STDIN_PIPE | Gio.SubprocessFlags.STDOUT_PIPE
+                                   | Gio.SubprocessFlags.STDERR_PIPE)
+        except GLib.Error as e:
+            self._btn_rk.set_sensitive(True)
+            self._pending_rk = False
+            self._toast(e.message)
+            return
+
+        def done(proc, res):
+            self._btn_rk.set_sensitive(True)
+            self._pending_rk = False
+            try:
+                _ok, out, err = proc.communicate_utf8_finish(res)
+            except GLib.Error as e:
+                out, err = "", e.message
+            rc = proc.get_exit_status() if proc.get_if_exited() else -1
+            key = next((ln.split("=", 1)[1] for ln in (out or "").splitlines()
+                        if ln.startswith("RECOVERY_KEY=")), "")
+            if rc in (126, 127):
+                self._toast("Authorization was cancelled")
+            elif rc == 0 and key:
+                self._show_recovery_key(key)
+            else:
+                last = [l for l in (err or "").splitlines() if "ERROR" in l]
+                self._toast("No new key was made: "
+                            + (last[-1].split("ERROR:")[-1].strip() if last else f"exit status {rc}"))
+        # the passphrase goes through stdin and is dropped with the dialog
+        p.communicate_utf8_async(passphrase + "\n", None, done)
+
+    def _show_recovery_key(self, key: str) -> None:
+        label = Gtk.Label(label=key, selectable=True, wrap=True, css_classes=["monospace", "title-4"])
+        copy = Gtk.Button(label="Copy", halign=Gtk.Align.CENTER)
+        copy.connect("clicked", lambda *_: (self.get_display().get_clipboard().set(key),
+                                            self._toast("Recovery key copied")))
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        box.append(label)
+        box.append(copy)
+        d = Adw.AlertDialog(heading="Your new recovery key",
+                            body="Write it down or store it in a password manager, away from this "
+                                 "computer. It is shown only now. Type it at boot instead of the "
+                                 "passphrase if you ever need it.")
+        d.set_extra_child(box)
+        d.add_response("done", "I Have Saved It")
+        d.present(self.get_root())
+        self._last_dialog = d
+        self._shown_key = key
+
+    # ------------------------------------------------------------ header backup
+    def _header_dialog(self) -> None:
+        fd = Gtk.FileDialog(title="Save a copy of the encryption header",
+                            initial_name=f"shanios-luks-header-{GLib.DateTime.new_now_local().format('%Y-%m-%d')}.img")
+        fd.save(self.get_root(), None, self._on_header_path)
+
+    def _on_header_path(self, fd, res) -> None:
+        try:
+            f = fd.save_finish(res)
+        except GLib.Error:
+            return                                 # dismissed
+        if f is not None and f.get_path():
+            self.save_header_to(f.get_path())
+
+    def save_header_to(self, path: str) -> None:
+        self._btn_hdr.set_sensitive(False)
+        self._pending_hdr = True
+        try:
+            p = Gio.Subprocess.new(["pkexec", "gen-efi", "luks-header-backup"],
+                                   Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE)
+        except GLib.Error as e:
+            self._btn_hdr.set_sensitive(True)
+            self._pending_hdr = False
+            self._toast(e.message)
+            return
+
+        def done(proc, res):
+            self._btn_hdr.set_sensitive(True)
+            self._pending_hdr = False
+            try:
+                _ok, out, err = proc.communicate_finish(res)
+            except GLib.Error as e:
+                out, err = None, None
+                self._toast(e.message)
+                return
+            rc = proc.get_exit_status() if proc.get_if_exited() else -1
+            data = out.get_data() if out is not None else b""
+            if rc in (126, 127):
+                self._toast("Authorization was cancelled")
+                return
+            # A LUKS header starts with the magic "LUKS\xba\xbe"; anything else is
+            # not a header, whatever the exit status says.
+            if rc != 0 or not data.startswith(b"LUKS\xba\xbe"):
+                text = (err.get_data().decode("utf-8", "replace") if err is not None else "")
+                last = [l for l in text.splitlines() if "ERROR" in l]
+                self._toast("No copy was saved: "
+                            + (last[-1].split("ERROR:")[-1].strip() if last else f"exit status {rc}"))
+                return
+            try:
+                fd_ = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd_, "wb") as fh:
+                    fh.write(data)
+                os.chmod(path, 0o600)
+            except OSError as e:
+                self._toast(f"No copy was saved: {e.strerror}")
+                return
+            self._toast(f"Encryption header saved to {os.path.basename(path)}")
+        p.communicate_async(None, None, done)
 
     def _run_with_stdin(self, argv, data, ok_text, fail_text) -> None:
         for b in (self._btn_enroll, self._btn_remove, self._btn_details):

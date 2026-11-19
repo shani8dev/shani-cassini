@@ -105,7 +105,7 @@ class TestNotebook:
     EXPECTED = [
             ('System', [
                 ('Overview & Health', ['Overview', 'Health', 'Setup']),
-                ('Storage', ['Storage', 'Disk Health', 'Btrfs', 'Software RAID', 'Persistence']),
+                ('Storage', ['Storage', 'Disk Health', 'Btrfs', 'Software RAID', 'Persistence', 'System Changes']),
                 ('Hardware', ['System Info', 'Drivers', 'Graphics', 'Audio', 'Kernel Modules', 'Firmware']),
                 ('Memory & State', ['Memory & State', 'LVM State', 'Attachment', 'Voice & Screen Reading', 'Event Sources', 'Network Monitor']),
                 ('Interrupts', ['irqbalance']),
@@ -156,7 +156,7 @@ class TestNotebook:
         # Network Monitor) plus the earlier Hardware/Kernel/Firmware set. Kept as a
         # literal rather than len(flat) alone so a page silently vanishing from
         # SECTIONS fails here instead of passing.
-        assert nb.get_n_pages() == len(flat) == 69, len(flat)
+        assert nb.get_n_pages() == len(flat) == 70, len(flat)
         assert nb.page_titles() == flat
 
     def test_no_group_is_a_wall_again(self):
