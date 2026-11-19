@@ -504,14 +504,35 @@ class TestMeasuredManifests:
         if not root.exists():
             pytest.skip("shani-install-media is not checked out beside this repo")
         base = root / "image_profiles"
+        # Since shani-install-media 13f283d (2026-11-08) no profile pins dracut
+        # itself: "every removed pin is already pulled by an included
+        # metapackage" - shani-core, and shani-deploy for server. So a profile
+        # counts when it lists dracut OR a shani package whose PKGBUILD depends
+        # on it, read from the sibling shani-pkgbuilds checkout.
+        pkgbuilds = root.parent / "shani-pkgbuilds"
+        if not pkgbuilds.exists():
+            pytest.skip("shani-pkgbuilds is not checked out beside this repo")
+
+        def depends_on_dracut(pkg):
+            pb = pkgbuilds / pkg / "PKGBUILD"
+            if not pb.exists():
+                return False
+            text = pb.read_text()
+            m = re.search(r"^depends=\((.*?)^\)", text, re.S | re.M)
+            return bool(m) and re.search(r"['\"]?\bdracut\b['\"]?", m.group(1)) is not None
+
         with_dracut, with_mkinitcpio = [], []
-        for path in sorted(base.glob("*/Packages-Base")):
-            words = {w.strip() for w in path.read_text().split()
-                     if w.strip() and not w.startswith("#")}
-            if "dracut" in words:
-                with_dracut.append(path.parent.name)
+        for profile in sorted(p for p in base.iterdir() if p.is_dir()):
+            words = set()
+            for path in profile.glob("Packages-*"):
+                words |= {w.strip() for w in path.read_text().split()
+                          if w.strip() and not w.startswith("#")}
+            if not words:
+                continue
+            if "dracut" in words or any(depends_on_dracut(w) for w in words if w.startswith("shani-")):
+                with_dracut.append(profile.name)
             if "mkinitcpio" in words:
-                with_mkinitcpio.append(path.parent.name)
+                with_mkinitcpio.append(profile.name)
         assert len(with_dracut) >= 6, with_dracut
         assert not with_mkinitcpio, (
             f"mkinitcpio is now in {with_mkinitcpio}; the generator claim is stale")

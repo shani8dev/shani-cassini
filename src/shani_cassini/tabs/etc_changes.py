@@ -149,7 +149,11 @@ class EtcChangesTab(Gtk.Box):
         else:
             row.set_subtitle(what)
 
-        if c.get("kind") != "removed":
+        if c.get("secret"):
+            # No Difference button: the tool never shows a secret's content, so
+            # the button would only cost a password prompt to say so.
+            row.set_subtitle(row.get_subtitle() + " · content not shown: it holds secrets")
+        elif c.get("kind") != "removed":
             diff = Gtk.Button(label="Difference", valign=Gtk.Align.CENTER)
             diff.connect("clicked", lambda *_: self._diff(path))
             row.add_suffix(diff)

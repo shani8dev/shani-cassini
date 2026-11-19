@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -141,14 +142,13 @@ def test_the_difference_and_a_secret_that_is_not_shown(machine):
     text = b.get_text(b.get_start_iter(), b.get_end_iter(), False)
     assert "-Port 22" in text and "+Port 2222" in text, text
 
-    tab._last_dialog = None
-    buttons(by["/etc/NetworkManager/system-connections/home.nmconnection"])["Difference"].emit("clicked")
-    assert spin(lambda: tab._pending == 0 and getattr(tab, "_last_dialog", None))
-    view = tab._last_dialog.get_extra_child().get_child()
-    view = view.get_child() if not isinstance(view, Gtk.TextView) else view
-    b = view.get_buffer()
-    text = b.get_text(b.get_start_iter(), b.get_end_iter(), False)
-    assert "hunter2" not in text and "secrets" in text, text
+    # a secret offers no Difference at all - and the tool would not show it anyway
+    wifi = by["/etc/NetworkManager/system-connections/home.nmconnection"]
+    assert "Difference" not in buttons(wifi)
+    assert "holds secrets" in wifi.get_subtitle()
+    out = subprocess.run(["shani-etc-changes", "diff", "NetworkManager/system-connections/home.nmconnection"],
+                         capture_output=True, text=True)
+    assert json.loads(out.stdout)["hidden"] is True and "hunter2" not in out.stdout
 
 
 def test_restore_queues_for_the_next_start_and_keep_takes_it_back(machine):
