@@ -102,7 +102,10 @@ def test_the_cards_say_what_was_read(tmp_path, monkeypatch):
     assert spin(lambda: c["backup"].value.get_label() != "…" and c["snapshots"].value.get_label() != "…")
     assert c["storage"].value.get_label().endswith(" free") and c["storage"].level.get_visible()
     assert c["security"].detail.get_label() in ("Disk encrypted", "Disk not encrypted")
-    assert "21:04" in c["backup"].value.get_label()
+    # shown in the machine's own time zone: 21:04 at +05:30 is 15:34 on a UTC runner
+    from datetime import datetime
+    local = datetime.fromisoformat("2026-11-18T21:04:00+05:30").astimezone().strftime("%H:%M")
+    assert local in c["backup"].value.get_label()
     assert c["backup"].detail.get_label() == "Archive · last restore test failed"
     assert c["snapshots"].value.get_label() == "3 kept"
 
