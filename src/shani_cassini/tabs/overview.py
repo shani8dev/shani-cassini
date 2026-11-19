@@ -59,6 +59,23 @@ class OverviewTab(Gtk.Box):
         head.append(self._pill)
         self.append(head)
 
+        # --- what needs attention, first. A failed boot or an update waiting for
+        # a restart, from the same markers and in the same words as Updates &
+        # Rollback (_render_health / _render_pending there). Before this the
+        # Overview of a machine that had just fallen back from a failed update
+        # showed only "Update available" - the one page meant to say how the
+        # system is doing said nothing about the thing that went wrong. Hidden
+        # when there is nothing to say. (Prompted by Ananta OS's overview,
+        # whose first element is the system's status.)
+        self._attention = Adw.PreferencesGroup(visible=False)
+        self._attention_row = Adw.ActionRow(activatable=True)
+        self._attention_icon = Gtk.Image()
+        self._attention_row.add_prefix(self._attention_icon)
+        self._attention_row.add_suffix(Gtk.Image.new_from_icon_name("go-next-symbolic"))
+        self._attention_row.connect("activated", lambda *_: goto(self, "updates"))
+        self._attention.add(self._attention_row)
+        self.append(self._attention)
+
         # --- at a glance
         g = Adw.PreferencesGroup(title="At a Glance")
         self._rows = {}
@@ -91,23 +108,6 @@ class OverviewTab(Gtk.Box):
         self._rows["health"].set_subtitle("Run a check to see how the system is doing")
         self.append(g)
 
-        # --- a small chart, the way shani-chronoa draws its panels
-        try:
-            from shani_cassini import charts
-            cg = Adw.PreferencesGroup(title="At a Glance (chart)")
-            card, body = charts.card("Uptime", "preferences-system-time-symbolic")
-            ring = charts.Ring(size=100, width=8)
-            try:
-                days = int(float(open("/proc/uptime").read().split()[0])) // 86400
-            except (OSError, ValueError):
-                days = 0
-            ring.set(min(days / 365.0, 1.0), f"{days}d", "of a year")
-            body.append(ring)
-            cg.add(card)
-            self.append(cg)
-        except Exception as exc:  # pragma: no cover - never break the page
-            logger.debug("charts unavailable: %s", exc)
-
         ss.deploy_status(self._on_status, check=True)
 
     def _on_status(self, st, err) -> None:
@@ -123,6 +123,7 @@ class OverviewTab(Gtk.Box):
             for k in ("channel", "slot"):
                 self._rows[k].set_subtitle("Unavailable")
             return
+        self._render_attention(st)
         prof = (st.get("profile") or "").capitalize()
         self._title.set_label(f"Shanios {ss.pretty_version(st.get('version', ''))}")
         self._subtitle.set_label(f"{prof} edition" if prof else "")
@@ -141,3 +142,38 @@ class OverviewTab(Gtk.Box):
         else:
             self._pill.set_label("Update check did not complete")
         self._pill.set_visible(True)
+
+    def _render_attention(self, st: dict) -> None:
+        """A failed boot, else an update waiting for a restart, else nothing.
+
+        Same priority as Updates & Rollback: the hard marker (written by the
+        dracut hook before the root mount) over the soft one, and a failure over
+        a pending restart, so one situation is never two alarms.
+        """
+        hard = str(st.get("boot_hard_failure") or "")
+        soft = str(st.get("boot_failure") or "")
+        booted = str(st.get("booted_slot") or "")
+        waiting = str(st.get("reboot_needed") or "")
+        if hard or soft:
+            slot = hard or soft
+            title = (f"The last boot of @{slot} failed before it could mount the system"
+                     if hard else f"The last boot of @{slot} failed")
+            back = f"You are running @{booted}, the previous system. " if booted and booted != slot else ""
+            self._set_attention("dialog-warning-symbolic", "warning", title,
+                                back + "See what happened and what to do in Updates & Rollback")
+        elif waiting:
+            self._set_attention("software-update-available-symbolic", "accent",
+                                f"Shanios {ss.pretty_version(waiting)} is installed",
+                                "It starts on the next restart; the system you run now stays available to go back to")
+        else:
+            self._attention.set_visible(False)
+            return
+        self._attention.set_visible(True)
+
+    def _set_attention(self, icon: str, cls: str, title: str, subtitle: str) -> None:
+        self._attention_icon.set_from_icon_name(icon)
+        for c in ("warning", "accent"):
+            self._attention_icon.remove_css_class(c)
+        self._attention_icon.add_css_class(cls)
+        self._attention_row.set_title(GLib.markup_escape_text(title))
+        self._attention_row.set_subtitle(GLib.markup_escape_text(subtitle))
