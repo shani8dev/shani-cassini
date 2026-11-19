@@ -468,6 +468,7 @@ class ShaniosNotebook(Adw.Bin):
         self._auth_manager = auth_manager
         self._built: dict[str, Gtk.Widget] = {}
         self._rows: dict[str, Gtk.ListBoxRow] = {}
+        self._badges: dict[str, Gtk.Label] = {}
 
         self.split_view.set_min_sidebar_width(220)
         self.split_view.set_max_sidebar_width(280)
@@ -531,6 +532,13 @@ class ShaniosNotebook(Adw.Bin):
                                     margin_top=4, margin_bottom=4)
                     inner.append(Gtk.Image.new_from_icon_name(icon))
                     inner.append(Gtk.Label(label=title, xalign=0, hexpand=True))
+                    # A count or a "!" a page can raise for itself (set_badge):
+                    # hidden until there is something to count.
+                    badge = Gtk.Label(visible=False, valign=Gtk.Align.CENTER)
+                    badge.add_css_class("caption-heading")
+                    badge.add_css_class("numeric")
+                    inner.append(badge)
+                    self._badges[pid] = badge
                     row.set_child(inner)
                     row.update_property([Gtk.AccessibleProperty.LABEL], [title])
                     lb.append(row)
@@ -616,6 +624,27 @@ class ShaniosNotebook(Adw.Bin):
             else:
                 lb.unselect_all()
         return tab
+
+    def set_badge(self, pid: str, text: str = "", warning: bool = False) -> None:
+        """Show `text` beside a sidebar entry (a count, or "!"), or clear it.
+
+        Only for facts a page has already read without a password: a badge that
+        needed a prompt to compute would be a prompt nobody asked for.
+        """
+        badge = self._badges.get(resolve(pid))
+        if badge is None:
+            return
+        badge.set_label(text)
+        badge.set_visible(bool(text))
+        for c in ("warning", "accent"):
+            badge.remove_css_class(c)
+        if text:
+            badge.add_css_class("warning" if warning else "accent")
+        row = self._rows.get(resolve(pid))
+        if row is not None:
+            title = next((p[2] for p in PAGES if p[1] == resolve(pid)), pid)
+            row.update_property([Gtk.AccessibleProperty.LABEL],
+                                [f"{title} ({text})" if text else title])
 
     def get_n_pages(self) -> int:
         """Number of sections (built or not)."""
