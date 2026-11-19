@@ -56,6 +56,7 @@ class KernelTab(Gtk.Box):
         content_box.append(self._create_version_card())
         content_box.append(self._create_cmdline_card())
         content_box.append(self._create_modules_card())
+        content_box.append(self._create_scheduling_card())
 
         self._update_data()
 
@@ -102,6 +103,21 @@ class KernelTab(Gtk.Box):
             self._mod_stat = None
         return card
 
+    def _create_scheduling_card(self) -> Gtk.Widget:
+        # What Ananta OS shows on its Gaming page (sched_ext scheduler, ntsync),
+        # read here from the kernel itself - no package needed to look.
+        card = Card(title="CPU Scheduling & Games")
+        card.set_margin_bottom(12)
+        grid = Gtk.Grid()
+        grid.set_row_spacing(8)
+        grid.set_column_spacing(16)
+        grid.set_column_homogeneous(False)
+        card.append(grid)
+        self._add_info_row(grid, 0, "CPU scheduler:", "", "k-sched")
+        self._add_info_row(grid, 1, "Scheduler switching:", "", "k-scx-loader")
+        self._add_info_row(grid, 2, "Windows games' sync (ntsync):", "", "k-ntsync")
+        return card
+
     def _update_data(self) -> None:
         """Populate the tab from read-only /proc data.
 
@@ -140,6 +156,11 @@ class KernelTab(Gtk.Box):
                 self._mod_stat.value_label.set_text(str(count))
             except Exception:
                 pass
+
+        # Scheduling and games
+        self._update_label("k-sched", _scheduler_text())
+        self._update_label("k-scx-loader", _scx_loader_text())
+        self._update_label("k-ntsync", _ntsync_text())
 
     def _add_info_row(
         self,
@@ -193,3 +214,53 @@ def _modules_info() -> tuple[int, str]:
         return 0, ""
     names = [ln.split()[0] for ln in lines if ln.split()]
     return len(names), ", ".join(names[:8])
+
+
+# sched_ext (kernel 6.12+): `state` is enabled/disabled/enabling/disabling and,
+# while one runs, root/ops names the BPF scheduler.
+SCHED_EXT_DIR = "/sys/kernel/sched_ext"
+# scx_loader (Arch scx-tools) starts and switches them over D-Bus. It is NOT in
+# the images: scx-scheds (161 MB installed) was dropped from shani-core in a
+# size review, so shani-settings' scx_loader.toml has nothing to configure
+# until someone installs it.
+SCX_LOADER_BIN = "/usr/bin/scx_loader"
+SCX_LOADER_CONF = "/etc/scx_loader.toml"
+# ntsync: Windows NT sync primitives in the kernel; Wine and Proton use the
+# device when it exists (shani-settings loads the module at boot).
+NTSYNC_DEV = "/dev/ntsync"
+
+
+def _read(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def _scheduler_text() -> str:
+    state = _read(os.path.join(SCHED_EXT_DIR, "state"))
+    if not state:
+        return "The kernel's own (EEVDF) - this kernel has no sched_ext"
+    if state == "enabled":
+        ops = _read(os.path.join(SCHED_EXT_DIR, "root", "ops"))
+        # shown as the kernel names it: Rust schedulers add a version (lavd_1.0.x_...)
+        return f"{ops} (sched_ext)" if ops else "A sched_ext scheduler (name not reported)"
+    if state == "disabled":
+        return "The kernel's own (EEVDF); no sched_ext scheduler is running"
+    return f"sched_ext is {state}"
+
+
+def _scx_loader_text() -> str:
+    if not os.path.exists(SCX_LOADER_BIN):
+        return ("Not installed: the scx-scheds schedulers are not part of this image "
+                "(install scx-tools to choose one)")
+    m = re.search(r'^\s*default_sched\s*=\s*"([^"]+)"', _read(SCX_LOADER_CONF), re.M)
+    return (f"scx_loader installed; default {m.group(1)} (scxctl switches it)" if m
+            else "scx_loader installed; no default set (scxctl switches it)")
+
+
+def _ntsync_text() -> str:
+    if os.path.exists(NTSYNC_DEV):
+        return "Available - Wine and Proton use it for Windows games"
+    return "Not available: /dev/ntsync is missing (the ntsync module is not loaded)"
