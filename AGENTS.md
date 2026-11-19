@@ -2706,3 +2706,23 @@ the existing style.
 - `shani-chronoa`: its GSettings keys (switches bound by name).
 - `shani-pkgbuilds/shani-cassini`: the PKGBUILD pins a commit; bump it
   (and pkgrel) for a change to ship.
+
+- **Updates & Rollback after a fallback: "Repair @green", not "start from
+  @green" — FIXED 2026-11-19.** The Roll Back dialog said "Shanios will start
+  from @{previous_slot} after a restart" whatever the state. After a failed
+  boot of @green with @blue running, `shani-deploy --rollback`
+  (`rollback_system()`) restores @green from the copy taken before the update
+  and leaves @blue the default — it starts nothing. The row, button and dialog
+  now say Repair in that state (`_repairs()`: a soft or hard failure naming a
+  slot that is not booted) and keep their words otherwise (control).
+- **"Before It Installs" (2026-11-19):** shown only when an update is
+  available. Newer (versions), enough free space (`os.statvfs('/data')`, then
+  `/home` only if that cannot be read — not `or`, since 0 MB free is the case
+  that matters — against shani-deploy's own `[deploy] min_free_space_mb`,
+  default 10240), the running slot stays, and "Signature and checksum" as a
+  STATEMENT of what the deploy does (neutral icon): the page never claims a
+  verification it did not run.
+- **Decided 2026-11-19, from the Ananta OS comparison:** no "What's new" until
+  releases publish notes (a pipeline change — an empty section would promise
+  what nothing delivers); no coloured status pills across pages (Cassini stays
+  stock libadwaita and already marks state with success/warning icons).

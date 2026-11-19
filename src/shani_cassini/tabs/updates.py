@@ -6,6 +6,7 @@ going back - all through shani-deploy (see system_status.py)."""
 from __future__ import annotations
 
 import logging
+import os
 
 from gi.repository import Adw, GLib, Gtk  # type: ignore
 
@@ -136,6 +137,24 @@ class UpdatesTab(Gtk.Box):
         upd.add(self._row_update)
         page.append(upd)
 
+        # --- what will be true before the update installs (shown only when one
+        # is available). Each row is either measured here without a password or
+        # is a statement of what the deploy does, worded as such - never a check
+        # the page did not run. (Ananta OS's updater lists its checks like this.)
+        self._checks = Adw.PreferencesGroup(title="Before It Installs", visible=False)
+        self._check_rows = {}
+        for key, title in (("newer", "Newer than this system"),
+                           ("space", "Enough free space"),
+                           ("verified", "Signature and checksum"),
+                           ("stays", "This system stays")):
+            row = Adw.ActionRow(title=title)
+            icon = Gtk.Image()
+            row.add_prefix(icon)
+            row._icon = icon
+            self._checks.add(row)
+            self._check_rows[key] = row
+        page.append(self._checks)
+
         # --- rollback
         rb = Adw.PreferencesGroup(title="Rollback",
                                   description="Every update installs into the other system slot, so the "
@@ -210,6 +229,7 @@ class UpdatesTab(Gtk.Box):
         self._row_slot.set_subtitle(f"Slot @{booted}" if booted else "Unknown")
         self._row_prev.set_subtitle(f"Slot @{prev}" if prev else "None yet - appears after the first update")
         self._btn_rollback.set_sensitive(bool(prev) and not self._busy)
+        self._render_rollback_row(st, booted)
 
         # Which slot the bootloader will start next, which is `current_slot` -
         # the deploy script's own name for the slot whose UKI the loader points
@@ -299,6 +319,72 @@ class UpdatesTab(Gtk.Box):
             # that has since been cleared or acknowledged.
             self._banner.set_revealed(False)
 
+    def _check(self, key: str, state, subtitle: str) -> None:
+        """state: True (fine), False (a problem), None (a statement, not a check)."""
+        row = self._check_rows[key]
+        row.set_subtitle(GLib.markup_escape_text(subtitle))
+        icon = row._icon
+        icon.set_from_icon_name({True: "object-select-symbolic", False: "dialog-warning-symbolic"}
+                                .get(state, "security-high-symbolic"))
+        for c in ("success", "warning"):
+            icon.remove_css_class(c)
+        if state is True:
+            icon.add_css_class("success")
+        elif state is False:
+            icon.add_css_class("warning")
+
+    def _render_checks(self, st: dict, ver: str, remote: str) -> None:
+        self._check("newer", True,
+                    f"{ss.pretty_version(ver)} → {ss.pretty_version(remote)}")
+        need_mb = ss.deploy_min_free_mb()
+        free_mb = ss.free_mb("/data")
+        if free_mb is None:               # not `or`: 0 MB free is the case that matters
+            free_mb = ss.free_mb("/home")
+        if free_mb is None:
+            self._check("space", None, f"Needs {need_mb / 1024:.0f} GB; free space could not be read")
+        elif free_mb >= need_mb:
+            self._check("space", True, f"Needs {need_mb / 1024:.0f} GB · {free_mb / 1024:.0f} GB free")
+        else:
+            swap = " Shanios can make room by shrinking its swap file; otherwise free up space first." \
+                if os.path.exists("/swap/swapfile") else " Free up space before updating."
+            self._check("space", False,
+                        f"Needs {need_mb / 1024:.0f} GB · {free_mb / 1024:.1f} GB free.{swap}")
+        self._check("verified", None,
+                    "Checked while it downloads (SHA-256 and the Shanios signing key), "
+                    "before anything is written")
+        booted = st.get("booted_slot") or ""
+        self._check("stays", True,
+                    f"@{booted} is left as it is, so you can go back to it" if booted
+                    else "The running system is left as it is, so you can go back to it")
+
+    def _repairs(self, st: dict) -> str:
+        """The slot `--rollback` will REPAIR rather than start, or "".
+
+        shani-deploy's rollback_system(): when a boot failure names the slot that
+        is NOT running (the machine fell back), --rollback restores that slot
+        from the copy taken before the update and leaves the running one as the
+        default - it does not start the failed slot. With no recorded soft
+        failure it decides by version and backup, which after a hard failure of
+        the newer, backed-up slot is the same repair. Either way the page must
+        not say "Shanios will start from @green" for it.
+        """
+        booted = st.get("booted_slot") or ""
+        failed = str(st.get("boot_failure") or st.get("boot_hard_failure") or "")
+        return failed if failed in ("blue", "green") and booted and failed != booted else ""
+
+    def _render_rollback_row(self, st: dict, booted: str) -> None:
+        bad = self._repairs(st)
+        if bad:
+            self._row_rollback.set_title(f"Repair @{bad}")
+            self._row_rollback.set_subtitle(
+                f"Puts @{bad} back as it was before the update, from the copy kept then. "
+                f"You stay on @{booted}")
+            self._btn_rollback.set_label("Repair…")
+        else:
+            self._row_rollback.set_title("Go back to the previous system")
+            self._row_rollback.set_subtitle("Your files and settings are kept")
+            self._btn_rollback.set_label("Roll Back…")
+
     def _explain_failure(self, failed: str, booted: str, before_mount: bool) -> None:
         """The banner's fact, with its consequence and the person's choices.
 
@@ -336,11 +422,13 @@ class UpdatesTab(Gtk.Box):
         channel = st.get("channel") or "stable"
         remote = (st.get("remote") or {}).get(channel, "")
         ua = st.get("update_available")
+        self._checks.set_visible(ua is True)
         if ua is True:
             self._row_update.set_title(f"Shanios {ss.pretty_version(remote)} is available")
             self._row_update.set_subtitle(f"You have {ss.pretty_version(ver)} · {channel}")
             self._btn_update.set_visible(True)
             self._btn_prefetch.set_visible(True)
+            self._render_checks(st, ver, remote)
         elif ua is False:
             self._row_update.set_title("Your system is up to date")
             self._row_update.set_subtitle(f"Newest on {channel}: {ss.pretty_version(remote)}")
@@ -395,11 +483,22 @@ class UpdatesTab(Gtk.Box):
         # deciding about, and the deploy script's own listing is the only place
         # a slot's version exists. Asked for when the dialog opens rather than
         # on page load, because that listing is a root call.
-        d = Adw.AlertDialog(heading="Go back to the previous system?",
-                            body=f"Shanios will start from @{prev} after a restart. The current system "
-                                 "stays installed. Your files and settings are not affected.")
-        d.add_response("cancel", "Cancel")
-        d.add_response("rollback", "Roll Back")
+        bad = self._repairs(self._status)
+        if bad:
+            booted = self._status.get("booted_slot") or "this system"
+            d = Adw.AlertDialog(
+                heading=f"Repair @{bad}?",
+                body=f"@{bad} is put back as it was before the update, from the copy kept "
+                     f"then. You stay on @{booted}, and nothing changes on it. Your files "
+                     "and settings are not affected.")
+            d.add_response("cancel", "Cancel")
+            d.add_response("rollback", "Repair")
+        else:
+            d = Adw.AlertDialog(heading="Go back to the previous system?",
+                                body=f"Shanios will start from @{prev} after a restart. The current system "
+                                     "stays installed. Your files and settings are not affected.")
+            d.add_response("cancel", "Cancel")
+            d.add_response("rollback", "Roll Back")
         d.set_response_appearance("rollback", Adw.ResponseAppearance.DESTRUCTIVE)
         d.set_default_response("cancel")
         d.set_close_response("cancel")
@@ -413,6 +512,7 @@ class UpdatesTab(Gtk.Box):
 
         d.connect("response", responded)
         d.present(self.get_root())
+        self._last_dialog = d
 
     def _after_deploy(self, ok: bool) -> None:
         if ok:

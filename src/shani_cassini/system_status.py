@@ -5945,3 +5945,33 @@ def recent_activity(done: Callable[[list], None], boot: Optional[dict] = None, l
 
     scope(False)
     scope(True)
+
+
+# --- the free space an update needs ---------------------------------------------------------
+def deploy_min_free_mb() -> int:
+    """shani-deploy's own requirement: [deploy] min_free_space_mb in
+    /etc/shani/shani.conf (world-readable), else its default 10240."""
+    try:
+        section = ""
+        with open("/etc/shani/shani.conf") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("[") and line.endswith("]"):
+                    section = line[1:-1]
+                elif section == "deploy" and line.split("=", 1)[0].strip() == "min_free_space_mb":
+                    v = line.split("=", 1)[1].strip()
+                    if v.isdigit():
+                        return int(v)
+    except OSError:
+        pass
+    return 10240
+
+
+def free_mb(path: str):
+    """Free MB on the filesystem of `path`, as `df --output=avail` (which is what
+    shani-deploy's check_space reads), or None."""
+    try:
+        st = os.statvfs(path)
+    except OSError:
+        return None
+    return st.f_bavail * st.f_frsize // (1024 * 1024)

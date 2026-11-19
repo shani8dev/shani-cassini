@@ -1147,3 +1147,74 @@ def test_no_failure_no_explanation(tmp_path, monkeypatch) -> None:
     tab, _ = updates_tab(tmp_path, monkeypatch,
                          status=with_status(reboot_needed="20260926"))
     assert tab._failure.get_visible() is False
+
+
+# ---- Repair, not "start from", after a fallback; the checks before an update ----------
+
+def test_after_a_fallback_rollback_is_a_repair_and_says_so(tmp_path, monkeypatch) -> None:
+    """shani-deploy's rollback_system() restores the failed, non-running slot from
+    its pre-update backup and stays on the booted one. The page used to say
+    "Shanios will start from @green after a restart" for exactly that call."""
+    tab, _ = updates_tab(tmp_path, monkeypatch,
+                         status=with_status(boot_failure="green", booted_slot="blue",
+                                            previous_slot="green", current_slot="blue",
+                                            reboot_needed=""))
+    assert tab._row_rollback.get_title() == "Repair @green"
+    assert "You stay on @blue" in tab._row_rollback.get_subtitle()
+    assert tab._btn_rollback.get_label() == "Repair…"
+    tab._confirm_rollback()
+    d = tab._last_dialog
+    assert d.get_heading() == "Repair @green?"
+    assert "start from" not in d.get_body() and "You stay on @blue" in d.get_body()
+
+
+def test_without_a_failure_rollback_still_goes_back(tmp_path, monkeypatch) -> None:
+    """NEGATIVE control: an ordinary rollback keeps its words."""
+    tab, _ = updates_tab(tmp_path, monkeypatch,
+                         status=with_status(previous_slot="green", booted_slot="blue"))
+    assert tab._row_rollback.get_title() == "Go back to the previous system"
+    tab._confirm_rollback()
+    assert "will start from @green" in tab._last_dialog.get_body()
+
+
+def _check_sub(tab, key):
+    return tab._check_rows[key].get_subtitle()
+
+
+def test_the_checks_before_an_update(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(ss, "free_mb", lambda p: 50 * 1024)
+    monkeypatch.setattr(ss, "deploy_min_free_mb", lambda: 10240)
+    tab, _ = updates_tab(tmp_path, monkeypatch,
+                         status=with_status(update_available=True, booted_slot="blue",
+                                            remote={"stable": "20260925", "latest": "20260925"}))
+    assert tab._checks.get_visible()
+    assert "→ 2026.09.25" in _check_sub(tab, "newer")
+    assert _check_sub(tab, "space") == "Needs 10 GB · 50 GB free"
+    assert tab._check_rows["space"]._icon.has_css_class("success")
+    assert "before anything is written" in _check_sub(tab, "verified")
+    assert "@blue is left as it is" in _check_sub(tab, "stays")
+
+
+def test_too_little_space_is_said_before_the_update(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(ss, "free_mb", lambda p: 0 if p == "/data" else 99999)
+    monkeypatch.setattr(ss, "deploy_min_free_mb", lambda: 10240)
+    tab, _ = updates_tab(tmp_path, monkeypatch,
+                         status=with_status(update_available=True,
+                                            remote={"stable": "20260925", "latest": "20260925"}))
+    # /data at 0 MB must not fall through to /home's free space
+    assert _check_sub(tab, "space").startswith("Needs 10 GB · 0.0 GB free")
+    assert tab._check_rows["space"]._icon.has_css_class("warning")
+
+
+def test_no_checks_when_up_to_date(tmp_path, monkeypatch) -> None:
+    """NEGATIVE control."""
+    tab, _ = updates_tab(tmp_path, monkeypatch, status=with_status(update_available=False))
+    assert not tab._checks.get_visible()
+
+
+def test_the_space_requirement_is_shani_deploys_own(tmp_path, monkeypatch) -> None:
+    conf = tmp_path / "shani.conf"
+    conf.write_text("[deploy]\nmin_free_space_mb = 20480\n")
+    real_open = open
+    monkeypatch.setattr("builtins.open", lambda p, *a, **k: real_open(conf if p == "/etc/shani/shani.conf" else p, *a, **k))
+    assert ss.deploy_min_free_mb() == 20480
